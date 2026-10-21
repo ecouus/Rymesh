@@ -1,0 +1,6 @@
+/agentconsole
+/dist/
+*.db
+*.db-*
+TEST_REPORT.md
+.DS_Store

@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#ffffff">
+<meta name="color-scheme" content="dark light">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Agent Console">
+<title>Agent Console</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<noscript><div class="noscript">需要启用 JavaScript 才能使用控制台。</div></noscript>
+
+<div id="login" class="login" hidden>
+  <div class="login-card">
+    <div class="brand">
+      <h1>Agent Console</h1>
+      <p class="muted">Codex CLI · Claude Code</p>
+    </div>
+    <form id="login-form" autocomplete="on">
+      <label class="field">
+        <span>访问密码</span>
+        <input id="login-password" type="password" name="password" autocomplete="current-password"
+               inputmode="text" placeholder="输入访问密码" required>
+      </label>
+      <button id="login-btn" class="btn primary block" type="submit">登录</button>
+      <p id="login-error" class="error-text" role="alert" hidden></p>
+    </form>
+    <form id="force-form" autocomplete="on" hidden>
+      <p class="login-note muted">首次登录，请先修改默认密码。</p>
+      <label class="field">
+        <span>当前密码</span>
+        <input id="force-old" type="password" autocomplete="current-password" required>
+      </label>
+      <label class="field">
+        <span>新密码</span>
+        <input id="force-new" type="password" autocomplete="new-password" required>
+      </label>
+      <label class="field">
+        <span>确认新密码</span>
+        <input id="force-new2" type="password" autocomplete="new-password" required>
+      </label>
+      <button id="force-btn" class="btn primary block" type="submit">修改密码并进入</button>
+      <p id="force-error" class="error-text" role="alert" hidden></p>
+    </form>
+    <p class="login-note muted">仅通过 EasyTier 内网访问。<span id="login-default-hint" hidden>首次登录使用默认密码
+      <code>admin</code>，登录后必须修改。</span></p>
+  </div>
+</div>
+
+<div id="app" class="app" hidden>
+  <header class="topbar">
+    <div class="top-left">
+      <button id="menu-btn" class="icon-btn" aria-label="打开对话列表" aria-controls="sidebar"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h16M4 16h10"/></svg></button>
+    </div>
+    <div class="top-title">
+      <h2 id="page-title">新对话</h2>
+      <div id="page-sub" class="sub"></div>
+    </div>
+    <div class="top-actions">
+      <span id="conn-dot" class="conn-dot" title="连接状态" hidden></span>
+      <button id="approval-btn" class="icon-btn approval-btn" aria-label="待审批" hidden><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4 3 20h18L12 4zM12 10v4M12 17v.5"/></svg><span id="approval-count" class="approval-badge"></span></button>
+      <button id="settings-btn" class="icon-btn" aria-label="系统设置" title="设置"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg></button>
+    </div>
+  </header>
+
+  <main id="main" class="main"></main>
+
+  <div id="composer-wrap" class="composer-wrap" hidden>
+    <div class="composer-box">
+      <form id="composer" class="composer">
+        <textarea id="prompt" rows="1" placeholder="给 Agent 发消息…" aria-label="消息内容"></textarea>
+        <button id="stop-btn" class="send-btn stop-btn" type="button" aria-label="停止任务" title="停止任务" hidden><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" stroke="none"/></svg></button>
+        <button id="send-btn" class="send-btn" type="submit" aria-label="发送"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
+      </form>
+      <div class="composer-meta">
+        <div class="composer-opts">
+          <select id="agent-select" class="agent-select" aria-label="选择 Agent"></select>
+          <div class="menu-wrap">
+            <button id="profile-btn" class="pill" type="button" aria-haspopup="listbox" aria-expanded="false" title="权限模式">
+              <svg class="ico sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5 6v5c0 4.2 2.8 8 7 10 4.2-2 7-5.8 7-10V6l-7-3z"/></svg>
+              <span id="profile-label"></span>
+              <svg class="ico sm chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>
+            </button>
+            <div id="profile-menu" class="menu" role="listbox" aria-label="权限模式" hidden></div>
+          </div>
+          <select id="profile-select" aria-label="权限模式" hidden></select>
+        </div>
+        <span id="composer-hint" class="muted small"></span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="approval-stack" class="approval-stack" hidden></div>
+
+<div id="sidebar" class="sidebar" hidden>
+  <div class="sidebar-backdrop" data-sidebar-close="1"></div>
+  <aside class="sidebar-panel" role="dialog" aria-modal="true" aria-label="对话列表">
+    <div class="sidebar-head">
+      <h2 id="sidebar-title">对话</h2>
+      <button id="sidebar-new" class="icon-btn" type="button" aria-label="新对话" title="新对话"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h8M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg></button>
+      <button class="icon-btn" data-sidebar-close="1" aria-label="关闭"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+    </div>
+    <div class="sidebar-search">
+      <input id="session-search" type="search" placeholder="搜索标题、目录或会话 ID">
+    </div>
+    <div id="agent-filter" class="chip-row side-filter" role="tablist" aria-label="按 Agent 筛选"></div>
+    <div id="session-list" class="sidebar-list"></div>
+  </aside>
+</div>
+
+<div id="sheet" class="sheet" hidden>
+  <div class="sheet-backdrop" data-close="1"></div>
+  <div class="sheet-panel" role="dialog" aria-modal="true">
+    <div class="sheet-head">
+      <h3 id="sheet-title"></h3>
+      <button class="icon-btn" data-close="1" aria-label="关闭"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+    </div>
+    <div id="sheet-body" class="sheet-body"></div>
+  </div>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="/markdown.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

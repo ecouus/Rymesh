@@ -166,7 +166,13 @@ func (im *Importer) importCodex(rep *ImportReport) {
 }
 
 // codexMeta is the session identity recorded in a Codex rollout.
-type codexMeta struct{ ID, Cwd, Timestamp string }
+type codexMeta struct {
+	ID, Cwd, Timestamp string
+	// Subagent marks threads Codex spawns for itself (e.g. the "guardian"
+	// approval reviewer). Like Claude's subagent transcripts they are not
+	// conversations of their own.
+	Subagent bool
+}
 
 func (im *Importer) importCodexFile(path string, titles map[string]string, rep *ImportReport) error {
 	f, err := os.Open(path)
@@ -202,6 +208,9 @@ func (im *Importer) importCodexFile(path string, titles map[string]string, rep *
 			meta.ID = firstNonEmpty(str(p["id"]), str(p["session_id"]))
 			meta.Cwd = str(p["cwd"])
 			meta.Timestamp = str(p["timestamp"])
+			if src, ok := p["source"].(map[string]any); ok && src["subagent"] != nil {
+				meta.Subagent = true
+			}
 			continue
 		}
 		events = append(events, parseCodexRecord(o.Type, o.Timestamp, p, seen, &firstUser)...)
@@ -217,6 +226,14 @@ func (im *Importer) importCodexFile(path string, titles map[string]string, rep *
 	}
 	if im.excluded(meta.Cwd) {
 		rep.Excluded++
+		return nil
+	}
+	if meta.Subagent {
+		// Drop one imported by an earlier version, too.
+		if existing, err := im.store.FindNativeSession("codex", meta.ID); err == nil && existing.Source == "imported" {
+			_ = im.store.DeleteSessionRow(existing.ID)
+		}
+		rep.Skipped++
 		return nil
 	}
 	if st, err := os.Stat(meta.Cwd); err != nil || !st.IsDir() {

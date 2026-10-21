@@ -42,6 +42,8 @@ func main() {
 		os.Exit(importMain(os.Args[2:]))
 	case "node":
 		os.Exit(nodeMain(os.Args[2:]))
+	case "client":
+		os.Exit(clientMain(os.Args[2:]))
 	case "tasks":
 		os.Exit(tasksMain(os.Args[2:]))
 	case "cancel":
@@ -69,7 +71,11 @@ func help() {
 	fmt.Print(`agentconsole — 多 Agent Web 控制台（Codex CLI / Claude Code）
 
 用法:
-  agentconsole install [选项]      生成配置、安装 systemd、开机自启并启动
+  agentconsole client              在本机启动控制台（首次自动配置、注册后台服务）并免密打开浏览器
+  agentconsole client open         在浏览器中打开本机控制台
+  agentconsole node setup ...      在本机安装/升级节点（通常由客户端通过 SSH 自动执行）
+  agentconsole node token|add|list 管理节点令牌与远程设备
+  agentconsole install [选项]      在服务器上生成配置、安装 systemd、开机自启并启动
   agentconsole serve               前台运行 Web 服务（systemd 使用）
   agentconsole status              查看服务、Agent、任务与会话状态
   agentconsole password            查看当前密码

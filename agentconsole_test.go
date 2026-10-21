@@ -2484,3 +2484,28 @@ func TestResolvePermissionRecordsResultEvent(t *testing.T) {
 		t.Fatalf("no permission_result event after approval: %d events", len(evs))
 	}
 }
+
+func TestImporterSkipsCodexSubagentThreads(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".codex", "sessions", "2026", "10", "21")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	write := func(id string, source any) {
+		meta, _ := json.Marshal(map[string]any{"timestamp": "2026-10-21T00:00:00Z", "type": "session_meta",
+			"payload": map[string]any{"id": id, "cwd": home, "timestamp": "2026-10-21T00:00:00Z", "source": source}})
+		msg, _ := json.Marshal(map[string]any{"timestamp": "2026-10-21T00:00:01Z", "type": "response_item",
+			"payload": map[string]any{"type": "message", "role": "user", "content": []any{map[string]any{"type": "input_text", "text": "hi"}}}})
+		_ = os.WriteFile(filepath.Join(dir, "rollout-2026-10-21T00-00-00-"+id+".jsonl"), append(append(meta, '\n'), append(msg, '\n')...), 0o600)
+	}
+	write("01a15ee8-0000-7000-8000-000000000001", "cli")
+	write("01a15ee8-0000-7000-8000-000000000002", map[string]any{"subagent": map[string]any{"other": "guardian"}})
+	st, _ := openStore(t.TempDir())
+	defer st.Close()
+	im := &Importer{store: st, home: home, log: log.New(io.Discard, "", 0)}
+	im.ImportAll()
+	got, _ := st.ListSessions("", "", true)
+	if len(got) != 1 || got[0].NativeID != "01a15ee8-0000-7000-8000-000000000001" {
+		t.Fatalf("sessions = %d %+v", len(got), got)
+	}
+}

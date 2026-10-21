@@ -41,6 +41,8 @@ type Server struct {
 	launching map[string]bool
 	importMu  sync.Mutex
 	ssh       *sshPool
+	ticketMu  sync.Mutex
+	ticket    string // one-time local login (client.go)
 	// streamSem bounds concurrent SSE connections. Every stream polls the store
 	// several times a second and the store has a single connection, so an
 	// unbounded number of open tabs (or a reconnect loop) would starve every
@@ -59,6 +61,7 @@ func newServer(cfg *Config, cfgPath string, st *Store, logger *log.Logger, bindA
 	s.ing.onDone = func() { s.schedule() }
 	s.imp = newImporter(st, logger, cfg.ImportExcludeRoots, cfg.ImportHistoryLimit)
 	s.routes()
+	s.rotateTicket()
 	return s
 }
 
@@ -91,6 +94,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/health", s.handleHealth)
 	m.HandleFunc("GET /api/session", s.handleAuthState)
 	m.HandleFunc("POST /api/login", s.handleLogin)
+	m.HandleFunc("GET /api/login/ticket", s.handleTicketLogin)
 	m.HandleFunc("POST /api/logout", s.authed(s.handleLogout))
 
 	m.HandleFunc("GET /api/bootstrap", s.authed(s.handleBootstrap))

@@ -508,6 +508,212 @@
     }).join("");
   }
 
+  function settingsDeviceRows() {
+    return S.nodes.map(function (n) {
+      var sub = n.local ? "本机" : (n.target || n.url || "");
+      return '<button type="button" class="g-row link" ' + (n.local ? 'data-node="local"' : 'data-device="' + esc(n.id) + '"') + ">" +
+        '<span class="node-dot' + (n.online ? "" : " off") + '"></span>' +
+        '<span class="g-label">' + esc(n.name) + ' <span class="muted small">' + esc(sub) + "</span></span>" +
+        '<span class="g-value">' + esc(n.online ? (n.id === S.node ? "当前" : (n.version || "")) : (n.error || "离线")) + "</span></button>";
+    }).join("");
+  }
+
+  // ------------------------------------------------------------ device setup
+
+  // A POST whose answer is an event stream (deploy progress).
+  function postStream(path, onEvent) {
+    return fetch(path, { method: "POST", credentials: "same-origin", cache: "no-store",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": S.csrf }, body: "{}" }).then(function (res) {
+      if (!res.ok || !res.body) return res.json().then(function (d) { throw new Error(d.error || "HTTP " + res.status); });
+      var reader = res.body.getReader(), dec = new TextDecoder(), buf = "";
+      function pump() {
+        return reader.read().then(function (r) {
+          if (r.done) return;
+          buf += dec.decode(r.value, { stream: true });
+          var parts = buf.split("\n\n");
+          buf = parts.pop();
+          parts.forEach(function (chunk) {
+            var ev = "message", data = "";
+            chunk.split("\n").forEach(function (l) {
+              if (l.indexOf("event: ") === 0) ev = l.slice(7);
+              else if (l.indexOf("data: ") === 0) data += l.slice(6);
+            });
+            try { onEvent(ev, JSON.parse(data)); } catch (e) {}
+          });
+          return pump();
+        });
+      }
+      return pump();
+    });
+  }
+
+  function addDeviceSheet() {
+    var body = openSheet("添加服务器",
+      '<div class="stack device-form">' +
+      '<label class="field" id="dev-import-wrap" hidden><span>从 ~/.ssh/config 导入</span><select id="dev-import"><option value="">选择主机…</option></select></label>' +
+      '<label class="field"><span>名称</span><input id="dev-name" placeholder="例如 生产服务器" maxlength="60"></label>' +
+      '<div class="row"><label class="field grow"><span>主机</span><input id="dev-host" class="mono" placeholder="IP 或域名" autocapitalize="off" spellcheck="false"></label>' +
+      '<label class="field" style="width:84px"><span>SSH 端口</span><input id="dev-port" class="mono" inputmode="numeric" value="22"></label></div>' +
+      '<label class="field"><span>用户</span><input id="dev-user" class="mono" value="root" autocapitalize="off" spellcheck="false"></label>' +
+      '<label class="field"><span>认证</span><select id="dev-key"></select></label>' +
+      '<div id="dev-pub" class="dev-pub" hidden></div>' +
+      '<details class="fold"><summary>高级</summary><label class="field" style="margin-top:8px"><span>节点端口（服务器本机回环端口）</span>' +
+      '<input id="dev-rport" class="mono" inputmode="numeric" value="8899"></label></details>' +
+      '<button id="dev-save" class="btn primary block" type="button">连接</button>' +
+      '<div id="dev-flow"></div></div>');
+    var hosts = [];
+    api("/api/ssh/hosts", { hub: true }).then(function (d) {
+      hosts = d.hosts || [];
+      if (!hosts.length) return;
+      $("#dev-import-wrap").hidden = false;
+      $("#dev-import").innerHTML = '<option value="">选择主机…</option>' + hosts.map(function (h, i) {
+        return '<option value="' + i + '">' + esc(h.alias + (h.host !== h.alias ? "（" + h.host + "）" : "")) + "</option>";
+      }).join("");
+    }).catch(function () {});
+    function fillKeys(selectPath) {
+      return api("/api/keys", { hub: true }).then(function (d) {
+        var opts = (d.keys || []).map(function (k) {
+          return '<option value="key:' + esc(k.path) + '">' + esc(k.name) + (k.source === "app" ? "（客户端生成）" : "（~/.ssh）") + "</option>";
+        });
+        if (d.agent) opts.push('<option value="agent">ssh-agent</option>');
+        opts.push('<option value="new">生成新密钥…</option>');
+        $("#dev-key").innerHTML = opts.join("");
+        if (selectPath) $("#dev-key").value = "key:" + selectPath;
+        showPub(d.keys || []);
+        $("#dev-key").__keys = d.keys || [];
+      });
+    }
+    function showPub(keys) {
+      var v = $("#dev-key").value, box = $("#dev-pub");
+      var k = keys.filter(function (x) { return "key:" + x.path === v; })[0];
+      if (k && k.source === "app") {
+        box.hidden = false;
+        box.innerHTML = '<div class="small muted">把这行公钥加入服务器的 <code>~/.ssh/authorized_keys</code>：</div>' +
+          '<pre class="mono">' + esc(k.public) + '</pre><button type="button" class="btn sm" data-copy-pub="1">复制公钥</button>';
+        box.__pub = k.public;
+      } else box.hidden = true;
+    }
+    fillKeys();
+    $("#dev-import").addEventListener("change", function () {
+      var h = hosts[+this.value];
+      if (!h) return;
+      $("#dev-name").value = h.alias; $("#dev-host").value = h.host; $("#dev-port").value = h.port || 22;
+      if (h.user) $("#dev-user").value = h.user;
+      if (h.key_path) {
+        var want = h.key_path.replace(/^~\//, "");
+        var match = ($("#dev-key").__keys || []).filter(function (k) { return k.path.slice(-want.length) === want; })[0];
+        if (match) $("#dev-key").value = "key:" + match.path;
+      }
+      showPub($("#dev-key").__keys || []);
+    });
+    $("#dev-key").addEventListener("change", function () {
+      if (this.value !== "new") { showPub(this.__keys || []); return; }
+      api("/api/keys/generate", { method: "POST", body: {}, hub: true }).then(function (d) {
+        return fillKeys(d.key.path);
+      }).then(function () { toast("已生成新密钥"); }).catch(function (e) { toast(e.message, true); });
+    });
+    body.addEventListener("click", function (e) {
+      if (e.target.closest("[data-copy-pub]")) {
+        var pub = $("#dev-pub").__pub;
+        fallbackCopy(pub, function () { toast("公钥已复制"); });
+      }
+    });
+    $("#dev-save").addEventListener("click", function () {
+      var key = $("#dev-key").value;
+      var req = {
+        transport: "ssh", name: $("#dev-name").value.trim(), ssh_host: $("#dev-host").value.trim(),
+        ssh_port: parseInt($("#dev-port").value, 10) || 22, ssh_user: $("#dev-user").value.trim(),
+        remote_port: parseInt($("#dev-rport").value, 10) || 8899,
+        use_agent: key === "agent", key_path: key.indexOf("key:") === 0 ? key.slice(4) : ""
+      };
+      var btn = this; btn.disabled = true;
+      api("/api/devices", { method: "POST", body: req, hub: true }).then(function (d) {
+        btn.hidden = true;
+        $$(".device-form > .field, .device-form > .row, .device-form > details", body).forEach(function (el) { el.hidden = true; });
+        deviceFlow(d.device.id, $("#dev-flow"));
+      }).catch(function (e) { toast(e.message, true); btn.disabled = false; });
+    });
+  }
+
+  // deviceFlow drives test → confirm fingerprint → deploy inside a sheet.
+  function deviceFlow(id, box) {
+    var path = "/api/devices/" + encodeURIComponent(id);
+    box.innerHTML = '<div class="flow-step"><span class="spinner"></span> 正在连接…</div>';
+    api(path + "/test", { method: "POST", body: {}, hub: true }).then(function (r) {
+      if (r.stage === "hostkey") {
+        var hk = r.hostkey;
+        box.innerHTML = '<div class="flow-step">' +
+          (hk.mismatch ? '<div class="error-block">警告：这台主机的密钥和 ~/.ssh/known_hosts 里记录的不一致。除非你确认服务器重装过，否则不要信任。</div>' : "") +
+          "<div>首次连接，请核对服务器的主机指纹：</div><pre class=\"mono fp\">" + esc(hk.fingerprint) + "</pre>" +
+          '<div class="small muted">可在服务器上运行 <code>ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</code> 对照。</div>' +
+          '<div class="row" style="margin-top:12px"><button class="btn primary grow" type="button" data-trust="1">信任并继续</button></div></div>';
+        box.querySelector("[data-trust]").addEventListener("click", function () {
+          this.disabled = true;
+          api(path + "/trust", { method: "POST", body: { key: hk.key }, hub: true })
+            .then(function () { deviceFlow(id, box); })
+            .catch(function (e) { toast(e.message, true); deviceFlow(id, box); });
+        });
+        return;
+      }
+      if (r.stage === "error") {
+        box.innerHTML = '<div class="flow-step"><div class="error-block">' + esc(r.error) + "</div>" +
+          '<button class="btn block" type="button" data-retry="1">重试</button></div>';
+        box.querySelector("[data-retry]").addEventListener("click", function () { deviceFlow(id, box); });
+        return;
+      }
+      var online = r.node && r.node.online;
+      box.innerHTML = '<div class="flow-step"><div class="group">' +
+        '<div class="g-row"><span class="g-label">连接</span><span class="g-value">SSH 已连接 · ' + esc(r.platform || "") + "</span></div>" +
+        '<div class="g-row"><span class="g-label">节点</span><span class="g-value">' +
+        esc(r.installed ? r.installed + (online ? " · 运行中" : " · 未运行") : "未安装") + "</span></div></div>" +
+        '<button class="btn ' + (online ? "" : "primary ") + 'block" type="button" data-deploy="1" style="margin-top:12px">' +
+        (r.installed ? "升级 / 重新部署节点" : "部署节点") + "</button>" +
+        (online ? '<button class="btn primary block" type="button" data-use="1" style="margin-top:8px">切换到这台设备</button>' : "") +
+        '<pre class="deploy-log mono" hidden></pre></div>';
+      var log = box.querySelector(".deploy-log");
+      var use = box.querySelector("[data-use]");
+      if (use) use.addEventListener("click", function () { loadNodes().then(function () { switchNode(id); }); });
+      box.querySelector("[data-deploy]").addEventListener("click", function () {
+        var b = this; b.disabled = true; log.hidden = false; log.textContent = "";
+        postStream(path + "/deploy", function (ev, d) {
+          if (ev === "progress") log.textContent += d.text + "\n";
+          else if (ev === "failed") { log.textContent += "✕ " + d.error + "\n"; b.disabled = false; }
+          else if (ev === "done") { log.textContent += "✓ 部署完成\n"; loadNodes().then(function () { deviceFlow(id, box); }); }
+        }).catch(function (e) { log.textContent += "✕ " + e.message + "\n"; b.disabled = false; });
+      });
+    }).catch(function (e) {
+      box.innerHTML = '<div class="flow-step"><div class="error-block">' + esc(e.message) + "</div></div>";
+    });
+  }
+
+  function deviceSheet(id) {
+    var n = S.nodes.filter(function (x) { return x.id === id; })[0] || { id: id, name: id };
+    var body = openSheet(n.name,
+      '<div class="stack"><div class="group">' +
+      '<div class="g-row"><span class="g-label">地址</span><span class="g-value mono">' + esc(n.target || n.url || "") + "</span></div>" +
+      '<div class="g-row"><span class="g-label">状态</span><span class="g-value">' + esc(n.online ? "在线 " + (n.version || "") : (n.error || "离线")) + "</span></div></div>" +
+      '<div id="dev-flow"></div>' +
+      '<button class="btn danger block" type="button" data-del-device="1">删除设备</button>' +
+      '<p class="small muted">删除只移除本客户端里的记录，不会卸载服务器上的节点。</p></div>');
+    deviceFlow(id, $("#dev-flow"));
+    body.querySelector("[data-del-device]").addEventListener("click", function () {
+      confirmSheet("删除设备「" + n.name + "」？", "<p>之后可以重新添加；服务器上的节点和会话不受影响。</p>", "删除", true).then(function (ok) {
+        if (!ok) return;
+        api("/api/devices/" + encodeURIComponent(id), { method: "DELETE", body: {}, hub: true }).then(function () {
+          if (S.node === id) switchNode("local");
+          loadNodes().then(function () { if (S.route === "settings") renderSettings(); });
+          toast("已删除");
+        }).catch(function (e) { toast(e.message, true); });
+      });
+    });
+  }
+
+  document.addEventListener("click", function (e) {
+    if (e.target.closest("[data-add-device]")) { addDeviceSheet(); return; }
+    var d = e.target.closest("[data-device]");
+    if (d && S.route === "settings") deviceSheet(d.getAttribute("data-device"));
+  });
+
   function nodeSheet() {
     var body = openSheet("切换设备", '<div class="group">' + nodeRows() + "</div>" +
       '<p class="g-note">每台设备上的 Agent 都在各自机器上运行；切换只是换一个查看和操作的对象。</p>');
@@ -2074,7 +2280,8 @@
         '<div class="row" style="margin-top:7px;gap:7px"><button class="btn sm ghost grow" type="button" data-perm="reason-cancel">取消</button>' +
         '<button class="btn sm grow" type="button" data-perm="reason-confirm">继续规划</button></div></div>';
     } else {
-      var input = perm.tool_name === "shell" && perm.input && perm.input.command ? perm.input.command : pretty(perm.input);
+      // A command reads best as the command itself (Bash, Codex shell).
+      var input = perm.input && typeof perm.input.command === "string" ? perm.input.command : pretty(perm.input);
       body = '<div class="permission-title"><span class="dot"></span>需要批准：' + esc(toolLabel(perm.tool_name)) + "</div>" +
         (perm.description ? '<div class="permission-desc">' + esc(perm.description) + "</div>" : "") +
         (input ? '<div class="permission-input"><pre>' + esc(input) + "</pre></div>" : "") +
@@ -2546,10 +2753,11 @@
     var counts = d.counts || {};
     var addr = "http://" + (cfg.easytier_ip || location.hostname) + ":" + (cfg.port || "");
 
-    var devices = S.nodes.length ? '<div><div class="section-title">设备</div><div class="group">' + nodeRows() + "</div>" +
-      '<div class="g-note">添加设备：在新设备上运行 <code>agentconsole node token</code> 取得令牌，再在本机运行 ' +
-      "<code>agentconsole node add &lt;id&gt; --name 名称 --url http://IP:8899 --token 令牌</code> 并重启服务。" +
-      (multiNode() ? "下面的 Agent、通用与服务设置属于当前设备「" + esc(nodeLabel(S.node)) + "」。" : "") + "</div></div>" : "";
+    var devices = '<div><div class="section-title">设备</div><div class="group">' + settingsDeviceRows() +
+      '<button type="button" class="g-row link" data-add-device="1"><span class="g-label">添加服务器</span>' +
+      '<span class="g-value">通过 SSH</span></button></div>' +
+      '<div class="g-note">客户端通过 SSH 连接服务器并自动部署节点；服务器只需开放 SSH。' +
+      (multiNode() ? "下面的 Agent、通用与服务设置属于当前设备「" + esc(nodeLabel(S.node)) + "」。" : "") + "</div></div>";
     $("#main").innerHTML = '<div class="pad stack settings">' + devices +
       '<div><div class="section-title">Agent</div><div class="group">' + agents + "</div></div>" +
 

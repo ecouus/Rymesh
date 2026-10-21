@@ -134,6 +134,22 @@ func pinnedHostKey(n NodeConfig) ssh.HostKeyCallback {
 	}
 }
 
+// hostKeyAlgorithms asks the server for the pinned key's type, so a server
+// with several host keys always presents the one that was confirmed. Before
+// pinning, ed25519 comes first: it is the key users are told to compare.
+func hostKeyAlgorithms(n NodeConfig) []string {
+	if n.HostKey != "" {
+		if k, _, _, _, err := ssh.ParseAuthorizedKey([]byte(n.HostKey)); err == nil {
+			if k.Type() == ssh.KeyAlgoRSA {
+				return []string{ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSASHA256, ssh.KeyAlgoRSA}
+			}
+			return []string{k.Type()}
+		}
+	}
+	return []string{ssh.KeyAlgoED25519, ssh.KeyAlgoECDSA256, ssh.KeyAlgoECDSA384, ssh.KeyAlgoECDSA521,
+		ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSASHA256}
+}
+
 func dialSSH(ctx context.Context, n NodeConfig) (*ssh.Client, error) {
 	auth, cleanup, err := sshAuth(n)
 	if err != nil {
@@ -142,6 +158,7 @@ func dialSSH(ctx context.Context, n NodeConfig) (*ssh.Client, error) {
 	defer cleanup()
 	cfg := &ssh.ClientConfig{
 		User: n.SSHUser, Auth: auth, HostKeyCallback: pinnedHostKey(n), Timeout: 10 * time.Second,
+		HostKeyAlgorithms: hostKeyAlgorithms(n),
 	}
 	d := net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
 	conn, err := d.DialContext(ctx, "tcp", n.sshAddr())
@@ -172,7 +189,7 @@ func probeHostKey(ctx context.Context, n NodeConfig) (*HostKeyProbe, error) {
 	var got ssh.PublicKey
 	var remote net.Addr
 	stop := errors.New("captured")
-	cfg := &ssh.ClientConfig{User: n.SSHUser, Timeout: 10 * time.Second,
+	cfg := &ssh.ClientConfig{User: n.SSHUser, Timeout: 10 * time.Second, HostKeyAlgorithms: hostKeyAlgorithms(n),
 		HostKeyCallback: func(_ string, r net.Addr, key ssh.PublicKey) error { got, remote = key, r; return stop }}
 	d := net.Dialer{Timeout: 10 * time.Second}
 	conn, err := d.DialContext(ctx, "tcp", n.sshAddr())

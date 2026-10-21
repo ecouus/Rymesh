@@ -37,6 +37,7 @@ const (
 	decisionAllow        = "allow"
 	decisionAllowSession = "allow_session"
 	decisionAllowAlways  = "allow_always"
+	decisionAllowMode    = "allow_mode"
 	decisionDeny         = "deny"
 	decisionDenyStop     = "deny_stop"
 	decisionAnswer       = "answer"
@@ -129,7 +130,7 @@ func (r ctlRequest) option(id string) (ctlOption, bool) {
 // statusFor maps a decision to the status stored on the permission row.
 func statusFor(decision string) string {
 	switch decision {
-	case decisionAllow, decisionAllowSession, decisionAllowAlways,
+	case decisionAllow, decisionAllowSession, decisionAllowAlways, decisionAllowMode,
 		decisionPlanAccept, decisionPlanDefault, "allowed":
 		return "allowed"
 	case decisionAnswer:
@@ -222,13 +223,47 @@ func suggestionText(s map[string]any) string {
 		dirs, _ := s["directories"].([]any)
 		var parts []string
 		for _, d := range dirs {
-			parts = append(parts, str(d))
+			parts = append(parts, shortPath(str(d)))
 		}
 		return "访问目录 " + strings.Join(parts, "、")
 	case "setMode":
 		return "切换为 " + str(s["mode"]) + " 模式"
 	}
 	return str(s["type"])
+}
+
+// splitSuggestions separates rule and directory grants from a mode switch.
+func splitSuggestions(ss []map[string]any) (rules []map[string]any, mode map[string]any) {
+	for _, s := range ss {
+		if str(s["type"]) == "setMode" {
+			mode = s
+		} else {
+			rules = append(rules, s)
+		}
+	}
+	return rules, mode
+}
+
+func modeLabel(mode string) string {
+	switch mode {
+	case "acceptEdits":
+		return "自动接受编辑"
+	case "bypassPermissions":
+		return "跳过所有权限检查"
+	case "plan":
+		return "进入计划模式"
+	}
+	return "切换为 " + mode + " 模式"
+}
+
+// shortPath keeps the last two components of a long path ("…/e2e/work"),
+// which is what tells directories apart on a phone-width card.
+func shortPath(p string) string {
+	parts := strings.Split(strings.TrimRight(p, "/"), "/")
+	if len(parts) <= 4 {
+		return p
+	}
+	return "…/" + strings.Join(parts[len(parts)-2:], "/")
 }
 
 func joinTexts(ss []map[string]any) string {
@@ -280,13 +315,20 @@ func claudeInteraction(r claudeToolRequest) ctlRequest {
 		req.Description = "需要访问 " + r.BlockedPath
 	}
 	req.Options = []ctlOption{{ID: decisionAllow, Label: "允许"}}
-	if len(r.Suggestions) > 0 {
+	rules, mode := splitSuggestions(r.Suggestions)
+	if len(rules) > 0 {
 		req.Options = append(req.Options, ctlOption{ID: decisionAllowSession, Label: "本会话允许",
-			Detail: joinTexts(r.Suggestions)})
+			Detail: joinTexts(rules)})
+	}
+	// A mode switch changes how everything else in the session runs, so it is
+	// its own choice (as in the CLI), never folded into "allow for session".
+	if mode != nil {
+		req.Options = append(req.Options, ctlOption{ID: decisionAllowMode,
+			Label: "允许，并在本会话" + modeLabel(str(mode["mode"]))})
 	}
 	var persistent []map[string]any
 	dest := ""
-	for _, s := range r.Suggestions {
+	for _, s := range rules {
 		if d := str(s["destination"]); d != "" && d != "session" {
 			persistent = append(persistent, s)
 			dest = d
@@ -361,9 +403,17 @@ func claudeReply(r claudeToolRequest, resp ctlResponse, ok bool) (reply map[stri
 	switch resp.Decision {
 	case decisionAllow, "allowed":
 		return allow(r.Input, nil), "allowed", ""
+	case decisionAllowMode:
+		_, mode := splitSuggestions(r.Suggestions)
+		if mode == nil {
+			return allow(r.Input, nil), "allowed", ""
+		}
+		m := map[string]any{"type": "setMode", "mode": mode["mode"], "destination": "session"}
+		return allow(r.Input, []map[string]any{m}), "allowed", ""
 	case decisionAllowSession:
-		perms := make([]map[string]any, 0, len(r.Suggestions))
-		for _, s := range r.Suggestions {
+		rules, _ := splitSuggestions(r.Suggestions)
+		perms := make([]map[string]any, 0, len(rules))
+		for _, s := range rules {
 			c := map[string]any{}
 			for k, v := range s {
 				c[k] = v
@@ -373,7 +423,8 @@ func claudeReply(r claudeToolRequest, resp ctlResponse, ok bool) (reply map[stri
 		}
 		return allow(r.Input, perms), "allowed", ""
 	case decisionAllowAlways:
-		return allow(r.Input, r.Suggestions), "allowed", ""
+		rules, _ := splitSuggestions(r.Suggestions)
+		return allow(r.Input, rules), "allowed", ""
 	case decisionDenyStop:
 		return deny(orDefault(resp.Message, "用户拒绝并停止了本轮任务"), true)
 	}

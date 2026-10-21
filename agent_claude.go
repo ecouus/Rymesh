@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -48,6 +49,9 @@ type claudeSession struct {
 	mu     sync.Mutex // serialises writes to stdin
 	closed bool
 	seenID string
+	// stopped is set when the user chose "deny and stop": Claude then exits
+	// with an error, but the task was cancelled, not failed.
+	stopped atomic.Bool
 }
 
 func (c *claudeSession) send(v any) {
@@ -76,7 +80,12 @@ func (c *claudeSession) start() {
 	c.send(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": c.spec.Prompt}})
 }
 
-func (c *claudeSession) outcome() (string, string, bool) { return "", "", false }
+func (c *claudeSession) outcome() (string, string, bool) {
+	if c.stopped.Load() {
+		return StatusCancelled, "用户拒绝并停止了本轮任务", true
+	}
+	return "", "", false
+}
 
 func (c *claudeSession) onLine(line []byte) {
 	var raw map[string]any
@@ -131,6 +140,9 @@ func (c *claudeSession) handleControl(line []byte) {
 	default:
 	}
 	reply, status, message := claudeReply(tr, resp, ok)
+	if ok && resp.Decision == decisionDenyStop {
+		c.stopped.Store(true)
+	}
 	c.send(map[string]any{"type": "control_response", "response": map[string]any{
 		"subtype": "success", "request_id": msg.RequestID, "response": reply}})
 	finishUser(c.control, req.ID, status, message)

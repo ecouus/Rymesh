@@ -1085,9 +1085,14 @@
     }).join("") +
       (hiddenItems ? '<div class="approval-more">另有 ' + hiddenItems + " 项待审批</div>" : "");
     var keys = pend.map(function (p) { return p.id; }).sort().join(",");
+    // While the open conversation has its own card waiting, popping other
+    // conversations' requests over it hides the thing to act on; the badge
+    // still counts them.
+    var ownPending = S.route === "chat" && (S.sessionPerms || []).some(function (p) { return p.status === "pending"; });
     if (keys !== S.approvalKeys) {
       S.approvalKeys = keys;
-      showApprovalStack();
+      if (ownPending) box.hidden = true;
+      else showApprovalStack();
     } else if (!S.approvalStackOpen) {
       box.hidden = true;
     }

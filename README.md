@@ -22,8 +22,8 @@ Agent 任务由服务器独立托管：关闭浏览器、锁屏、断网或重�
 | 后台独立执行，与浏览器/SSE 解耦 | ✅ |
 | 服务端事件日志，SSE 断点续传 | ✅ |
 | 工具调用可视化（名称/参数/状态/输出/错误） | ✅ |
-| Claude 网页权限审批（允许/拒绝，可跨断线） | ✅ |
-| Codex 交互式审批 | ⚠️ CLI 限制，使用只读/工作区沙箱替代 |
+| 与 CLI 一致的权限审批：允许一次 / 本会话允许 / 始终允许 / 拒绝（可附理由）/ 拒绝并停止（可跨断线） | ✅ Claude + Codex |
+| Agent 提问（单选、多选、自填），计划模式的计划审批 | ✅ Claude（AskUserQuestion / ExitPlanMode）+ Codex（计划模式 request_user_input） |
 | 原生历史导入（只读扫描，不改原文件；跳过空会话与子代理转录） | ✅ |
 | 权限模式与 CLI 原生选项一致（按 Agent 切换） | ✅ |
 | 重命名 / 删除对话（侧边栏三点菜单，删除含磁盘文件二次确认） | ✅ |
@@ -46,9 +46,9 @@ agentconsole serve  (systemd, 127.0.0.1 + 10.0.0.6:8899)
       ▼
 agentconsole run-task  (setsid，独立于 Web 服务)
       │
-      ├── codex exec [resume] …        (JSONL stdout)
-      └── claude -p … --resume …       (stream-json stdout)
-             └── MCP permission bridge (agentconsole mcp-permission)
+      ├── codex app-server             (JSON-RPC：审批与提问是服务端请求)
+      └── claude -p --input-format stream-json --permission-prompt-tool stdio
+                                       (stream-json：审批与提问是 can_use_tool 控制请求)
 ```
 
 关键设计：
@@ -59,7 +59,7 @@ agentconsole run-task  (setsid，独立于 Web 服务)
    Web 侧 Ingestor 从持久化 offset 增量读取并写入 SQLite，唯一键保证重复读取幂等。
 3. **SSE 游标恢复。** 前端断线后使用 `Last-Event-ID` / `after` 续传；服务端以 SQLite 为准，
    不会因内存缓冲区丢失事件。
-4. **原生恢复。** Codex 使用 `codex exec resume <thread-id>`；Claude 使用
+4. **原生恢复。** Codex 使用 app-server 的 `thread/resume`；Claude 使用
    `claude -p --resume <uuid>`。控制台历史只是展示层，真正上下文由 CLI 原生会话延续。
 5. **原生历史增量同步。** 导入的会话在打开时（会话详情 + 首页事件）会同步原生转录的
    新增部分，而不是只在启动时拍一次快照。每个会话在 `sessions.meta` 里记录
@@ -116,11 +116,12 @@ agentconsole run-task  (setsid，独立于 Web 服务)
 | 路径 | `/usr/local/bin/codex` | `/root/.local/bin/claude` |
 | 版本 | `codex-cli 0.163.0` | `2.1.303 (Claude Code)` |
 | 认证 | 复用 `~/.codex/auth.json`（未读取/未上传） | 复用现有 Claude 登录/环境 |
-| 新建 | `codex exec --json --skip-git-repo-check -C DIR -s read-only -c 'approval_policy="never"' -` | `claude -p --output-format stream-json --verbose --permission-mode manual --permission-prompts host --mcp-config … --permission-prompt-tool mcp__agentconsole__approve --session-id UUID` |
-| 原生恢复 | `codex exec resume --all --json … <thread-id> -` | 同上，改用 `--resume UUID` |
-| 实时输出 | JSONL | stream-json |
+| 新建 | `codex app-server` → `initialize` → `thread/start {cwd, sandbox, approvalPolicy}` → `turn/start {input, collaborationMode}` | `claude -p --input-format stream-json --output-format stream-json --verbose --permission-mode MODE --permission-prompt-tool stdio --session-id UUID`，首条消息经 stdin 发送 |
+| 原生恢复 | `thread/resume {threadId}` | 同上，改用 `--resume UUID` |
+| 实时输出 | JSON-RPC 通知（item/started、item/completed、turn/completed） | stream-json |
+| 交互 | 服务端请求：`item/commandExecution/requestApproval`、`item/fileChange/requestApproval`（选项来自 `availableDecisions`）、`item/permissions/requestApproval`、`item/tool/requestUserInput` | `control_request` / `can_use_tool`：普通工具（选项由 `permission_suggestions` 生成）、`AskUserQuestion`、`ExitPlanMode` |
 | 工具调用 | ✅ | ✅ |
-| 权限模式 | `read-only` / `workspace-write` / `danger-full-access`（后者为显式危险选项，关闭沙箱，审批策略调整为 `on-request` 以便模式生效） | `manual` / `acceptEdits` / `plan` / `auto` / `dontAsk` / `bypassPermissions`（后者追加 `--dangerously-skip-permissions`）；manual 等模式使用 MCP 审批桥 |
+| 权限模式 | 只读（read-only + on-request）/ 自动（workspace-write + on-request）/ 计划模式（read-only + 协作模式 plan）/ 危险：完全访问（danger-full-access + never） | `manual`（即 default）/ `acceptEdits` / `plan` / `auto` / `dontAsk` / `bypassPermissions`（后者追加 `--dangerously-skip-permissions`） |
 | 已知警告 | — | 当前环境模型别名会打印 `unrecognized_model` 到 stderr（不影响执行，UI 中折叠显示） |
 
 工作目录必须位于 `allowed_roots`（默认 `/srv/project`、`/home`、`/root`、`/tmp`），
@@ -417,8 +418,9 @@ agentconsole node list        # 在线状态与令牌校验
 
 ## 11. 已知限制
 
-1. **Codex 无交互式审批。** `codex exec` 无法回答权限提示；默认使用 `read-only`，
-   写文件请选择“工作区可写”。“危险：完全访问”仅在用户显式选择时使用，且没有审批兜底。
+1. **交互请求的存续。** 待处理的审批 / 提问由 runner 保持（控制目录里的 `req-*.json`），
+   网页服务重启、浏览器关闭都不影响；超过 `permission_ttl_minutes` 未处理时，权限请求按拒绝、
+   提问按"未回答"答复 Agent。Codex 的 MCP 表单请求（elicitation）暂不支持，会自动拒绝。
 2. **PWA 安装/离线**在 `http://<私网 IP>` 下通常不可用（Service Worker 需要安全上下文）。
    manifest 与图标已提供；后台执行不依赖 PWA。
 3. **原生历史导入**默认完整保存所有事件（`import_history_limit=0`），不修改任何原生文件。

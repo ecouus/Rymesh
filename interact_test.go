@@ -158,6 +158,7 @@ func TestClaudeSessionPermissionChoices(t *testing.T) {
 		map[string]any{"type": "addRules", "rules": []any{map[string]any{"toolName": "Bash", "ruleContent": "npm test:*"}},
 			"behavior": "allow", "destination": "localSettings"},
 		map[string]any{"type": "addDirectories", "directories": []any{"/w"}, "destination": "session"},
+		map[string]any{"type": "setMode", "mode": "acceptEdits", "destination": "session"},
 	}
 	cases := []struct {
 		decision string
@@ -166,9 +167,16 @@ func TestClaudeSessionPermissionChoices(t *testing.T) {
 		{decisionAllowSession, func(r map[string]any) {
 			perms := r["updatedPermissions"].([]any)
 			for _, p := range perms {
-				if p.(map[string]any)["destination"] != "session" {
-					t.Fatalf("session allow kept a persistent destination: %v", perms)
+				pm := p.(map[string]any)
+				if pm["destination"] != "session" || pm["type"] == "setMode" {
+					t.Fatalf("session allow must grant rules only, for the session: %v", perms)
 				}
+			}
+		}},
+		{decisionAllowMode, func(r map[string]any) {
+			perms := r["updatedPermissions"].([]any)
+			if len(perms) != 1 || perms[0].(map[string]any)["mode"] != "acceptEdits" {
+				t.Fatalf("mode allow = %v", perms)
 			}
 		}},
 		{decisionAllowAlways, func(r map[string]any) {
@@ -180,12 +188,17 @@ func TestClaudeSessionPermissionChoices(t *testing.T) {
 			if r["behavior"] != "deny" || r["interrupt"] != true {
 				t.Fatalf("deny_stop = %v", r)
 			}
+			// The reply is sent before stopped is recorded; give it a moment.
+			time.Sleep(50 * time.Millisecond)
+			if st, _, ok := s.outcome(); !ok || st != StatusCancelled {
+				t.Fatalf("deny_stop outcome = %s %v", st, ok)
+			}
 		}},
 	}
 	for i, c := range cases {
 		rig.feed(s, claudeControl(string(rune('a'+i)), "Bash", map[string]any{"command": "npm test"}, sugg))
 		req := rig.request()
-		if req.Kind != kindPermission || optionIDs(req) != "allow,allow_session,allow_always,deny,deny_stop" {
+		if req.Kind != kindPermission || optionIDs(req) != "allow,allow_session,allow_mode,allow_always,deny,deny_stop" {
 			t.Fatalf("options = %s (%s)", optionIDs(req), req.Kind)
 		}
 		if o, _ := req.option(decisionAllowAlways); !strings.Contains(o.Detail, "Bash(npm test:*)") {
@@ -244,6 +257,20 @@ func TestClaudeSessionRequestExpires(t *testing.T) {
 	if r["behavior"] != "deny" || r["message"] != "审批超时" {
 		t.Fatalf("expired reply = %v", r)
 	}
+	// The done record follows the reply; wait for it so the temp dir cleanup
+	// does not race the write.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if m, _ := filepath.Glob(filepath.Join(rig.control, "done-*.json")); len(m) == 1 {
+			b, _ := os.ReadFile(m[0])
+			if !strings.Contains(string(b), `"expired"`) {
+				t.Fatalf("done = %s", b)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("no done record for the expired request")
 }
 
 func TestCodexSessionHandshakeApprovalAndQuestion(t *testing.T) {

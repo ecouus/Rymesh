@@ -1,4 +1,4 @@
-package main
+package console
 
 // Update support for the agent CLIs themselves — Codex CLI and Claude Code —
 // not for this console. The settings page asks npm for the latest published

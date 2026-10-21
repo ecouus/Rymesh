@@ -214,7 +214,10 @@
     return node && node !== "local" ? "/n/" + encodeURIComponent(node) + path : path;
   }
 
-  function multiNode() { return S.nodes.length > 1; }
+  // A hub-only console (the phone app) has no local machine: its first server
+  // is already "another device", so the switcher always shows.
+  function multiNode() { return S.nodes.length > 1 || (S.hubOnly && S.nodes.length > 0); }
+  function noDevice() { return S.hubOnly && S.node === "local"; }
 
   function nodeLabel(id) {
     for (var i = 0; i < S.nodes.length; i++) if (S.nodes[i].id === id) return S.nodes[i].name;
@@ -423,8 +426,16 @@
   // --------------------------------------------------------------------- boot
 
   function boot() {
-    loadNodes();
-    return api("/api/bootstrap").then(function (d) {
+    // The device list decides which device to load (a hub-only console has no
+    // local one), so it comes first.
+    return loadNodes().then(function () {
+      if (S.hubOnly && !S.nodes.some(function (n) { return n.id === S.node; })) {
+        var first = S.nodes.filter(function (n) { return n.online; })[0] || S.nodes[0];
+        S.node = first ? first.id : "local";
+        renderNodeSwitch(); // it was drawn before the device was chosen
+      }
+      return api("/api/bootstrap");
+    }).then(function (d) {
       S.booted = true;
       S.nodeName = d.node_name || "";
       S.csrf = d.csrf || S.csrf;
@@ -462,6 +473,7 @@
   function loadNodes() {
     return api("/api/nodes", { hub: true }).then(function (d) {
       S.nodes = d.nodes || [];
+      S.hubOnly = !!d.hub_only;
       if (S.node !== "local" && !S.nodes.some(function (n) { return n.id === S.node; })) {
         S.node = "local";
         LS.set("node", "local");
@@ -1032,6 +1044,16 @@
     $("#stop-btn").hidden = true;
     $("#settings-btn").classList.remove("active");
     setAgentPicker(true);
+    if (noDevice()) {
+      setTop("Agent Console", "");
+      $("#composer-wrap").hidden = true;
+      document.body.classList.remove("has-composer");
+      $("#main").innerHTML = '<div class="home-empty onboarding">' +
+        '<div class="home-title">欢迎</div>' +
+        '<div class="home-sub">添加一台服务器开始使用：通过 SSH 连接，并在服务器上自动部署节点。服务器只需开放 SSH。</div>' +
+        '<button class="btn primary block" type="button" data-add-device="1" style="margin-top:24px">添加服务器</button></div>';
+      return;
+    }
     var a = agentMeta(S.draftAgent);
     // The directory is shown (and changed) in the greeting, so the top bar
     // stays a plain title here.
@@ -2758,15 +2780,15 @@
       '<span class="g-value">通过 SSH</span></button></div>' +
       '<div class="g-note">客户端通过 SSH 连接服务器并自动部署节点；服务器只需开放 SSH。' +
       (multiNode() ? "下面的 Agent、通用与服务设置属于当前设备「" + esc(nodeLabel(S.node)) + "」。" : "") + "</div></div>";
-    $("#main").innerHTML = '<div class="pad stack settings">' + devices +
-      '<div><div class="section-title">Agent</div><div class="group">' + agents + "</div></div>" +
+    $("#main").innerHTML = '<div class="pad stack settings">' + devices + (noDevice() ? "" :
+      '<div><div class="section-title">Agent</div><div class="group">' + agents + "</div></div>") +
 
       '<div><div class="section-title">通用</div><div class="group">' +
       '<div class="g-row"><span class="g-label">外观</span><span class="seg">' +
       ["auto", "light", "dark"].map(function (t) {
         return '<button type="button" class="' + (S.theme === t ? "on" : "") + '" data-theme-choice="' + t + '">' +
           ({ auto: "自动", dark: "深色", light: "浅色" })[t] + "</button>";
-      }).join("") + "</span></div>" +
+      }).join("") + "</span></div>" + (noDevice() ? "</div></div>" :
       '<label class="g-row"><span class="g-label">默认工作目录</span>' +
       '<input id="set-cwd" class="g-input mono" value="' + esc(cfg.default_cwd || "") + '" spellcheck="false" autocomplete="off"></label>' +
       '<label class="g-row"><span class="g-label">最大并发任务</span>' +
@@ -2787,6 +2809,7 @@
       "</dl></div></details>" +
       "</div></div>" +
 
+      "") +
       '<div><div class="section-title">账户</div><div class="group">' +
       '<details><summary><span class="g-label">修改密码</span></summary><div class="g-body">' +
       '<label class="field"><span>当前密码</span><input id="pw-old" type="password" autocomplete="current-password"></label>' +
@@ -2928,6 +2951,7 @@
         input.value = input.name === "max" ? S.config.max_concurrent : S.config.default_cwd;
       });
     }
+    if ($("#set-cwd")) {
     $("#set-cwd").name = "cwd";
     $("#set-max").name = "max";
     $("#set-cwd").addEventListener("change", function () {
@@ -2943,6 +2967,7 @@
     [$("#set-cwd"), $("#set-max")].forEach(function (el) {
       el.addEventListener("keydown", function (e) { if (e.key === "Enter") this.blur(); });
     });
+    }
 
     $("#change-pw").addEventListener("click", function () {
       var oldp = $("#pw-old").value, np = $("#pw-new").value, np2 = $("#pw-new2").value;

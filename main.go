@@ -1,4 +1,4 @@
-package main
+package console
 
 import (
 	"bufio"
@@ -23,7 +23,8 @@ const version = "1.1.1"
 
 var agents *AgentSet
 
-func main() {
+// Main is the agentconsole command line (cmd/agentconsole).
+func Main() {
 	agents = newAgentSet()
 	if len(os.Args) < 2 {
 		help()

@@ -1,4 +1,4 @@
-package main
+package console
 
 // SSH transport for devices (NodeConfig.Transport == "ssh").
 //

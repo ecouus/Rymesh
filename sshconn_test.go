@@ -1,4 +1,4 @@
-package main
+package console
 
 import (
 	"crypto/ed25519"
@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -288,3 +289,48 @@ Host prod web1
 }
 
 func mustAtoi(s string) int { n, _ := strconv.Atoi(s); return n }
+
+func TestEmbeddedHubOnly(t *testing.T) {
+	dir := t.TempDir()
+	e, err := StartEmbedded(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Stop()
+	jar := &cookieJar{}
+	c := &http.Client{Jar: jar, Transport: nodeTransport}
+	resp, err := c.Get(e.LoginURL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	resp, err = c.Get("http://127.0.0.1:" + strconv.Itoa(e.Port()) + "/api/nodes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r struct {
+		Nodes   []nodeView
+		HubOnly bool `json:"hub_only"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&r)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || !r.HubOnly || len(r.Nodes) != 0 {
+		t.Fatalf("nodes: %d %+v", resp.StatusCode, r)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "config.json")); err != nil {
+		t.Fatal("config not stored in the app dir")
+	}
+}
+
+// cookieJar is the minimum http.CookieJar for one host.
+type cookieJar struct {
+	mu sync.Mutex
+	c  []*http.Cookie
+}
+
+func (j *cookieJar) SetCookies(_ *url.URL, cs []*http.Cookie) {
+	j.mu.Lock()
+	j.c = append(j.c, cs...)
+	j.mu.Unlock()
+}
+func (j *cookieJar) Cookies(_ *url.URL) []*http.Cookie { j.mu.Lock(); defer j.mu.Unlock(); return j.c }

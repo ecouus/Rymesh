@@ -1,4 +1,4 @@
-package main
+package console
 
 // Device management on the client (hub): add a server by SSH, confirm its host
 // key, deploy or upgrade the node on it, and manage keys. These endpoints act

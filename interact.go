@@ -1,4 +1,4 @@
-package main
+package console
 
 // Interactions: everything an agent asks the user while a task runs —
 // permission prompts, questions and plan approval — in one shape shared by

@@ -151,7 +151,7 @@ unit        /etc/systemd/system/agentconsole.service
 
 ```bash
 cd /srv/rymesh
-go build -o agentconsole .
+go build -o agentconsole ./cmd/agentconsole
 install -m 0755 agentconsole /usr/local/bin/agentconsole
 agentconsole install          # 生成配置/密码、写 unit、enable、启动
 agentconsole status
@@ -285,7 +285,7 @@ agentconsole cancel <task-id>
 ```bash
 cd /srv/rymesh
 go test ./...
-go build -o agentconsole .
+go build -o agentconsole ./cmd/agentconsole
 install -m 0755 agentconsole /usr/local/bin/agentconsole
 systemctl restart agentconsole        # runner 不受影响
 ```
@@ -416,7 +416,44 @@ agentconsole node list        # 在线状态与令牌校验
 - macOS 节点：`go build` 后用 `agentconsole serve --config ~/.agentconsole/config.json` 运行
   （无 systemd，开机标识取 `kern.boottime`）。
 
-## 11. 已知限制
+## 11. 客户端即主控：Mac 与 Android（SSH 直连，免组网）
+
+主控运行在用户手里的设备上，通过 SSH 直连各台服务器；服务器上的节点只监听 `127.0.0.1`，
+除 SSH 外不暴露任何端口，也不需要 EasyTier 之类的组网。
+
+```text
+Mac：agentconsole client（127.0.0.1）   Android：App 内嵌 Go 核心 + WebView（127.0.0.1 随机端口）
+   ├─ 本机节点（Mac 上可直接跑 Agent）       └─ 只做主控（hub_only）
+   └─ /n/<设备>/api/… ──SSH direct-tcpip──▶ 服务器 127.0.0.1:8899（agentconsole node）
+```
+
+**Mac**
+
+```bash
+make build && ./agentconsole client   # 首次自动生成 ~/.agentconsole/config.json，注册 launchd，免密打开浏览器
+./agentconsole client open             # 之后随时打开
+```
+
+设置 → 设备 → 添加服务器：可从 `~/.ssh/config` 一键导入，密钥可选 `~/.ssh` 里的、ssh-agent，
+或由客户端生成（显示公钥供加入服务器 `authorized_keys`）。首次连接核对并固定主机指纹
+（若 `known_hosts` 已有记录则自动采用），指纹变化一律拒绝。随后一键部署：客户端上传对应平台
+的程序（`make dist` 产物），在服务器上以 SSH 用户身份执行 `agentconsole node setup`
+（安装到 `~/.agentconsole`，root 用 systemd、普通用户用 `systemctl --user`、macOS 用 launchd），
+已有节点则沿用其令牌原地升级，因此 Mac 与手机可以共用同一台服务器。
+
+**Android**
+
+```bash
+export ANDROID_HOME=~/Library/Android/sdk ANDROID_NDK_HOME=$ANDROID_HOME/ndk/<版本> \
+       JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+go install golang.org/x/mobile/cmd/gomobile@latest golang.org/x/mobile/cmd/gobind@latest
+make android     # → android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+App 内生成 SSH 密钥，把公钥加入服务器后即可添加服务器、部署节点（APK 内置 Linux
+amd64/arm64 节点程序）。App 退到后台时连接会断开，服务器上的 Agent 照常运行；回到前台自动重连。
+
+## 12. 已知限制
 
 1. **交互请求的存续。** 待处理的审批 / 提问由 runner 保持（控制目录里的 `req-*.json`），
    网页服务重启、浏览器关闭都不影响；超过 `permission_ttl_minutes` 未处理时，权限请求按拒绝、

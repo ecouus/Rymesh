@@ -1,4 +1,4 @@
-package main
+package console
 
 import (
 	"crypto/hmac"
@@ -55,7 +55,10 @@ type Config struct {
 	// (default: hostname). NodeToken, when set, lets a hub call this node's
 	// API with "Authorization: Bearer <token>". Nodes lists the other machines
 	// this instance can reach as a hub. See nodes.go.
-	NodeName  string       `json:"node_name,omitempty"`
+	NodeName string `json:"node_name,omitempty"`
+	// HubOnly: this console runs no agents of its own (the phone app); the
+	// device list then has no "local" entry.
+	HubOnly   bool         `json:"hub_only,omitempty"`
 	NodeToken string       `json:"node_token,omitempty"`
 	Nodes     []NodeConfig `json:"nodes,omitempty"`
 }

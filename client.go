@@ -1,4 +1,4 @@
-package main
+package console
 
 // `agentconsole client` is the entry point on a personal machine: the console
 // runs locally (loopback only), is both this machine's node and the hub for

@@ -1,4 +1,4 @@
-package main
+package console
 
 // Multi-device ("hub and nodes").
 //
@@ -116,18 +116,24 @@ func (s *Server) transportFor(n NodeConfig) http.RoundTripper {
 // that the node is reachable and accepts the token.
 func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
 	cfg := s.config()
-	out := make([]nodeView, 1+len(cfg.Nodes))
-	out[0] = nodeView{ID: localNodeID, Name: cfg.nodeName(), Local: true, Online: true, Version: version}
+	off := 1
+	if cfg.HubOnly {
+		off = 0
+	}
+	out := make([]nodeView, off+len(cfg.Nodes))
+	if !cfg.HubOnly {
+		out[0] = nodeView{ID: localNodeID, Name: cfg.nodeName(), Local: true, Online: true, Version: version}
+	}
 	var wg sync.WaitGroup
 	for i, n := range cfg.Nodes {
 		wg.Add(1)
 		go func(i int, n NodeConfig) {
 			defer wg.Done()
-			out[i+1] = probeNode(r.Context(), n, s.transportFor(n))
+			out[i+off] = probeNode(r.Context(), n, s.transportFor(n))
 		}(i, n)
 	}
 	wg.Wait()
-	writeJSON(w, 200, map[string]any{"nodes": out})
+	writeJSON(w, 200, map[string]any{"nodes": out, "hub_only": cfg.HubOnly})
 }
 
 func probeNode(ctx context.Context, n NodeConfig, rt http.RoundTripper) nodeView {

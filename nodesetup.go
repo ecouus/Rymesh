@@ -1,4 +1,4 @@
-package main
+package console
 
 // `agentconsole node setup` installs (or upgrades) a node for the current
 // user. The client runs it over SSH after uploading the binary (deploy.go),

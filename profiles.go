@@ -1,4 +1,4 @@
-package main
+package console
 
 // AgentProfile describes one permission/sandbox mode that maps directly onto a
 // flag supported by the installed CLI. IDs are what the API stores on a task.

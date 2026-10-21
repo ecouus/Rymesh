@@ -6,15 +6,20 @@ package console
 // one-time login ticket.
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -59,13 +64,16 @@ func clientMain(args []string) int {
 	case "open":
 		return openConsole(cfg)
 	case "", "start":
+		// A service left running by an older build (the app was updated, or
+		// the binary moved) is restarted onto this one.
+		exe, _ := os.Executable()
+		exe, _ = filepath.EvalSymlinks(exe)
+		if running := runningBuild(cfg.Port); running != "" && (running != buildID() || serviceUsesOther(exe)) {
+			fmt.Println("后台服务不是当前这个程序，正在切换…")
+			startNodeService(exe, *configPath, filepath.Dir(*configPath))
+			time.Sleep(time.Second)
+		}
 		if !waitHealthy(cfg.Port, 500*time.Millisecond) {
-			exe, err := os.Executable()
-			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				return 1
-			}
-			exe, _ = filepath.EvalSymlinks(exe)
 			service, warning := startNodeService(exe, *configPath, filepath.Dir(*configPath))
 			if warning != "" {
 				fmt.Fprintln(os.Stderr, "注意：", warning)
@@ -87,6 +95,70 @@ func clientMain(args []string) int {
   agentconsole client open     在浏览器中打开（免密）
   agentconsole client serve    前台运行（供服务管理器调用）`)
 	return 2
+}
+
+var (
+	buildOnce sync.Once
+	buildHash string
+)
+
+// buildID fingerprints this executable, so a client can tell whether the
+// service it finds running is the same build as itself.
+func buildID() string {
+	buildOnce.Do(func() {
+		exe, err := os.Executable()
+		if err != nil {
+			return
+		}
+		f, err := os.Open(exe)
+		if err != nil {
+			return
+		}
+		defer f.Close()
+		h := sha256.New()
+		if _, err := io.Copy(h, f); err == nil {
+			buildHash = hex.EncodeToString(h.Sum(nil))[:12]
+		}
+	})
+	return buildHash
+}
+
+// serviceUsesOther reports whether the registered service starts a different
+// program than exe — the app was moved, or another copy installed it.
+func serviceUsesOther(exe string) bool {
+	home, _ := os.UserHomeDir()
+	var file, want string
+	switch runtime.GOOS {
+	case "darwin":
+		file = filepath.Join(home, "Library", "LaunchAgents", launchdLabel+".plist")
+		want = "<string>" + xmlEsc(exe) + "</string>"
+	case "linux":
+		file = filepath.Join(home, ".config", "systemd", "user", nodeServiceName+".service")
+		if os.Geteuid() == 0 {
+			file = "/etc/systemd/system/" + nodeServiceName + ".service"
+		}
+		want = "ExecStart=" + exe + " "
+	}
+	b, err := os.ReadFile(file)
+	return err == nil && !strings.Contains(string(b), want)
+}
+
+// runningBuild reports the build of the service on port, "" if none answers.
+func runningBuild(port int) string {
+	c := &http.Client{Timeout: 2 * time.Second, Transport: nodeTransport}
+	resp, err := c.Get(fmt.Sprintf("http://127.0.0.1:%d/api/health", port))
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	var h struct {
+		Build string `json:"build"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&h)
+	if h.Build == "" {
+		return "unknown" // older than build fingerprints: always replace
+	}
+	return h.Build
 }
 
 // openConsole opens the page with the current login ticket.

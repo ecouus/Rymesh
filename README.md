@@ -427,12 +427,20 @@ Mac：agentconsole client（127.0.0.1）   Android：App 内嵌 Go 核心 + WebV
    └─ /n/<设备>/api/… ──SSH direct-tcpip──▶ 服务器 127.0.0.1:8899（agentconsole node）
 ```
 
-**Mac**
+**Mac App**
 
 ```bash
-make build && ./agentconsole client   # 首次自动生成 ~/.agentconsole/config.json，注册 launchd，免密打开浏览器
-./agentconsole client open             # 之后随时打开
+make macos       # → macos/dist/AgentConsole.app（Swift 外壳 + 通用二进制 Go 控制台，ad-hoc 签名）
 ```
+
+把 `AgentConsole.app` 拖进“应用程序”。从网上下载的副本首次打开会被 Gatekeeper 拦下：
+系统设置 → 隐私与安全性 → “仍要打开”（或 `xattr -dr com.apple.quarantine /Applications/AgentConsole.app`）。
+App 提供独立窗口、菜单栏图标（待处理数量）、Dock 角标、审批/提问的系统通知（点击直达卡片）和“登录时打开”。
+控制台本身作为 launchd 服务运行（`com.agentconsole.node`），退出 App 不影响正在运行的 Agent；
+App 启动时若发现服务是旧版本或别处的程序，会自动切换到 App 内置的这一份。
+
+不想用 App 也可以只用命令行：`agentconsole client`（首次自动配置并注册 launchd，免密打开浏览器）、
+`agentconsole client open`。
 
 设置 → 设备 → 添加服务器：可从 `~/.ssh/config` 一键导入，密钥可选 `~/.ssh` 里的、ssh-agent，
 或由客户端生成（显示公钥供加入服务器 `authorized_keys`）。首次连接核对并固定主机指纹

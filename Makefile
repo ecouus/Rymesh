@@ -4,7 +4,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
 LDFLAGS := -s -w
 
-.PHONY: build test dist android clean
+.PHONY: build test dist android macos clean
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o agentconsole ./cmd/agentconsole
@@ -30,5 +30,9 @@ android: dist
 	cp dist/agentconsole_linux_amd64 dist/agentconsole_linux_arm64 android/app/src/main/assets/dist/
 	cd android && ./gradlew assembleDebug
 
+# macOS app: Swift shell + universal Go console, ad-hoc signed.
+macos: dist
+	./macos/build-app.sh
+
 clean:
-	rm -rf dist agentconsole android/app/build android/app/libs android/app/src/main/assets/dist
+	rm -rf dist agentconsole macos/dist macos/.build android/app/build android/app/libs android/app/src/main/assets/dist

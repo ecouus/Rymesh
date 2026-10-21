@@ -22,6 +22,9 @@ type sessionRig struct {
 	sent     chan map[string]any
 	stop     chan struct{}
 	nativeID chan string
+	// answered requests are skipped by request(): their done file is written
+	// just after the reply, so it may not exist yet when the next is sought.
+	answered map[string]bool
 }
 
 func newRig(t *testing.T, agent, profile string, timeout time.Duration) (*sessionRig, agentSession) {
@@ -38,7 +41,7 @@ func newRig(t *testing.T, agent, profile string, timeout time.Duration) (*sessio
 	t.Cleanup(w.close)
 	pr, pw := io.Pipe()
 	rig := &sessionRig{t: t, control: control, sent: make(chan map[string]any, 32),
-		stop: make(chan struct{}), nativeID: make(chan string, 4)}
+		stop: make(chan struct{}), nativeID: make(chan string, 4), answered: map[string]bool{}}
 	go func() {
 		sc := bufio.NewScanner(pr)
 		for sc.Scan() {
@@ -87,7 +90,7 @@ func (r *sessionRig) request() ctlRequest {
 			if strings.HasPrefix(e.Name(), "req-") {
 				b, _ := os.ReadFile(filepath.Join(r.control, e.Name()))
 				var req ctlRequest
-				if json.Unmarshal(b, &req) == nil && req.ID != "" {
+				if json.Unmarshal(b, &req) == nil && req.ID != "" && !r.answered[req.ID] {
 					if _, err := os.Stat(filepath.Join(r.control, "done-"+req.ID+".json")); err != nil {
 						return req
 					}
@@ -101,6 +104,7 @@ func (r *sessionRig) request() ctlRequest {
 }
 
 func (r *sessionRig) answer(id string, resp ctlResponse) {
+	r.answered[id] = true
 	if err := atomicWriteJSON(filepath.Join(r.control, "resp-"+id+".json"), resp); err != nil {
 		r.t.Fatal(err)
 	}

@@ -161,6 +161,9 @@ func waitHealthy(port int, timeout time.Duration) bool {
 func startNodeService(exe, cfgPath, base string) (service, warning string) {
 	home, _ := os.UserHomeDir()
 	path := os.Getenv("PATH") // the login shell's PATH: where codex and claude live
+	// A detached instance from an earlier fallback would hold the port and
+	// make the managed service fail to bind.
+	stopDetached(base)
 	switch runtime.GOOS {
 	case "linux":
 		if os.Geteuid() == 0 {
@@ -272,14 +275,28 @@ func launchdInstall(exe, cfgPath, home, path, base string) error {
 	// only user/<uid> may. Try both.
 	var lastErr error
 	for _, domain := range []string{"gui/" + uid, "user/" + uid} {
-		_ = exec.Command("launchctl", "bootout", domain+"/"+launchdLabel).Run()
-		out, err := exec.Command("launchctl", "bootstrap", domain, plist).CombinedOutput()
-		if err == nil {
-			return nil
+		target := domain + "/" + launchdLabel
+		_ = exec.Command("launchctl", "bootout", target).Run()
+		// bootout returns before the old job is gone; bootstrapping too early
+		// fails with "Input/output error". Wait for it to disappear.
+		for i := 0; i < 50 && exec.Command("launchctl", "print", target).Run() == nil; i++ {
+			time.Sleep(100 * time.Millisecond)
 		}
-		lastErr = fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+		for attempt := 0; attempt < 3; attempt++ {
+			out, err := exec.Command("launchctl", "bootstrap", domain, plist).CombinedOutput()
+			if err == nil {
+				return nil
+			}
+			lastErr = fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+			time.Sleep(500 * time.Millisecond)
+		}
 	}
 	return lastErr
+}
+
+func isAgentConsole(pid int) bool {
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
+	return err == nil && strings.Contains(string(out), "agentconsole")
 }
 
 func xmlEsc(s string) string {
@@ -288,16 +305,27 @@ func xmlEsc(s string) string {
 
 // startDetached is the last resort: a background process in its own session,
 // replacing the one recorded in node.pid.
-func startDetached(exe, cfgPath, base string) error {
+// stopDetached stops the background process started by startDetached, if any.
+func stopDetached(base string) {
 	pidPath := filepath.Join(base, "node.pid")
-	if b, err := os.ReadFile(pidPath); err == nil {
-		if pid, _ := strconv.Atoi(strings.TrimSpace(string(b))); pid > 1 && processAlive(pid) {
-			_ = syscall.Kill(pid, syscall.SIGTERM)
-			for i := 0; i < 50 && processAlive(pid); i++ {
-				time.Sleep(100 * time.Millisecond)
-			}
+	b, err := os.ReadFile(pidPath)
+	if err != nil {
+		return
+	}
+	// A stale pid file can name an unrelated process that reused the number;
+	// only stop it if it is really agentconsole.
+	if pid, _ := strconv.Atoi(strings.TrimSpace(string(b))); pid > 1 && processAlive(pid) && isAgentConsole(pid) {
+		_ = syscall.Kill(pid, syscall.SIGTERM)
+		for i := 0; i < 50 && processAlive(pid); i++ {
+			time.Sleep(100 * time.Millisecond)
 		}
 	}
+	_ = os.Remove(pidPath)
+}
+
+func startDetached(exe, cfgPath, base string) error {
+	pidPath := filepath.Join(base, "node.pid")
+	stopDetached(base)
 	logf, err := os.OpenFile(filepath.Join(base, "log", "node.out"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return err

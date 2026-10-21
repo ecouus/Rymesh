@@ -3060,6 +3060,20 @@
     else if (S.sidebarOpen) closeSidebar();
   });
 
+  // The macOS app opens the card a notification is about.
+  window.acOpen = function (node, sid, pid) {
+    if (!S.booted) return;
+    S.focusPermission = pid || "";
+    closeSheet();
+    closeSidebar();
+    var hash = "#/session/" + encodeURIComponent(sid);
+    if (node && node !== S.node) switchNode(node, hash);
+    else if (S.session && S.session.id === sid && S.route === "chat") {
+      ensurePermissionCards();
+      if (pid) focusPermissionCard(pid);
+    } else go(hash);
+  };
+
   // "按此计划执行" on a Codex plan: run it as a new turn outside plan mode.
   document.addEventListener("click", function (e) {
     var b = e.target.closest("[data-run-plan]");

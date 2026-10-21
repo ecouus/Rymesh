@@ -293,7 +293,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{
-		"ok": true, "version": version,
+		"ok": true, "version": version, "build": buildID(),
 		"started_at": s.started.UTC().Format(time.RFC3339Nano), "time": nowRFC3339(),
 	})
 }

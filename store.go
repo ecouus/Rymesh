@@ -85,6 +85,10 @@ type Permission struct {
 	// SessionTitle is filled by PendingPermissions so a hub can name the
 	// conversation of an approval waiting on another device.
 	SessionTitle string `json:"session_title,omitempty"`
+	// Kind is permission, question or plan; Detail holds what the card needs
+	// beyond tool and input (options, questions, plan text). See interact.go.
+	Kind   string          `json:"kind"`
+	Detail json.RawMessage `json:"detail,omitempty"`
 }
 
 const (
@@ -204,7 +208,37 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("migrate: %w\n%s", err, q)
 		}
 	}
+	// Columns added after the first release. CREATE TABLE IF NOT EXISTS does
+	// not touch an existing table, so they are added one by one.
+	for _, c := range []struct{ table, column, def string }{
+		{"permissions", "kind", `TEXT NOT NULL DEFAULT 'permission'`},
+		{"permissions", "detail", `TEXT NOT NULL DEFAULT ''`},
+	} {
+		if err := s.addColumn(c.table, c.column, c.def); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func (s *Store) addColumn(table, column, def string) error {
+	rows, err := s.db.Query(`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return err
+	}
+	exists := false
+	for rows.Next() {
+		var name string
+		if rows.Scan(&name) == nil && name == column {
+			exists = true
+		}
+	}
+	rows.Close()
+	if exists {
+		return nil
+	}
+	_, err = s.db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` ` + def)
+	return err
 }
 
 func (s *Store) CreateSession(sess *Session) error {
@@ -732,28 +766,34 @@ func (s *Store) CreatePermission(p *Permission) error {
 	if len(p.Input) == 0 {
 		p.Input = json.RawMessage(`{}`)
 	}
+	if p.Kind == "" {
+		p.Kind = kindPermission
+	}
 	_, err := s.db.Exec(`INSERT OR IGNORE INTO permissions
-		(id,task_id,session_id,tool_name,input,status,created_at) VALUES (?,?,?,?,?,?,?)`,
-		p.ID, p.TaskID, p.SessionID, p.ToolName, string(p.Input), p.Status, p.CreatedAt)
+		(id,task_id,session_id,tool_name,input,status,created_at,kind,detail) VALUES (?,?,?,?,?,?,?,?,?)`,
+		p.ID, p.TaskID, p.SessionID, p.ToolName, string(p.Input), p.Status, p.CreatedAt, p.Kind, string(p.Detail))
 	return err
 }
 
 func (s *Store) GetPermission(id string) (*Permission, error) {
 	var p Permission
-	var input string
-	err := s.db.QueryRow(`SELECT id,task_id,session_id,tool_name,input,status,created_at,resolved_at,response
+	var input, detail string
+	err := s.db.QueryRow(`SELECT id,task_id,session_id,tool_name,input,status,created_at,resolved_at,response,kind,detail
 		FROM permissions WHERE id=?`, id).Scan(&p.ID, &p.TaskID, &p.SessionID, &p.ToolName,
-		&input, &p.Status, &p.CreatedAt, &p.ResolvedAt, &p.Response)
+		&input, &p.Status, &p.CreatedAt, &p.ResolvedAt, &p.Response, &p.Kind, &detail)
 	if err != nil {
 		return nil, err
 	}
 	p.Input = json.RawMessage(input)
+	if detail != "" {
+		p.Detail = json.RawMessage(detail)
+	}
 	return &p, nil
 }
 
 func (s *Store) PendingPermissions(sessionID string) ([]*Permission, error) {
 	q := `SELECT p.id,p.task_id,p.session_id,p.tool_name,p.input,p.status,p.created_at,p.resolved_at,p.response,
-		COALESCE(s.title,'') FROM permissions p LEFT JOIN sessions s ON s.id=p.session_id WHERE p.status='pending'`
+		COALESCE(s.title,''),p.kind,p.detail FROM permissions p LEFT JOIN sessions s ON s.id=p.session_id WHERE p.status='pending'`
 	var args []any
 	if sessionID != "" {
 		q += ` AND p.session_id=?`
@@ -768,19 +808,22 @@ func (s *Store) PendingPermissions(sessionID string) ([]*Permission, error) {
 	var out []*Permission
 	for rows.Next() {
 		var p Permission
-		var input string
+		var input, detail string
 		if err := rows.Scan(&p.ID, &p.TaskID, &p.SessionID, &p.ToolName, &input,
-			&p.Status, &p.CreatedAt, &p.ResolvedAt, &p.Response, &p.SessionTitle); err != nil {
+			&p.Status, &p.CreatedAt, &p.ResolvedAt, &p.Response, &p.SessionTitle, &p.Kind, &detail); err != nil {
 			return nil, err
 		}
 		p.Input = json.RawMessage(input)
+		if detail != "" {
+			p.Detail = json.RawMessage(detail)
+		}
 		out = append(out, &p)
 	}
 	return out, rows.Err()
 }
 
 func (s *Store) ResolvePermission(id, status, response string) error {
-	if status != "allowed" && status != "denied" && status != "expired" {
+	if status != "allowed" && status != "denied" && status != "expired" && status != "answered" {
 		return fmt.Errorf("invalid permission status %q", status)
 	}
 	_, err := s.db.Exec(`UPDATE permissions SET status=?, resolved_at=?, response=? WHERE id=? AND status='pending'`,

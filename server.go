@@ -1277,15 +1277,8 @@ func (s *Server) handleListPermissions(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleResolvePermission(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	var req struct {
-		Decision string `json:"decision"`
-		Message  string `json:"message"`
-	}
+	var req ctlResponse
 	if err := decodeJSON(w, r, &req); err != nil {
-		return
-	}
-	if req.Decision != "allow" && req.Decision != "deny" {
-		writeErr(w, 400, "decision 必须是 allow 或 deny")
 		return
 	}
 	p, err := s.store.GetPermission(id)
@@ -1306,38 +1299,63 @@ func (s *Server) handleResolvePermission(w http.ResponseWriter, r *http.Request)
 		writeErr(w, 409, "任务已不在等待审批")
 		return
 	}
-	resp := map[string]any{"decision": "deny", "message": req.Message}
-	status := "denied"
-	if req.Decision == "allow" {
-		resp = map[string]any{"decision": "allow"}
-		status = "allowed"
+	var detail ctlRequest
+	_ = json.Unmarshal(p.Detail, &detail)
+	label, optDetail := "", ""
+	switch p.Kind {
+	case kindQuestion:
+		if req.Decision != decisionAnswer && req.Decision != decisionSkip {
+			writeErr(w, 400, "问题只能回答或跳过")
+			return
+		}
+		if req.Decision == decisionAnswer {
+			if len(req.Answers) == 0 {
+				writeErr(w, 400, "请先回答问题")
+				return
+			}
+			label = "已回答"
+			optDetail = describeAnswers(detail.Questions, req.Answers)
+		} else {
+			label = "已跳过"
+		}
+	default:
+		if len(detail.Options) == 0 {
+			// Requests from tasks started before interactions existed offer
+			// only allow and deny.
+			detail.Options = []ctlOption{{ID: decisionAllow, Label: "允许"}, {ID: decisionDeny, Label: "拒绝"}}
+		}
+		o, ok := detail.option(req.Decision)
+		if !ok {
+			writeErr(w, 400, "无效的选项: "+req.Decision)
+			return
+		}
+		label, optDetail = o.Label, o.Detail
 	}
-	if req.Message == "" {
-		delete(resp, "message")
-	}
+	status := statusFor(req.Decision)
 	dir := filepath.Join(s.config().DataDir, "tasks", p.TaskID, "control")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	if err := atomicWriteJSON(filepath.Join(dir, "resp-"+p.ID+".json"), resp); err != nil {
+	if err := atomicWriteJSON(filepath.Join(dir, "resp-"+p.ID+".json"), req); err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	_ = s.store.ResolvePermission(p.ID, status, req.Decision+" "+req.Message)
+	_ = s.store.ResolvePermission(p.ID, status, strings.TrimSpace(req.Decision+" "+req.Message))
 	// Record the outcome in the transcript now. The ingestor only writes this
 	// event for permissions that are still pending when the agent's done file
 	// appears, which is never the case after this handler, so a reopened
 	// session showed every approved card as still waiting. Same key as the
 	// ingestor's event, so whichever lands second is ignored.
-	if b, err := json.Marshal(map[string]any{"permission_id": p.ID, "decision": status}); err == nil {
+	if b, err := json.Marshal(map[string]any{"permission_id": p.ID, "decision": status,
+		"choice": req.Decision, "label": label, "detail": optDetail, "message": req.Message}); err == nil {
 		_, _ = s.store.InsertEvent(&Event{SessionID: t.SessionID, TaskID: t.ID, TaskSeq: 1 << 42,
 			Sub: permSub(p.ID), TS: nowRFC3339(), Kind: "permission_result", Payload: b})
 	}
 	if n, _ := s.store.PendingPermissionCount(p.TaskID); n == 0 {
 		_ = s.store.SetTaskWaiting(p.TaskID, false)
 	}
-	writeJSON(w, 200, map[string]any{"ok": true, "status": status})
+	writeJSON(w, 200, map[string]any{"ok": true, "status": status, "label": label, "detail": optDetail})
 }
 
 // ---------------------------------------------------------------------------

@@ -185,7 +185,8 @@
     Bash: "终端", shell: "终端", Read: "读取", Write: "写入", Edit: "编辑",
     Glob: "查找文件", Grep: "搜索", WebFetch: "抓取网页", WebSearch: "搜索网页",
     Task: "子任务", TodoWrite: "待办", file_change: "文件变更", mcp_tool_call: "MCP",
-    NotebookEdit: "编辑笔记本", MultiEdit: "批量编辑", AskUserQuestion: "提问"
+    NotebookEdit: "编辑笔记本", MultiEdit: "批量编辑", AskUserQuestion: "提问",
+    web_search: "搜索网页", permissions: "额外权限", request_user_input: "提问", ExitPlanMode: "计划"
   };
 
   function toolLabel(name) { return TOOL_LABELS[name] || name || "工具"; }
@@ -1068,7 +1069,7 @@
       if (g.node) title = nodeLabel(g.node) + " · " + title;
       var tools = [];
       g.items.forEach(function (p) {
-        var label = toolLabel(p.tool_name);
+        var label = p.kind === "question" ? "Agent 在提问" : p.kind === "plan" ? "计划待批准" : toolLabel(p.tool_name);
         if (tools.indexOf(label) < 0) tools.push(label);
       });
       var toolText = tools.slice(0, 2).join("、") + (tools.length > 2 ? " 等" : "");
@@ -1076,7 +1077,7 @@
         '" data-approval-sid="' + esc(g.sid) +
         '" data-approval-pid="' + esc(g.first.id) + '">' +
         '<div class="approval-top"><span class="approval-dot"></span>' +
-        '<span class="approval-title">需要审批</span>' +
+        '<span class="approval-title">' + (g.first.kind === "question" ? "Agent 在提问" : g.first.kind === "plan" ? "计划待批准" : "需要审批") + "</span>" +
         (g.items.length > 1 ? '<span class="approval-count">' + g.items.length + " 项</span>" : "") +
         "</div>" +
         '<div class="approval-session">' + esc(truncate(title, 48)) + "</div>" +
@@ -1418,7 +1419,7 @@
     var pend = (S.sessionPerms || []).filter(function (p) { return p.status === "pending"; });
     if (!pend.length) { box.innerHTML = ""; return; }
     box.innerHTML = '<div class="permission-banner">' + pend.length +
-      ' 个操作等待你的批准 <button class="btn sm" type="button" data-scroll-perm="1">查看</button></div>';
+      ' 项等待你处理 <button class="btn sm" type="button" data-scroll-perm="1">查看</button></div>';
   }
   document.addEventListener("click", function (e) {
     if (e.target.closest("[data-scroll-perm]")) {
@@ -1555,7 +1556,8 @@
     });
     inner.appendChild(frag);
     Object.keys(S.permDecisions).forEach(function (id) {
-      applyPermissionResolved(inner.querySelector('[data-permission-id="' + cssAttr(id) + '"]'), S.permDecisions[id]);
+      var d = S.permDecisions[id];
+      applyPermissionResolved(inner.querySelector('[data-permission-id="' + cssAttr(id) + '"]'), d.decision, d.info);
     });
     groupTurns();
     trimDOM(inner);
@@ -1629,7 +1631,7 @@
       if (lastAssistant >= 0 && i > lastAssistant) { post.push(n); return; }
       var kind = n.getAttribute("data-kind");
       // Approval cards and hard errors stay visible; they need user action or attention.
-      if (kind === "permission" || kind === "error") pre.push(n);
+      if (kind === "permission" || kind === "error" || kind === "plan") pre.push(n);
       else fold.push(n);
     });
 
@@ -1762,15 +1764,14 @@
       }
       case "permission": {
         var existing = document.querySelector('[data-permission-id="' + cssAttr(p.permission_id) + '"]');
-        var perm = {
-          id: p.permission_id, tool_name: p.tool_name, input: p.input,
-          task_id: ev.task_id, session_id: S.session ? S.session.id : "", status: "pending"
-        };
+        var perm = permModel(p);
+        perm.task_id = ev.task_id;
+        perm.session_id = S.session ? S.session.id : "";
         // Older transcripts lack the result event. A card that already existed
         // when the session was opened and is not pending on the server has
         // been handled, even if the outcome is unknown.
         if (ev.seq <= S.loadSeq && !S.loadPending[perm.id] && !(perm.id in S.permDecisions)) {
-          S.permDecisions[perm.id] = "";
+          S.permDecisions[perm.id] = { decision: "", info: null };
         }
         if (!(perm.id in S.permDecisions)) {
           if (!S.sessionPerms.some(function (x) { return x.id === perm.id; })) S.sessionPerms.push(perm);
@@ -1783,8 +1784,17 @@
         return wrap;
       }
       case "permission_result": {
-        markPermissionResolved(p.permission_id, p.decision);
+        markPermissionResolved(p.permission_id, p.decision, p);
         return null;
+      }
+      case "plan": {
+        // Codex plan mode ends the turn with a plan; running it is a new turn
+        // outside plan mode, as with "Implement plan" in the Codex CLI.
+        wrap.innerHTML = '<div class="permission-card kind-plan codex-plan"><div class="permission-title"><span class="dot"></span>计划</div>' +
+          '<div class="plan-body bubble">' + md(p.text || "") + "</div>" +
+          '<div class="perm-opts"><button class="perm-opt primary" type="button" data-run-plan="1"><span class="perm-opt-label">按此计划执行</span>' +
+          '<span class="perm-opt-detail">切换到「自动」模式并开始执行</span></button></div></div>';
+        break;
       }
       case "status": {
         var st = p.status || "";
@@ -2002,55 +2012,150 @@
     return true;
   }
 
-  function permissionNode(perm) {
+  // An interaction is a permission prompt, a question or a plan (interact.go).
+  // Pending ones arrive from the API with their options under `detail`; ones in
+  // the transcript carry them on the event payload.
+  function permModel(src) {
+    var d = src.detail || {};
+    return {
+      id: src.id || src.permission_id, tool_name: src.tool_name, input: src.input,
+      task_id: src.task_id, session_id: src.session_id, status: src.status || "pending",
+      kind: src.kind || "permission",
+      description: src.description || d.description || "",
+      options: (src.options && src.options.length ? src.options : d.options) || null,
+      questions: (src.questions && src.questions.length ? src.questions : d.questions) || [],
+      plan: src.plan || d.plan || ""
+    };
+  }
+
+  var DEFAULT_OPTIONS = [{ id: "allow", label: "允许" }, { id: "deny", label: "拒绝" }];
+
+  function optionButton(o) {
+    var cls = o.id === "allow" || o.id === "approve_accept_edits" ? "primary" :
+      (o.id === "deny" || o.id === "deny_stop") ? "danger" : "";
+    return '<button class="perm-opt ' + cls + '" type="button" data-perm-opt="' + esc(o.id) + '">' +
+      '<span class="perm-opt-label">' + esc(o.label) + "</span>" +
+      (o.detail ? '<span class="perm-opt-detail">' + esc(o.detail) + "</span>" : "") + "</button>";
+  }
+
+  function permissionNode(src) {
+    var perm = permModel(src);
     var node = document.createElement("div");
-    node.className = "permission-card";
+    node.className = "permission-card kind-" + perm.kind;
     node.setAttribute("data-permission-id", perm.id);
-    var input = pretty(perm.input);
-    node.innerHTML =
-      '<div class="permission-title"><span class="dot"></span>需要批准：' + esc(toolLabel(perm.tool_name)) + "</div>" +
-      '<div class="permission-sub">Agent 请求执行以下操作，批准前不会执行。等待状态由服务器保存，断线或刷新后仍然有效。</div>' +
-      (input ? '<div class="permission-input"><pre>' + esc(input) + "</pre></div>" : "") +
-      '<div class="permission-actions">' +
-      '<button class="btn primary sm" type="button" data-perm="allow">允许</button>' +
-      '<button class="btn danger sm" type="button" data-perm="deny">拒绝</button></div>' +
-      '<div class="permission-reason" hidden><input type="text" placeholder="拒绝原因（可选）" maxlength="300">' +
-      '<div class="row" style="margin-top:7px;gap:7px"><button class="btn sm ghost grow" type="button" data-perm="deny-cancel">取消</button>' +
-      '<button class="btn sm danger grow" type="button" data-perm="deny-confirm">确认拒绝</button></div></div>' +
-      '<div class="permission-result" hidden></div>';
+    var body = "";
+    if (perm.kind === "question") {
+      body = '<div class="permission-title"><span class="dot"></span>Agent 在提问</div>' +
+        perm.questions.map(function (q, qi) {
+          return '<div class="q-block" data-q="' + qi + '">' +
+            (q.header ? '<div class="q-header">' + esc(q.header) + "</div>" : "") +
+            '<div class="q-text">' + esc(q.question) + (q.multi ? ' <span class="muted small">（可多选）</span>' : "") + "</div>" +
+            '<div class="q-options">' + (q.options || []).map(function (o, oi) {
+              return '<button type="button" class="q-opt" data-q-opt="' + oi + '">' +
+                '<span class="perm-opt-label">' + esc(o.label) + "</span>" +
+                (o.description ? '<span class="perm-opt-detail">' + esc(o.description) + "</span>" : "") + "</button>";
+            }).join("") + "</div>" +
+            (q.other ? '<input class="q-other" type="' + (q.secret ? "password" : "text") +
+              '" placeholder="' + ((q.options || []).length ? "其它（自己输入）" : "输入你的回答") + '" maxlength="2000">' : "") +
+            "</div>";
+        }).join("") +
+        '<div class="permission-actions"><button class="btn primary sm" type="button" data-perm="submit" disabled>提交回答</button>' +
+        '<button class="btn sm ghost" type="button" data-perm="skip">跳过</button></div>';
+    } else if (perm.kind === "plan") {
+      body = '<div class="permission-title"><span class="dot"></span>计划待批准</div>' +
+        '<div class="plan-body bubble">' + md(perm.plan || "") + "</div>" +
+        '<div class="perm-opts">' + (perm.options || []).map(optionButton).join("") + "</div>" +
+        '<div class="permission-reason" hidden><textarea rows="3" placeholder="希望怎么调整计划？（可选）" maxlength="2000"></textarea>' +
+        '<div class="row" style="margin-top:7px;gap:7px"><button class="btn sm ghost grow" type="button" data-perm="reason-cancel">取消</button>' +
+        '<button class="btn sm grow" type="button" data-perm="reason-confirm">继续规划</button></div></div>';
+    } else {
+      var input = perm.tool_name === "shell" && perm.input && perm.input.command ? perm.input.command : pretty(perm.input);
+      body = '<div class="permission-title"><span class="dot"></span>需要批准：' + esc(toolLabel(perm.tool_name)) + "</div>" +
+        (perm.description ? '<div class="permission-desc">' + esc(perm.description) + "</div>" : "") +
+        (input ? '<div class="permission-input"><pre>' + esc(input) + "</pre></div>" : "") +
+        '<div class="perm-opts">' + (perm.options || DEFAULT_OPTIONS).map(optionButton).join("") + "</div>" +
+        '<div class="permission-reason" hidden><input type="text" placeholder="拒绝原因（可选，会告诉 Agent）" maxlength="300">' +
+        '<div class="row" style="margin-top:7px;gap:7px"><button class="btn sm ghost grow" type="button" data-perm="reason-cancel">取消</button>' +
+        '<button class="btn sm danger grow" type="button" data-perm="reason-confirm">确认拒绝</button></div></div>';
+    }
+    node.innerHTML = body + '<div class="permission-result" hidden></div>';
+
+    var pendingDecision = "";
+    function answers() {
+      var out = {}, complete = true;
+      perm.questions.forEach(function (q, qi) {
+        var block = node.querySelector('[data-q="' + qi + '"]');
+        var vals = $$(".q-opt.on", block).map(function (b) { return q.options[+b.getAttribute("data-q-opt")].label; });
+        var other = block.querySelector(".q-other");
+        if (other && other.value.trim()) vals.push(other.value.trim());
+        if (!vals.length) complete = false;
+        out[q.id] = vals;
+      });
+      return complete ? out : null;
+    }
+    node.addEventListener("input", function () {
+      var sub = node.querySelector('[data-perm="submit"]');
+      if (sub) sub.disabled = !answers();
+    });
     node.addEventListener("click", function (e) {
+      var qo = e.target.closest("[data-q-opt]");
+      if (qo) {
+        var qi = +qo.closest("[data-q]").getAttribute("data-q");
+        if (!perm.questions[qi].multi) $$(".q-opt", qo.parentNode).forEach(function (b) { if (b !== qo) b.classList.remove("on"); });
+        qo.classList.toggle("on");
+        node.querySelector('[data-perm="submit"]').disabled = !answers();
+        return;
+      }
+      var opt = e.target.closest("[data-perm-opt]");
+      if (opt) {
+        var id = opt.getAttribute("data-perm-opt");
+        // Denying and revising a plan can carry a note for the agent.
+        if (id === "deny" || id === "revise") {
+          pendingDecision = id;
+          node.querySelector(".permission-reason").hidden = false;
+          var f = node.querySelector(".permission-reason input, .permission-reason textarea");
+          if (f) f.focus();
+          return;
+        }
+        resolvePermission(perm, { decision: id }, node);
+        return;
+      }
       var b = e.target.closest("[data-perm]");
       if (!b) return;
       var act = b.getAttribute("data-perm");
-      if (act === "allow") resolvePermission(perm.id, "allow", "", node);
-      else if (act === "deny") {
-        node.querySelector(".permission-reason").hidden = false;
-      } else if (act === "deny-cancel") {
-        node.querySelector(".permission-reason").hidden = true;
-      } else if (act === "deny-confirm") {
-        var reason = node.querySelector(".permission-reason input").value.trim();
-        resolvePermission(perm.id, "deny", reason, node);
-      }
+      if (act === "reason-cancel") node.querySelector(".permission-reason").hidden = true;
+      else if (act === "reason-confirm") {
+        var field = node.querySelector(".permission-reason input, .permission-reason textarea");
+        resolvePermission(perm, { decision: pendingDecision, message: field ? field.value.trim() : "" }, node);
+      } else if (act === "submit") {
+        var a = answers();
+        if (a) resolvePermission(perm, { decision: "answer", answers: a }, node);
+      } else if (act === "skip") resolvePermission(perm, { decision: "skip" }, node);
     });
     return node;
   }
 
-  function resolvePermission(id, decision, message, node) {
+  function resolvePermission(perm, body, node) {
     $$("button", node).forEach(function (b) { b.disabled = true; });
-    api("/api/permissions/" + encodeURIComponent(id), {
-      method: "POST", body: { decision: decision, message: message }
-    }).then(function () {
-      var label = decision === "allow" ? "已允许" : "已拒绝";
-      markPermissionResolved(id, decision === "allow" ? "allowed" : "denied");
-      S.sessionPerms = S.sessionPerms.filter(function (p) { return p.id !== id; });
-      S.perms = S.perms.filter(function (p) { return p.id !== id; });
-      renderPermissionBanner();
-      renderApprovalNotifications();
-      toast(label);
+    api("/api/permissions/" + encodeURIComponent(perm.id), { method: "POST", body: body }).then(function (r) {
+      markPermissionResolved(perm.id, r.status, { label: r.label, detail: r.detail });
+      // Approving a plan also decides how the next messages run, as in the CLI.
+      if (body.decision === "approve_accept_edits") setProfile("acceptEdits");
+      else if (body.decision === "approve_default") setProfile("manual");
+      toast(r.label || "已处理");
     }).catch(function (e) {
       toast(e.message, true);
       $$("button", node).forEach(function (b) { b.disabled = false; });
+      var sub = node.querySelector('[data-perm="submit"]');
+      if (sub) node.dispatchEvent(new Event("input"));
     });
+  }
+
+  function setProfile(id) {
+    var sel = $("#profile-select");
+    if (!sel || !profileMeta(currentAgentName(), id)) return;
+    sel.value = id;
+    sel.dispatchEvent(new Event("change"));
   }
 
   // Decisions are remembered as well as applied: on a full load the result
@@ -2058,18 +2163,19 @@
   // document lookup cannot find it. appendEvents re-applies them once the
   // fragment is in the page; before, every resolved card in a reopened session
   // still offered 允许/拒绝 and clicking it failed with "already handled".
-  function markPermissionResolved(id, decision) {
-    S.permDecisions[id] = decision;
-    applyPermissionResolved(document.querySelector('[data-permission-id="' + cssAttr(id) + '"]'), decision);
+  function markPermissionResolved(id, decision, info) {
+    S.permDecisions[id] = { decision: decision, info: info || null };
+    applyPermissionResolved(document.querySelector('[data-permission-id="' + cssAttr(id) + '"]'), decision, info);
     S.sessionPerms = S.sessionPerms.filter(function (p) { return p.id !== id; });
     S.perms = S.perms.filter(function (p) { return p.id !== id; });
     renderPermissionBanner();
     renderApprovalNotifications();
   }
 
-  function applyPermissionResolved(node, decision) {
+  function applyPermissionResolved(node, decision, info) {
     if (node && !node.classList.contains("resolved")) {
       node.classList.add("resolved");
+      $$(".permission-actions, .perm-opts, .q-options, .q-other", node).forEach(function (el) { el.remove(); });
       var acts = node.querySelector(".permission-actions");
       if (acts) acts.remove();
       var reason = node.querySelector(".permission-reason");
@@ -2077,8 +2183,13 @@
       var res = node.querySelector(".permission-result");
       if (res) {
         res.hidden = false;
-        res.textContent = decision === "allowed" || decision === "allow" ? "✓ 已允许" :
-          decision ? "✕ 已拒绝" : "已处理";
+        var ok = decision === "allowed" || decision === "allow" || decision === "answered";
+        if (info && info.label) {
+          res.textContent = (ok ? "✓ " : "✕ ") + info.label + (info.detail ? " · " + info.detail : "");
+        } else {
+          res.textContent = decision === "allowed" || decision === "allow" ? "✓ 已允许" :
+            decision === "answered" ? "✓ 已回答" : decision === "expired" ? "已超时" : decision ? "✕ 已拒绝" : "已处理";
+        }
       }
     }
   }
@@ -2709,6 +2820,16 @@
     if (!$("#profile-menu").hidden) closeProfileMenu();
     else if (!$("#sheet").hidden) closeSheet();
     else if (S.sidebarOpen) closeSidebar();
+  });
+
+  // "按此计划执行" on a Codex plan: run it as a new turn outside plan mode.
+  document.addEventListener("click", function (e) {
+    var b = e.target.closest("[data-run-plan]");
+    if (!b || !S.session) return;
+    if (currentAgentName() === "codex") setProfile("workspace-write");
+    $("#prompt").value = "请按上面的计划执行。";
+    b.disabled = true;
+    sendMessage();
   });
 
   // Global click for code copy buttons.

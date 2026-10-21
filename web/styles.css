@@ -422,6 +422,48 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
   white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; max-height: 220px; overflow-y: auto;
 }
 .permission-actions { display: flex; gap: 8px; margin-top: 10px; }
+/* Interaction choices are a vertical menu, like the CLI's numbered prompt. */
+.permission-desc { font-size: 13px; color: var(--text-dim); margin-top: 6px; line-height: 1.55; }
+.perm-opts { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.perm-opt, .q-opt {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 1px; width: 100%; text-align: left;
+  border: 1px solid var(--line); background: var(--bg); color: var(--text); border-radius: 10px; padding: 9px 12px;
+  transition: background .12s, border-color .12s;
+}
+.perm-opt-label { font-size: 13.5px; font-weight: 500; }
+.perm-opt-detail { font-size: 11.5px; color: var(--text-faint); line-height: 1.5; word-break: break-all; }
+.perm-opt.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.perm-opt.primary .perm-opt-detail { color: color-mix(in srgb, var(--accent-ink) 70%, transparent); }
+.perm-opt.danger { color: var(--red); }
+.perm-opt:active, .q-opt:active { opacity: .7; }
+@media (hover: hover) { .perm-opt:not(.primary):hover, .q-opt:hover { background: var(--hover); } }
+.perm-opt:disabled { opacity: .45; }
+.q-block + .q-block { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
+.q-block { margin-top: 10px; }
+.q-header { display: inline-block; font-size: 11px; color: var(--text-dim); background: var(--hover); border-radius: 5px; padding: 1px 7px; margin-bottom: 5px; }
+.q-text { font-size: 14px; line-height: 1.55; margin-bottom: 8px; }
+.q-options { display: flex; flex-direction: column; gap: 6px; }
+.q-opt.on { border-color: var(--text); box-shadow: inset 0 0 0 1px var(--text); }
+.q-other {
+  width: 100%; margin-top: 6px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--bg-input); outline: none; font-size: 13.5px;
+}
+.q-other:focus { border-color: color-mix(in srgb, var(--text) 35%, var(--line)); }
+.permission-reason textarea {
+  width: 100%; padding: 9px 12px; background: var(--bg-input); border: 1px solid var(--line);
+  border-radius: 10px; font-size: 13px; outline: none; resize: vertical;
+}
+.plan-body { margin-top: 10px; padding: 10px 14px; border-radius: 10px; background: var(--bg-soft);
+  max-height: 46vh; overflow-y: auto; font-size: 14px; line-height: 1.7; }
+.plan-body p { margin: 0 0 10px; }
+.plan-body ul, .plan-body ol { margin: 0 0 10px; padding-left: 22px; }
+.plan-body h1, .plan-body h2, .plan-body h3, .plan-body h4 { margin: 14px 0 6px; font-size: 15px; }
+.plan-body :not(pre) > code { background: var(--hover); padding: 1px 5px; border-radius: 5px; font-size: .88em; }
+.plan-body > :first-child { margin-top: 0; }
+.plan-body > :last-child { margin-bottom: 0; }
+.permission-card.kind-question .dot, .permission-card.kind-plan .dot { background: var(--blue); }
+.permission-card.kind-question, .permission-card.kind-plan { border-color: color-mix(in srgb, var(--blue) 55%, var(--line)); }
+.permission-card.codex-plan { border-color: var(--line); }
 .permission-actions .btn { flex: 1; }
 .permission-reason { margin-top: 8px; }
 .permission-reason input {

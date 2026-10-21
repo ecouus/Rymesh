@@ -292,13 +292,13 @@ func runTaskMain(taskDir string) int {
 	writeState(map[string]any{"status": StatusRunning, "child_pid": childPID})
 	w.state(map[string]any{"status": StatusRunning, "child_pid": childPID, "native_id": spec.NativeID})
 
-	go func() {
-		_, _ = io.WriteString(stdin, spec.Prompt)
-		if !strings.HasSuffix(spec.Prompt, "\n") {
-			_, _ = io.WriteString(stdin, "\n")
-		}
-		_ = stdin.Close()
-	}()
+	// stop releases requests still waiting for the user once the agent exits.
+	stop := make(chan struct{})
+	sess := newAgentSession(spec, control, w, stdin, stop, func(id string) {
+		w.state(map[string]any{"native_id": id})
+		writeState(map[string]any{"status": StatusRunning, "child_pid": childPID, "native_id": id})
+	})
+	go sess.start()
 
 	var cancel atomic.Bool
 	sigCh := make(chan os.Signal, 4)
@@ -334,16 +334,7 @@ func runTaskMain(taskDir string) int {
 	go func() {
 		defer wg.Done()
 		for line := range readLines(stdout, 8<<20) {
-			var raw any
-			if err := json.Unmarshal(line, &raw); err != nil {
-				w.appendEnvelope(map[string]any{"stream": "text", "text": string(line)})
-				continue
-			}
-			w.append(raw)
-			if id := extractNativeID(raw); id != "" {
-				w.state(map[string]any{"native_id": id})
-				writeState(map[string]any{"status": StatusRunning, "child_pid": childPID, "native_id": id})
-			}
+			sess.onLine(line)
 		}
 	}()
 	go func() {
@@ -362,6 +353,7 @@ func runTaskMain(taskDir string) int {
 		close(waitDone)
 	}()
 	err = cmd.Wait()
+	close(stop)
 	select {
 	case <-waitDone:
 	case <-time.After(2 * time.Second):
@@ -402,6 +394,23 @@ func runTaskMain(taskDir string) int {
 	case code != 0:
 		reason = "failed"
 		status = StatusFailed
+	}
+	// A protocol that reports its own outcome (Codex's turn/completed) is more
+	// precise than the exit code: app-server exits 0 even after a failed turn.
+	if st, msg, ok := sess.outcome(); ok && reason != "cancelled" {
+		status = st
+		switch st {
+		case StatusCompleted:
+			reason, code = "exited", 0
+		case StatusCancelled:
+			reason = "cancelled"
+		default:
+			reason = "failed"
+			if code == 0 {
+				code = 1
+			}
+			w.notice(msg)
+		}
 	}
 	exit := map[string]any{
 		"code": code, "signal": signalName, "reason": reason,
@@ -482,43 +491,22 @@ func buildAgentCommand(spec TaskSpec, controlDir string) (*exec.Cmd, error) {
 	}
 	switch spec.Agent {
 	case "codex":
-		sandbox := profile
-		approval := `approval_policy="never"`
-		if sandbox == "danger-full-access" {
-			// Non-interactive exec refuses danger-full-access while approval is
-			// "never"; the selected mode only takes effect with on-request. No
-			// approval channel exists, so this is exactly the user-chosen mode.
-			approval = `approval_policy="on-request"`
-		}
-		if spec.IsNew || spec.NativeID == "" {
-			args := []string{"exec", "--json", "--skip-git-repo-check", "-C", spec.Cwd,
-				"-s", sandbox, "-c", approval, "-"}
-			return exec.Command(agent.Binary, args...), nil
-		}
-		args := []string{"exec", "resume", "--all", "--json", "--skip-git-repo-check",
-			"-c", fmt.Sprintf(`sandbox_mode=%q`, sandbox),
-			"-c", approval,
-			spec.NativeID, "-"}
-		return exec.Command(agent.Binary, args...), nil
+		// Sandbox, approval policy and plan mode travel in the app-server
+		// thread and turn requests (codexrpc.go), not on the command line.
+		return exec.Command(agent.Binary, "app-server"), nil
 	case "claude":
-		exe, err := os.Executable()
-		if err != nil {
-			return nil, err
+		// stream-json input plus the stdio permission tool is the Agent SDK's
+		// control protocol: permission prompts, AskUserQuestion and plan
+		// approval arrive as can_use_tool requests (agent_claude.go).
+		mode := profile
+		if mode == "manual" {
+			mode = "default"
 		}
-		mcp := map[string]any{"mcpServers": map[string]any{
-			"agentconsole": map[string]any{
-				"command": exe,
-				"args": []string{"mcp-permission", "--dir", controlDir,
-					"--timeout", fmt.Sprintf("%d", spec.PermTimeout)},
-			},
-		}}
-		mcpJSON, _ := json.Marshal(mcp)
 		args := []string{"-p",
+			"--input-format", "stream-json",
 			"--output-format", "stream-json", "--verbose",
-			"--permission-mode", profile,
-			"--permission-prompts", "host",
-			"--mcp-config", string(mcpJSON),
-			"--permission-prompt-tool", "mcp__agentconsole__approve",
+			"--permission-mode", mode,
+			"--permission-prompt-tool", "stdio",
 		}
 		if profile == "bypassPermissions" {
 			args = append(args, "--dangerously-skip-permissions")

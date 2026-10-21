@@ -666,51 +666,26 @@ func TestBuildAgentCommand(t *testing.T) {
 	}}
 	defer func() { agents = old }()
 
+	// Codex always runs app-server; the mode travels in the JSON-RPC requests.
 	spec := TaskSpec{Agent: "codex", Cwd: "/tmp/work", IsNew: true, Profile: "read-only"}
 	cmd, err := buildAgentCommand(spec, "/tmp/control")
 	if err != nil {
 		t.Fatal(err)
 	}
-	args := strings.Join(cmd.Args, " ")
-	for _, want := range []string{"exec --json --skip-git-repo-check -C /tmp/work -s read-only", "approval_policy=", " -"} {
-		if !strings.Contains(args, want) {
-			t.Fatalf("codex new args %q missing %q", args, want)
+	if args := strings.Join(cmd.Args[1:], " "); args != "app-server" {
+		t.Fatalf("codex args = %q, want app-server", args)
+	}
+	for profile, want := range map[string][3]string{
+		"read-only":          {"read-only", "on-request", "default"},
+		"workspace-write":    {"workspace-write", "on-request", "default"},
+		"plan":               {"read-only", "on-request", "plan"},
+		"danger-full-access": {"danger-full-access", "never", "default"},
+		"workspace":          {"read-only", "on-request", "default"}, // unknown falls back
+	} {
+		sb, ap, mode := codexModes(profile)
+		if [3]string{sb, ap, mode} != want {
+			t.Fatalf("codexModes(%s) = %s %s %s", profile, sb, ap, mode)
 		}
-	}
-	if strings.Contains(args, "danger-full-access") {
-		t.Fatal("codex command must never use danger-full-access")
-	}
-
-	spec.IsNew = false
-	spec.NativeID = "thread-123"
-	spec.Profile = "workspace-write"
-	cmd, _ = buildAgentCommand(spec, "/tmp/control")
-	args = strings.Join(cmd.Args, " ")
-	for _, want := range []string{"exec resume", "--all", "sandbox_mode=\"workspace-write\"", "thread-123"} {
-		if !strings.Contains(args, want) {
-			t.Fatalf("codex resume args %q missing %q", args, want)
-		}
-	}
-
-	// The dangerous mode is an explicit user choice and must map onto the CLI.
-	spec.Profile = "danger-full-access"
-	spec.IsNew = true
-	cmd, _ = buildAgentCommand(spec, "/tmp/control")
-	args = strings.Join(cmd.Args, " ")
-	if !strings.Contains(args, "-s danger-full-access") {
-		t.Fatalf("codex danger mode not passed: %q", args)
-	}
-	if !strings.Contains(args, `approval_policy="on-request"`) {
-		t.Fatalf("codex danger mode needs on-request approval policy: %q", args)
-	}
-
-	// Unknown/legacy profiles fall back to the agent default instead of being
-	// forwarded verbatim to the CLI.
-	spec.Profile = "workspace"
-	cmd, _ = buildAgentCommand(spec, "/tmp/control")
-	args = strings.Join(cmd.Args, " ")
-	if !strings.Contains(args, "-s read-only") {
-		t.Fatalf("legacy profile should fall back to read-only: %q", args)
 	}
 
 	cspec := TaskSpec{Agent: "claude", Cwd: "/tmp/work", IsNew: true, NativeID: "11111111-2222-4333-8444-555555555555",
@@ -719,10 +694,10 @@ func TestBuildAgentCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	args = strings.Join(cmd.Args, " ")
-	for _, want := range []string{"--output-format stream-json", "--permission-prompt-tool mcp__agentconsole__approve",
-		"--permission-mode manual", "--session-id 11111111-2222-4333-8444-555555555555",
-		"mcp-permission", "/tmp/control"} {
+	args := strings.Join(cmd.Args, " ")
+	for _, want := range []string{"--input-format stream-json", "--output-format stream-json",
+		"--permission-prompt-tool stdio", "--permission-mode default",
+		"--session-id 11111111-2222-4333-8444-555555555555"} {
 		if !strings.Contains(args, want) {
 			t.Fatalf("claude new args %q missing %q", args, want)
 		}

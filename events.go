@@ -334,7 +334,7 @@ func (ing *Ingestor) skipOversizedLine(taskID string, offset, size int64) {
 	if err != nil {
 		return
 	}
-	ing.insert(t, 1<<41+offset, 0, nowRFC3339(), "notice", map[string]any{
+	ing.insert(t, 1<<40+offset, 0, nowRFC3339(), "notice", map[string]any{
 		"text": fmt.Sprintf("一条事件过大（%d 字节），已跳过显示；Agent 输出不受影响。", size),
 	})
 }
@@ -549,7 +549,7 @@ func (ing *Ingestor) scanControl(taskID string) {
 			if err != nil {
 				continue
 			}
-			var req mcpPermReq
+			var req ctlRequest
 			if json.Unmarshal(b, &req) != nil || req.ID == "" {
 				continue
 			}
@@ -559,7 +559,7 @@ func (ing *Ingestor) scanControl(taskID string) {
 			p := &Permission{
 				ID: req.ID, TaskID: taskID, SessionID: t.SessionID,
 				ToolName: req.ToolName, Input: req.Input, Status: "pending",
-				CreatedAt: req.CreatedAt,
+				CreatedAt: req.CreatedAt, Kind: req.kind(), Detail: req.detail(),
 			}
 			if p.CreatedAt == "" {
 				p.CreatedAt = nowRFC3339()
@@ -572,6 +572,8 @@ func (ing *Ingestor) scanControl(taskID string) {
 				"permission", map[string]any{
 					"permission_id": req.ID, "tool_name": req.ToolName,
 					"input": req.Input, "tool_use_id": req.ToolUseID,
+					"kind": req.kind(), "description": req.Description,
+					"options": req.Options, "questions": req.Questions, "plan": req.Plan,
 				})
 			_ = ing.store.SetTaskWaiting(taskID, true)
 		}
@@ -588,10 +590,11 @@ func (ing *Ingestor) scanControl(taskID string) {
 			}
 			_ = json.Unmarshal(b, &d)
 			status := "denied"
-			if d.Decision == "allowed" || d.Decision == "allow" {
+			switch d.Decision {
+			case "allowed", "allow":
 				status = "allowed"
-			} else if d.Decision == "expired" {
-				status = "expired"
+			case "answered", "expired":
+				status = d.Decision
 			}
 			_ = ing.store.ResolvePermission(id, status, d.Decision+" "+d.Message)
 			ing.insert(t, 1<<42, permSub(id), nowRFC3339(),
@@ -622,6 +625,12 @@ func normalizeCodex(raw any) []normEvent {
 	m, ok := raw.(map[string]any)
 	if !ok {
 		return []normEvent{{Kind: "raw", Payload: raw}}
+	}
+	// Tasks run through app-server log JSON-RPC notifications; older task
+	// logs hold `codex exec --json` events and are still read below.
+	if method := str(m["method"]); method != "" {
+		params, _ := m["params"].(map[string]any)
+		return normalizeCodexRPC(method, params)
 	}
 	typ, _ := m["type"].(string)
 	switch typ {
@@ -685,6 +694,126 @@ func normalizeCodex(raw any) []normEvent {
 		return []normEvent{{Kind: "error", Payload: map[string]any{"text": msg}}}
 	}
 	return nil
+}
+
+// normalizeCodexRPC converts app-server notifications into the console's event
+// kinds, reusing the names the exec-format path produces so the page renders
+// both the same way.
+func normalizeCodexRPC(method string, params map[string]any) []normEvent {
+	switch method {
+	case "item/started", "item/completed":
+		item, _ := params["item"].(map[string]any)
+		if item == nil {
+			return nil
+		}
+		done := method == "item/completed"
+		id := str(item["id"])
+		switch str(item["type"]) {
+		case "agentMessage":
+			if txt := str(item["text"]); txt != "" && done {
+				return []normEvent{{Kind: "assistant", Payload: map[string]any{"text": txt}}}
+			}
+		case "reasoning":
+			if !done {
+				return nil
+			}
+			txt := strings.TrimSpace(joinStrings(item["summary"]) + "\n\n" + joinStrings(item["content"]))
+			if txt != "" {
+				return []normEvent{{Kind: "thinking", Payload: map[string]any{"text": txt}}}
+			}
+		case "plan":
+			if txt := str(item["text"]); txt != "" && done {
+				return []normEvent{{Kind: "plan", Payload: map[string]any{"text": txt}}}
+			}
+		case "commandExecution":
+			p := map[string]any{"id": id, "name": "shell", "status": codexItemStatus(item, done),
+				"input": map[string]any{"command": item["command"], "cwd": item["cwd"]}}
+			if done {
+				p["output"], p["exit_code"] = item["aggregatedOutput"], item["exitCode"]
+			}
+			return []normEvent{{Kind: "tool", Payload: p}}
+		case "fileChange":
+			p := map[string]any{"id": id, "name": "file_change", "status": codexItemStatus(item, done),
+				"input": map[string]any{"changes": item["changes"]}}
+			if done {
+				p["output"] = codexDiffs(item["changes"])
+			}
+			return []normEvent{{Kind: "tool", Payload: p}}
+		case "mcpToolCall":
+			p := map[string]any{"id": id, "name": str(item["server"]) + "." + str(item["tool"]),
+				"status": codexItemStatus(item, done), "input": item["arguments"]}
+			if done {
+				out := item["result"]
+				if e := item["error"]; e != nil {
+					out = e
+				}
+				p["output"] = out
+			}
+			return []normEvent{{Kind: "tool", Payload: p}}
+		case "webSearch":
+			return []normEvent{{Kind: "tool", Payload: map[string]any{"id": id, "name": "web_search",
+				"status": codexItemStatus(item, done), "input": map[string]any{"query": item["query"]}}}}
+		case "contextCompaction":
+			if done {
+				return []normEvent{{Kind: "notice", Payload: map[string]any{"text": "上下文已压缩"}}}
+			}
+		}
+	case "agentconsole/usage":
+		u, _ := params["usage"].(map[string]any)
+		return []normEvent{{Kind: "usage", Payload: map[string]any{"agent": "codex", "usage": map[string]any{
+			"input_tokens": u["inputTokens"], "cached_input_tokens": u["cachedInputTokens"],
+			"output_tokens": u["outputTokens"]}}}}
+	case "turn/completed":
+		turn, _ := params["turn"].(map[string]any)
+		if e, _ := turn["error"].(map[string]any); e != nil && str(e["message"]) != "" {
+			return []normEvent{{Kind: "error", Payload: map[string]any{"text": str(e["message"])}}}
+		}
+	case "error":
+		e, _ := params["error"].(map[string]any)
+		msg := orDefault(str(e["message"]), "Codex 错误")
+		if b, _ := params["willRetry"].(bool); b {
+			return []normEvent{{Kind: "notice", Payload: map[string]any{"text": msg + "（正在重试）"}}}
+		}
+		return []normEvent{{Kind: "error", Payload: map[string]any{"text": msg}}}
+	}
+	return nil
+}
+
+func codexItemStatus(item map[string]any, done bool) string {
+	switch s := str(item["status"]); s {
+	case "inProgress", "":
+		if done {
+			return "completed"
+		}
+		return "running"
+	case "declined":
+		return "failed"
+	default:
+		return s
+	}
+}
+
+func joinStrings(v any) string {
+	arr, _ := v.([]any)
+	var parts []string
+	for _, x := range arr {
+		if s := str(x); s != "" {
+			parts = append(parts, s)
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// codexDiffs renders a fileChange item's changes as one unified diff text.
+func codexDiffs(v any) string {
+	arr, _ := v.([]any)
+	var b strings.Builder
+	for _, x := range arr {
+		ch, _ := x.(map[string]any)
+		kind, _ := ch["kind"].(map[string]any)
+		fmt.Fprintf(&b, "%s %s\n%s\n", str(kind["type"]), str(ch["path"]), str(ch["diff"]))
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func normalizeClaude(raw any) []normEvent {
@@ -755,10 +884,6 @@ func normalizeClaude(raw any) []normEvent {
 			"num_turns": m["num_turns"],
 		}
 		return []normEvent{{Kind: "result", Payload: p}}
-	case "control_request":
-		return []normEvent{{Kind: "notice", Payload: map[string]any{
-			"text": "Agent 请求权限（若出现此提示说明 MCP 审批通道异常）", "raw": m,
-		}}}
 	}
 	return nil
 }

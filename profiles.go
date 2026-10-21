@@ -9,10 +9,13 @@ type AgentProfile struct {
 	Dangerous bool   `json:"dangerous,omitempty"`
 }
 
+// Codex modes mirror the CLI's: the sandbox decides what runs without asking,
+// and anything beyond it is sent to the page for approval (codexModes).
 var codexProfiles = []AgentProfile{
-	{ID: "read-only", Label: "只读沙箱", Detail: "可读取文件，不能写入或修改系统"},
-	{ID: "workspace-write", Label: "工作区可写", Detail: "可在工作目录内写入，工作目录外仍受限"},
-	{ID: "danger-full-access", Label: "危险：完全访问", Detail: "关闭沙箱，可读写整台服务器", Dangerous: true},
+	{ID: "read-only", Label: "只读", Detail: "可读取文件；写入或联网等操作逐次请求批准"},
+	{ID: "workspace-write", Label: "自动", Detail: "可在工作目录内读写；超出范围的操作请求批准"},
+	{ID: "plan", Label: "计划模式", Detail: "只读探索并提问澄清，产出计划后再决定是否执行"},
+	{ID: "danger-full-access", Label: "危险：完全访问", Detail: "关闭沙箱且不再请求批准，可读写整台机器", Dangerous: true},
 }
 
 var claudeProfiles = []AgentProfile{

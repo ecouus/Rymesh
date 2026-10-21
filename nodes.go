@@ -34,11 +34,22 @@ import (
 	"time"
 )
 
+// NodeConfig is one remote device. A direct device is reached at URL (a LAN
+// or VPN address); an SSH device through an SSH connection to its loopback
+// port (sshconn.go), with HostKey pinned on first contact.
 type NodeConfig struct {
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	URL   string `json:"url"`
-	Token string `json:"token"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	URL        string `json:"url,omitempty"`
+	Token      string `json:"token"`
+	Transport  string `json:"transport,omitempty"` // "" (direct) or "ssh"
+	SSHHost    string `json:"ssh_host,omitempty"`
+	SSHPort    int    `json:"ssh_port,omitempty"`
+	SSHUser    string `json:"ssh_user,omitempty"`
+	KeyPath    string `json:"key_path,omitempty"`
+	UseAgent   bool   `json:"use_agent,omitempty"`
+	HostKey    string `json:"host_key,omitempty"`
+	RemotePort int    `json:"remote_port,omitempty"`
 }
 
 // localNodeID names this instance in the device list; it is never proxied.
@@ -82,13 +93,23 @@ var nodeTransport = &http.Transport{
 }
 
 type nodeView struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Local   bool   `json:"local"`
-	Online  bool   `json:"online"`
-	Version string `json:"version,omitempty"`
-	URL     string `json:"url,omitempty"`
-	Error   string `json:"error,omitempty"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Local     bool   `json:"local"`
+	Online    bool   `json:"online"`
+	Version   string `json:"version,omitempty"`
+	URL       string `json:"url,omitempty"`
+	Transport string `json:"transport,omitempty"`
+	Target    string `json:"target,omitempty"` // user@host for SSH devices
+	Error     string `json:"error,omitempty"`
+}
+
+// transportFor picks how the relay reaches a device.
+func (s *Server) transportFor(n NodeConfig) http.RoundTripper {
+	if n.Transport == transportSSH {
+		return s.ssh.transport(n)
+	}
+	return nodeTransport
 }
 
 // handleNodes lists this machine and every configured node with a live check
@@ -102,26 +123,40 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
 		wg.Add(1)
 		go func(i int, n NodeConfig) {
 			defer wg.Done()
-			out[i+1] = probeNode(r.Context(), n)
+			out[i+1] = probeNode(r.Context(), n, s.transportFor(n))
 		}(i, n)
 	}
 	wg.Wait()
 	writeJSON(w, 200, map[string]any{"nodes": out})
 }
 
-func probeNode(ctx context.Context, n NodeConfig) nodeView {
-	v := nodeView{ID: n.ID, Name: n.Name, URL: n.URL}
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+func probeNode(ctx context.Context, n NodeConfig, rt http.RoundTripper) nodeView {
+	v := nodeView{ID: n.ID, Name: n.Name, URL: n.URL, Transport: n.Transport}
+	if n.Transport == transportSSH {
+		v.URL, v.Target = "", n.SSHUser+"@"+n.SSHHost
+	}
+	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "GET", strings.TrimRight(n.URL, "/")+"/api/nodes/self", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", strings.TrimRight(n.baseURL(), "/")+"/api/nodes/self", nil)
 	if err != nil {
 		v.Error = err.Error()
 		return v
 	}
 	req.Header.Set("Authorization", "Bearer "+n.Token)
-	resp, err := (&http.Client{Transport: nodeTransport}).Do(req)
+	resp, err := (&http.Client{Transport: rt}).Do(req)
 	if err != nil {
 		v.Error = "无法连接"
+		var mm *hostKeyMismatchError
+		switch {
+		case errors.As(err, &mm):
+			v.Error = "主机密钥不一致"
+		case errors.Is(err, errHostKeyUnknown):
+			v.Error = "未信任主机密钥"
+		case strings.Contains(err.Error(), "节点程序未在"):
+			v.Error = "节点未运行"
+		case strings.Contains(err.Error(), "unable to authenticate"):
+			v.Error = "SSH 认证失败"
+		}
 		return v
 	}
 	defer resp.Body.Close()
@@ -167,7 +202,7 @@ func (s *Server) handleNodeProxy(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 403, "该操作只能在当前控制台执行")
 		return
 	}
-	target, err := url.Parse(n.URL)
+	target, err := url.Parse(n.baseURL())
 	if err != nil {
 		writeErr(w, 500, "设备地址无效")
 		return
@@ -187,7 +222,7 @@ func (s *Server) handleNodeProxy(w http.ResponseWriter, r *http.Request) {
 			// would otherwise be compressed twice.
 			pr.Out.Header.Del("Accept-Encoding")
 		},
-		Transport:     nodeTransport,
+		Transport:     s.transportFor(n),
 		FlushInterval: -1, // SSE: forward every event as soon as it arrives
 		ModifyResponse: func(resp *http.Response) error {
 			// A 401 from the node means the hub's token is wrong. Passed through,
@@ -219,6 +254,13 @@ func (s *Server) handleNodeProxy(w http.ResponseWriter, r *http.Request) {
 	proxy.ServeHTTP(w, r)
 }
 
+func cliTransport(n NodeConfig) http.RoundTripper {
+	if n.Transport == transportSSH {
+		return newSSHPool().transport(n)
+	}
+	return nodeTransport
+}
+
 // ---------------------------------------------------------------------------
 // CLI: agentconsole node token|add|remove|list|name
 // ---------------------------------------------------------------------------
@@ -226,6 +268,7 @@ func (s *Server) handleNodeProxy(w http.ResponseWriter, r *http.Request) {
 func nodeMain(args []string) int {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, `用法:
+  agentconsole node setup --token 令牌 [--port 8899] [--name 名称]  在本机安装/升级节点（~/.agentconsole，仅监听 127.0.0.1）
   agentconsole node token [--rotate]                       显示本机节点令牌（首次自动生成）
   agentconsole node name <名称>                             设置本机在设备列表中的名称
   agentconsole node add <id> --name 名称 --url 地址 --token 令牌  添加远程设备（在主控台上执行）
@@ -235,6 +278,9 @@ func nodeMain(args []string) int {
 		return 2
 	}
 	sub, rest := args[0], args[1:]
+	if sub == "setup" {
+		return nodeSetupMain(rest) // runs on the node itself; no hub config
+	}
 	fset := flag.NewFlagSet("node "+sub, flag.ContinueOnError)
 	configPath := fset.String("config", defaultConfigPath, "config path")
 	rotate := fset.Bool("rotate", false, "generate a new token")
@@ -314,7 +360,7 @@ func nodeMain(args []string) int {
 		if !replaced {
 			cfg.Nodes = append(cfg.Nodes, n)
 		}
-		v := probeNode(context.Background(), n)
+		v := probeNode(context.Background(), n, cliTransport(n))
 		if v.Online {
 			fmt.Printf("设备 %s 在线（%s）\n", n.Name, v.Version)
 		} else {
@@ -341,7 +387,7 @@ func nodeMain(args []string) int {
 	case "list":
 		fmt.Printf("本机  %s\n", cfg.nodeName())
 		for _, n := range cfg.Nodes {
-			v := probeNode(context.Background(), n)
+			v := probeNode(context.Background(), n, cliTransport(n))
 			state := "在线 " + v.Version
 			if !v.Online {
 				state = "不可用：" + v.Error

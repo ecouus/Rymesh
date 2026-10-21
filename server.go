@@ -40,6 +40,7 @@ type Server struct {
 	schedMu   sync.Mutex
 	launching map[string]bool
 	importMu  sync.Mutex
+	ssh       *sshPool
 	// streamSem bounds concurrent SSE connections. Every stream polls the store
 	// several times a second and the store has a single connection, so an
 	// unbounded number of open tabs (or a reconnect loop) would starve every
@@ -52,7 +53,7 @@ func newServer(cfg *Config, cfgPath string, st *Store, logger *log.Logger, bindA
 		cfg: cfg, cfgPath: cfgPath, store: st, agents: newAgentSet(),
 		auth: newAuthManager(cfg), mux: http.NewServeMux(), logger: logger,
 		started: time.Now(), bindAddrs: bindAddrs, launching: map[string]bool{},
-		streamSem: make(chan struct{}, 32),
+		streamSem: make(chan struct{}, 32), ssh: newSSHPool(),
 	}
 	s.ing = newIngestor(st, cfg.DataDir, logger)
 	s.ing.onDone = func() { s.schedule() }
@@ -124,6 +125,17 @@ func (s *Server) routes() {
 	// Multi-device: list devices, and relay a device's API through this hub.
 	m.HandleFunc("GET /api/nodes", s.authed(s.handleNodes))
 	m.HandleFunc("GET /api/nodes/self", s.authed(s.handleNodeSelf))
+	// Device management (this console's own device list and keys; devices.go).
+	m.HandleFunc("GET /api/devices", s.authed(s.handleListDevices))
+	m.HandleFunc("POST /api/devices", s.authed(s.handleCreateDevice))
+	m.HandleFunc("PATCH /api/devices/{id}", s.authed(s.handlePatchDevice))
+	m.HandleFunc("DELETE /api/devices/{id}", s.authed(s.handleDeleteDevice))
+	m.HandleFunc("POST /api/devices/{id}/test", s.authed(s.handleDeviceTest))
+	m.HandleFunc("POST /api/devices/{id}/trust", s.authed(s.handleDeviceTrust))
+	m.HandleFunc("POST /api/devices/{id}/deploy", s.authed(s.handleDeviceDeploy))
+	m.HandleFunc("GET /api/ssh/hosts", s.authed(s.handleSSHHosts))
+	m.HandleFunc("GET /api/keys", s.authed(s.handleListKeys))
+	m.HandleFunc("POST /api/keys/generate", s.authed(s.handleGenerateKey))
 	m.HandleFunc("/n/{node}/api/{rest...}", s.authed(s.handleNodeProxy))
 
 	// Updates act on the Codex/Claude CLIs, not on this console. "Restart"

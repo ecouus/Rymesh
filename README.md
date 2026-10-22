@@ -7,6 +7,11 @@ Agent 任务由服务器独立托管：关闭浏览器、锁屏、断网或重�
 - 服务：`agentconsole.service`（systemd，已 enable，开机自启）
 - 登录密码：默认 `admin`，首次登录强制修改（`agentconsole password` 可查看）
 
+> **原则：本项目只是远程控制台。** 所有模型请求都由所选机器上的官方 CLI（`claude` / `codex`）
+> 用那台机器自己的登录发出；本程序不调用任何模型 API、不转发模型流量、不读取或传输凭据。
+> 请只用它控制你自己的机器，不要把控制台开放给他人使用你的账号（那属于账号共享，违反服务条款）。
+> 开发约束见 [CLAUDE.md](CLAUDE.md)。
+
 > 本 README 面向长期运维。完整测试记录见 [TEST_REPORT.md](TEST_REPORT.md)。
 
 ---

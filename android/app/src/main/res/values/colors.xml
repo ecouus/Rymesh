@@ -2,5 +2,5 @@
 <resources>
     <!-- Match the page background (web/styles.css, bg) in light and dark. -->
     <color name="page_bg">#FFFFFF</color>
-    <color name="icon_bg">#000000</color>
+    <color name="icon_bg">#0C0E0F</color>
 </resources>

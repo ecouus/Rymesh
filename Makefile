@@ -35,4 +35,4 @@ macos: dist
 	./macos/build-app.sh
 
 clean:
-	rm -rf dist agentconsole macos/dist macos/.build android/app/build android/app/libs android/app/src/main/assets/dist
+	rm -rf dist agentconsole macos/dist macos/dist.noindex macos/.build android/app/build android/app/libs android/app/src/main/assets/dist

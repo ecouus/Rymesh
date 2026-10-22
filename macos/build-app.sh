@@ -1,5 +1,6 @@
 #!/bin/sh
-# Builds macos/dist/AgentConsole.app: the Swift shell plus the Go console, both
+# Builds macos/dist.noindex/AgentConsole.app (.noindex keeps Spotlight from
+# listing it next to the installed copy): the Swift shell plus the Go console, both
 # universal (Apple silicon + Intel), ad-hoc signed. No Apple developer account
 # is needed; a downloaded copy must be allowed once in System Settings →
 # Privacy & Security ("Open Anyway").
@@ -10,7 +11,7 @@ set -eu
 cd "$(dirname "$0")"
 ROOT=..
 VERSION=${VERSION:-$(git -C "$ROOT" describe --tags --always 2>/dev/null || echo dev)}
-APP=dist/AgentConsole.app
+APP=dist.noindex/AgentConsole.app
 
 for f in "$ROOT/dist/agentconsole_darwin_arm64" "$ROOT/dist/agentconsole_darwin_amd64" \
 	"$ROOT/dist/agentconsole_linux_amd64" "$ROOT/dist/agentconsole_linux_arm64"; do

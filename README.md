@@ -435,7 +435,7 @@ Mac：agentconsole client（127.0.0.1）   Android：App 内嵌 Go 核心 + WebV
 **Mac App**
 
 ```bash
-make macos       # → macos/dist/AgentConsole.app（Swift 外壳 + 通用二进制 Go 控制台，ad-hoc 签名）
+make macos       # → macos/dist.noindex/AgentConsole.app（Swift 外壳 + 通用二进制 Go 控制台，ad-hoc 签名）
 ```
 
 把 `AgentConsole.app` 拖进“应用程序”。从网上下载的副本首次打开会被 Gatekeeper 拦下：

@@ -1463,6 +1463,8 @@
     if (!S.agents.length) {
       sel.innerHTML = '<option>无 Agent</option>';
       sel.disabled = true;
+      $("#agent-label").textContent = "无 Agent";
+      $("#agent-btn").disabled = true;
       return;
     }
     var current = S.session ? S.session.agent : S.draftAgent;
@@ -1473,6 +1475,8 @@
     var exists = S.agents.some(function (a) { return a.name === current; });
     sel.value = exists ? current : (S.agents[0] || {}).name || "";
     sel.disabled = false;
+    $("#agent-btn").disabled = false;
+    $("#agent-label").textContent = (agentMeta(sel.value).label || sel.value);
     // The permission options are agent-specific, so rebuild them whenever the
     // effective agent changes (draft switch, opening a conversation, new chat).
     if (S._profileAgent !== current) {
@@ -1482,8 +1486,30 @@
   }
 
   function setAgentPicker(visible) {
+    $("#agent-wrap").hidden = !visible;
+    if (!visible) closeAgentMenu();
+  }
+
+  // The three composer buttons (agent, permissions, model) open the same kind
+  // of menu above the composer; one is open at a time.
+  function closeAgentMenu() {
+    $("#agent-menu").hidden = true;
+    $("#agent-btn").setAttribute("aria-expanded", "false");
+  }
+  function openAgentMenu() {
+    closeProfileMenu();
+    closeModelMenu();
     var sel = $("#agent-select");
-    if (sel) sel.hidden = !visible;
+    $("#agent-menu").innerHTML = S.agents.map(function (a) {
+      var on = a.name === sel.value;
+      return '<button type="button" role="option" class="menu-item' + (on ? " on" : "") + '" aria-selected="' + on +
+        '" data-agent="' + esc(a.name) + '"' + (a.available ? "" : " disabled") + ">" +
+        '<span class="menu-text"><span class="menu-label">' + esc(a.label || a.name) + "</span>" +
+        '<span class="menu-detail">' + esc(a.available ? (shortVersion(a.version) ? "版本 " + shortVersion(a.version) : "") : "不可用") + "</span></span>" +
+        '<svg class="ico sm menu-check" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg></button>';
+    }).join("");
+    $("#agent-menu").hidden = false;
+    $("#agent-btn").setAttribute("aria-expanded", "true");
   }
 
   function profilesForAgent(name) {
@@ -1547,6 +1573,7 @@
 
   function openProfileMenu() {
     closeModelMenu();
+    closeAgentMenu();
     var sel = $("#profile-select"), menu = $("#profile-menu");
     var agent = currentAgentName();
     menu.innerHTML = profilesForAgent(agent).map(function (p) {
@@ -1574,7 +1601,7 @@
     sel.dispatchEvent(new Event("change"));
   });
   document.addEventListener("click", function (e) {
-    if (!e.target.closest(".menu-wrap")) closeProfileMenu();
+    if (!e.target.closest(".menu-wrap")) { closeProfileMenu(); closeAgentMenu(); }
   });
 
   function selectedProfile() {
@@ -3180,6 +3207,7 @@
   // shown at once while the fresh one loads (Codex takes seconds to answer).
   // refresh=false redraws from that copy only (after a choice).
   function openModelMenu(refresh) {
+    closeAgentMenu();
     var agent = currentAgentName(), menu = $("#model-menu");
     var key = cacheKey(agent), request = ++modelMenuRequest;
     var cached = S.models[key];
@@ -3884,19 +3912,18 @@
     else hideApprovalStack();
   });
 
-  // On touch screens the native <select> opens the system's dated dialog; the
-  // page's own picker replaces it, and the <select> stays the source of truth.
-  $("#agent-select").addEventListener("mousedown", function (e) {
-    if (!matchMedia("(pointer: coarse)").matches) return;
-    e.preventDefault();
-    var sel = this;
-    pickList("Agent", $$("option", sel).map(function (o) {
-      return { value: o.value, label: o.textContent, selected: o.value === sel.value, disabled: o.disabled };
-    })).then(function (v) {
-      if (v === null || v === sel.value) return;
-      sel.value = v;
-      sel.dispatchEvent(new Event("change"));
-    });
+  $("#agent-btn").addEventListener("click", function (e) {
+    e.stopPropagation();
+    if ($("#agent-menu").hidden) openAgentMenu(); else closeAgentMenu();
+  });
+  $("#agent-menu").addEventListener("click", function (e) {
+    var it = e.target.closest("[data-agent]");
+    if (!it || it.disabled) return;
+    var sel = $("#agent-select");
+    closeAgentMenu();
+    if (sel.value === it.getAttribute("data-agent")) return;
+    sel.value = it.getAttribute("data-agent");
+    sel.dispatchEvent(new Event("change"));
   });
 
   $("#agent-select").addEventListener("change", function () {

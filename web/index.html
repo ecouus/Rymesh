@@ -82,7 +82,14 @@
       </form>
       <div class="composer-meta">
         <div class="composer-opts">
-          <select id="agent-select" class="agent-select" aria-label="选择 Agent"></select>
+          <div class="menu-wrap" id="agent-wrap">
+            <button id="agent-btn" class="pill" type="button" aria-haspopup="listbox" aria-expanded="false" title="选择 Agent">
+              <span id="agent-label"></span>
+              <svg class="ico sm chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>
+            </button>
+            <div id="agent-menu" class="menu" role="listbox" aria-label="选择 Agent" hidden></div>
+          </div>
+          <select id="agent-select" aria-label="选择 Agent" hidden></select>
           <div class="menu-wrap">
             <button id="profile-btn" class="pill" type="button" aria-haspopup="listbox" aria-expanded="false" title="权限模式">
               <svg class="ico sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5 6v5c0 4.2 2.8 8 7 10 4.2-2 7-5.8 7-10V6l-7-3z"/></svg>

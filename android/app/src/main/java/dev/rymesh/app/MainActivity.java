@@ -54,7 +54,7 @@ public class MainActivity extends Activity {
         if ((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
             WebView.setWebContentsDebuggingEnabled(true);
         }
-        web = new WebView(this);
+        web = new KeyboardKeepingWebView(this);
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
@@ -113,10 +113,11 @@ public class MainActivity extends Activity {
         if (Build.VERSION.SDK_INT >= 30) getWindow().setDecorFitsSystemWindows(false);
         applyBars(isNight());
 
-        if (state != null && web.restoreState(state) != null) {
-            loading.setVisibility(View.GONE);
-            return;
-        }
+        // Always (re)start the console and load a fresh login URL, also when
+        // Android recreates the activity: after the process was killed in the
+        // background a restored page pointed at a console that no longer ran,
+        // and showed a blank screen. Within a live process Mobile.start only
+        // hands out a new URL for the running console.
         new Thread(() -> {
             try {
                 File files = getFilesDir();
@@ -130,6 +131,26 @@ public class MainActivity extends Activity {
                 runOnUiThread(() -> web.loadData(html, "text/html; charset=utf-8", "utf-8"));
             }
         }).start();
+    }
+
+    /**
+     * A WebView hides the keyboard when its window loses focus. Long-pressing
+     * the keyboard switch (the globe) opens the system's input-method picker,
+     * which takes window focus: the keyboard closed and the picker went with
+     * it, so the input method could not be changed. While the keyboard is up,
+     * that focus loss is not passed on.
+     */
+    private static class KeyboardKeepingWebView extends WebView {
+        KeyboardKeepingWebView(android.content.Context c) { super(c); }
+
+        @Override
+        public void onWindowFocusChanged(boolean hasWindowFocus) {
+            if (!hasWindowFocus && Build.VERSION.SDK_INT >= 30) {
+                WindowInsets in = getRootWindowInsets();
+                if (in != null && in.isVisible(WindowInsets.Type.ime())) return;
+            }
+            super.onWindowFocusChanged(hasWindowFocus);
+        }
     }
 
     private int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }
@@ -224,12 +245,6 @@ public class MainActivity extends Activity {
             }
         }
         java.nio.file.Files.write(marker.toPath(), stamp.getBytes());
-    }
-
-    @Override
-    protected void onSaveInstanceState(Bundle out) {
-        super.onSaveInstanceState(out);
-        web.saveState(out);
     }
 
     // Back closes what is open in the page (picker, sheet, sidebar) or returns

@@ -260,6 +260,7 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
 .node-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
 .node-dot.off { background: var(--text-faint); }
 .group > button.g-row:disabled { opacity: .55; }
+.group > button.g-row.offline .g-label { color: var(--text-dim); }
 .g-note code { font-size: 11px; }
 
 /* Device setup: choosers look like inputs and open a picker layer. */

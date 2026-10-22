@@ -537,9 +537,9 @@
       if (S.node !== "local" || S.nodes.length > 1) loadNodes(); // live status
     }).catch(function (err) {
       if (err && err.status === 401) { setLink("ok"); showLogin(); return; }
-      // On the phone there is no local machine to fall back to: the welcome
-      // page says what is wrong and offers to retry.
-      if (S.hubOnly && S.node !== "local" && shown) {
+      // The welcome page says what is wrong and offers to retry; the device
+      // stays selected so the user can retry it or switch away.
+      if (S.node !== "local" && shown) {
         setLink("failed", (err && err.message) || "");
         if (S.route !== "home") toast("无法连接 " + nodeLabel(S.node), true);
         return;
@@ -624,7 +624,9 @@
 
   function nodeRows() {
     return S.nodes.map(function (n) {
-      return '<button type="button" class="g-row" data-node="' + esc(n.id) + '"' + (n.online || n.checking ? "" : " disabled") + ">" +
+      // An offline device can still be chosen: its welcome page says why it
+      // cannot be reached and offers a retry.
+      return '<button type="button" class="g-row' + (n.online || n.checking ? "" : " offline") + '" data-node="' + esc(n.id) + '">' +
         '<span class="node-dot' + (n.online ? "" : " off") + '"></span>' +
         '<span class="g-label">' + esc(n.name) + (n.local ? ' <span class="muted small">主控</span>' : "") + "</span>" +
         '<span class="g-value">' + esc(n.online ? (n.id === S.node ? "当前" : "") : n.checking ? "连接中…" : (n.error || "离线")) + "</span></button>";

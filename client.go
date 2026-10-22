@@ -35,12 +35,6 @@ func clientMain(args []string) int {
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		sub, args = args[0], args[1:]
 	}
-	if sub != "open" {
-		if err := migrateLegacyHome(); err != nil {
-			fmt.Fprintln(os.Stderr, "迁移旧版数据失败:", err)
-			return 1
-		}
-	}
 	base, err := agentHome()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

@@ -561,10 +561,3 @@ func buildAgentCommand(spec TaskSpec, controlDir string) (*exec.Cmd, error) {
 	}
 	return nil, fmt.Errorf("unsupported agent %q", spec.Agent)
 }
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

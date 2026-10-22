@@ -148,11 +148,6 @@
     return { name: name, label: name, available: false };
   }
 
-  function agentBadge(name) {
-    var a = agentMeta(name);
-    return '<span class="badge agent-' + esc(name) + '">' + esc(a.label || name) + "</span>";
-  }
-
   // A small monochrome glyph identifies the agent in lists, so rows do not
   // need to spell out "Claude Code" / "Codex CLI" every time.
   var AGENT_ICONS = {
@@ -176,11 +171,6 @@
 
   function dirName(p) {
     return String(p || "").replace(/\/+$/, "").split("/").pop() || p || "";
-  }
-
-  function statusBadge(st, ahead) {
-    var label = statusLabel(st, ahead);
-    return '<span class="badge status ' + esc(st) + '">' + esc(label) + "</span>";
   }
 
   function statusLabel(st, ahead) {
@@ -657,7 +647,7 @@
     return new Promise(function (resolve) {
       var ov = openOverlay(title, '<div class="pick-list">' + items.map(function (it, i) {
         if (it.section) return '<div class="pick-section">' + esc(it.section) + "</div>";
-        return '<button type="button" class="pick-row' + (it.action ? " action" : "") + (it.selected ? " on" : "") +
+        return '<button type="button" class="pick-row' + (it.action ? " action" : "") + (it.danger ? " danger" : "") + (it.selected ? " on" : "") +
           '" data-pick="' + i + '"' + (it.disabled ? " disabled" : "") + ">" +
           '<span class="pick-text"><span class="pick-label">' + esc(it.label) +
           (it.tag ? ' <span class="pick-tag">' + esc(it.tag) + "</span>" : "") + "</span>" +
@@ -1195,10 +1185,10 @@
   // lets the app leave.
   window.acBack = function () {
     if (overlays.length) { overlays[overlays.length - 1].close(); return true; }
-    if (!$("#term").hidden) { closeTerminalView(); return true; }
-    if (!$("#files").hidden) { closeFilesView(); return true; }
     if (nodeMenu() && !nodeMenu().hidden) { closeNodeMenu(); return true; }
     if (!$("#sheet").hidden) { closeSheet(); return true; }
+    if (!$("#term").hidden) { closeTerminalView(); return true; }
+    if (!$("#files").hidden) { closeFilesView(); return true; }
     if (!$("#sidebar").hidden && !wide.matches) { closeSidebar(); return true; }
     if (location.hash && location.hash !== "#/" && location.hash !== "#") { location.hash = "#/"; return true; }
     return false;
@@ -1467,11 +1457,6 @@
     return null;
   }
 
-  function profileLabel(agent, id) {
-    var p = profileMeta(agent, id);
-    return p ? p.label : (id || "");
-  }
-
   // The profile list follows the Agent that will actually run the next message:
   // the fixed agent inside a conversation, otherwise the draft agent.
   function currentAgentName() {
@@ -1620,8 +1605,11 @@
       '<div class="home-empty">' + HOME_HERO +
       '<div class="home-title">' + esc(greeting()) + "</div>" +
       '<div class="home-sub">新对话将在 ' + (multiNode() ? esc(nodeLabel(S.node)) + (S.draftCwd ? " 的 " : " 上") : "") +
-      (S.draftCwd ? '<button type="button" data-home-cwd="1" title="更改工作目录">' +
-      esc(truncate(S.draftCwd, 48)) + "</button> 中" : "") + "运行</div>" +
+      (S.draftCwd ? '<button type="button" class="cwd-chip" data-home-cwd="1" title="更改工作目录：' + esc(S.draftCwd) + '">' +
+      '<svg class="ico sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></svg>' +
+      '<span class="t">' + esc(shortPath(S.draftCwd, 32)) + "</span>" +
+      '<svg class="ico sm chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>' +
+      "</button> 中" : "") + "运行</div>" +
       (S.link.state !== "ok" ? '<div class="home-recent">' + connCard() + "</div>" :
       recent ? '<div class="home-recent"><div class="home-recent-label">继续最近的对话</div>' + recent + "</div>" : "") +
       "</div>";
@@ -1909,9 +1897,14 @@
       var t = e.touches[0];
       if (Math.abs(t.clientX - x0) > 8 || Math.abs(t.clientY - y0) > 8) cancel();
     }, { passive: true });
-    list.addEventListener("touchend", cancel);
+    // The click that follows a long press would land on the menu that just
+    // opened under the finger (and could pick an item): cancel it at the
+    // source. The capture handler stays for browsers that click anyway.
+    list.addEventListener("touchend", function (e) {
+      cancel();
+      if (fired) e.preventDefault();
+    });
     list.addEventListener("touchcancel", cancel);
-    // The click that follows a long press must not also open the conversation.
     list.addEventListener("click", function (e) {
       if (fired) { fired = false; e.stopImmediatePropagation(); e.preventDefault(); }
     }, true);
@@ -1981,24 +1974,18 @@
       '<ul style="padding-left:20px;color:var(--text-dim);font-size:13px">' +
       "<li>该 Agent 的原生会话文件会移动到服务端回收目录</li>" +
       "<li>控制台中的会话、消息与审批记录会被移除</li></ul>" +
-      '<p class="small muted">不会影响其他对话。</p>',
-      "继续", true).then(function (ok) {
+      '<p class="small muted">无法从界面恢复，不影响其他对话。</p>',
+      "删除", true).then(function (ok) {
       if (!ok) return;
-      confirmSheet("再次确认删除",
-        '<p>该对话及其原生会话文件将被移除，且无法从界面恢复。</p>' +
-        '<p class="small muted">确定要删除吗？</p>',
-        "永久删除", true).then(function (yes) {
-        if (!yes) return;
-        api("/api/sessions/" + encodeURIComponent(s.id) + "?confirm=" + encodeURIComponent(s.id), { method: "DELETE" })
-          .then(function (d) {
-            S.sessions = S.sessions.filter(function (x) { return x.id !== s.id; });
-            if (S.session && S.session.id === s.id) {
-              S.session = null;
-              go("#/");
-            } else renderSidebar();
-            toast(d.native_trashed ? "对话已删除，原生文件已移入回收目录" : "对话已删除（未找到原生文件）");
-          }).catch(function (e) { toast(e.message, true); });
-      });
+      api("/api/sessions/" + encodeURIComponent(s.id) + "?confirm=" + encodeURIComponent(s.id), { method: "DELETE" })
+        .then(function (d) {
+          S.sessions = S.sessions.filter(function (x) { return x.id !== s.id; });
+          if (S.session && S.session.id === s.id) {
+            S.session = null;
+            go("#/");
+          } else renderSidebar();
+          toast(d.native_trashed ? "对话已删除，原生文件已移入回收目录" : "对话已删除（未找到原生文件）");
+        }).catch(function (e) { toast(e.message, true); });
     });
   }
 
@@ -2019,6 +2006,12 @@
 
   function cwdSheet() {
     if (S.session) { toast("会话目录已固定：" + S.session.cwd); return; }
+    if (noDevice()) return;
+    openFolderPicker(S.draftCwd || S.config.default_cwd || "");
+  }
+
+  // cwdInputSheet sets the directory by typing it.
+  function cwdInputSheet() {
     var cur = S.draftCwd || S.config.default_cwd || "";
     var body = openSheet("工作目录",
       '<div class="stack">' +
@@ -2220,6 +2213,14 @@
     }
   });
 
+  // Scrolling up to the start of what is loaded fetches the page before it,
+  // a little ahead of reaching the top. The button stays as the marker that
+  // shows the load, and for a click when the automatic one failed.
+  var OLDER_AHEAD = 600;
+  var olderObserver = "IntersectionObserver" in window ? new IntersectionObserver(function (entries) {
+    entries.forEach(function (en) { if (en.isIntersecting) loadOlder(); });
+  }, { rootMargin: OLDER_AHEAD + "px 0px 0px 0px" }) : null;
+
   function addOlderButton() {
     var inner = $("#events-inner");
     if (!inner || $("#load-older")) return;
@@ -2230,10 +2231,21 @@
     b.textContent = "加载更早的消息";
     b.addEventListener("click", loadOlder);
     inner.prepend(b);
+    if (olderObserver) olderObserver.observe(b);
+  }
+
+  // After a page lands the marker can still be in reach (a short page, or a
+  // fast fling); the observer only reports changes, so check by hand.
+  function olderStillInReach() {
+    var b = $("#load-older");
+    if (!b || !S.hasOlder) return;
+    var r = b.getBoundingClientRect();
+    if (r.height && r.bottom > -OLDER_AHEAD) loadOlder();
   }
 
   function loadOlder() {
-    if (!S.session || !S.oldestSeq) return;
+    if (!S.session || !S.oldestSeq || S.loadingOlder) return;
+    S.loadingOlder = true;
     var btn = $("#load-older");
     if (btn) { btn.disabled = true; btn.textContent = "加载中…"; }
     var inner = $("#events-inner");
@@ -2244,7 +2256,8 @@
       .then(function (d) {
         // Navigating to another session while this page is in flight must not
         // insert this session's history into the new one.
-        if (!S.session || S.session.id !== sid || !inner.isConnected) return;
+        S.loadingOlder = false;
+        if (!S.session || S.session.id !== sid || !inner.isConnected) { olderStillInReach(); return; }
         var evs = d.events || [];
         if (!evs.length) {
           S.hasOlder = false;
@@ -2313,7 +2326,11 @@
           moved = grew > 0 ? grew : 0;
         }
         if (moved) getScroller().scrollTop += moved;
+        requestAnimationFrame(olderStillInReach);
       }).catch(function (e) {
+        // No automatic retry: a failing server would be asked in a loop. The
+        // next scroll back up, or the button, tries again.
+        S.loadingOlder = false;
         toast(e.message, true);
         if (btn) { btn.disabled = false; btn.textContent = "加载更早的消息"; }
       });
@@ -2533,7 +2550,7 @@
     });
     // The trim note promises that the removed range can be loaded again. Make
     // that true: move the older cursor up to the first node still on the page
-    // and forget the removed seqs, otherwise "加载更早的消息" would fetch
+    // and forget the removed seqs, otherwise loading older messages would fetch
     // past the gap and leave a hole in the transcript.
     var rest = inner.querySelectorAll(".ev");
     if (removed.length && rest.length) {
@@ -2554,7 +2571,7 @@
       var n = document.createElement("div");
       n.id = "trim-note";
       n.className = "notice";
-      n.textContent = "为保持流畅，较早的消息已从页面移除；可继续「加载更早的消息」查看服务端历史。";
+      n.textContent = "为保持流畅，较早的消息已从页面移除；继续向上滑动即可重新加载。";
       inner.prepend(n);
     }
   }
@@ -4240,9 +4257,8 @@
   // Keystrokes go out in order, one request at a time; what is typed while a
   // request is in flight joins the next one.
   function termSend(data) {
-    if (!data) return;
-    TERM.queue += data;
-    if (TERM.sending || !TERM.id) return;
+    TERM.queue += data || "";
+    if (!TERM.queue || TERM.sending || !TERM.id) return;
     var id = TERM.id, chunk = TERM.queue;
     TERM.queue = "";
     TERM.sending = true;
@@ -4345,6 +4361,7 @@
   function openFiles() {
     if (!S.session || noDevice()) return;
     var start = FILES.node === S.node && FILES.session === S.session.id && FILES.path ? FILES.path : S.session.cwd;
+    setPickMode(false);
     FILES.node = S.node;
     FILES.session = S.session.id;
     $("#files").hidden = false;
@@ -4355,6 +4372,50 @@
   function closeFilesView() {
     var view = $("#files");
     if (view && !view.hidden) view.hidden = true;
+  }
+
+  // The same view picks the working directory of a new conversation: only
+  // folders can be entered, and the bar at the bottom takes the one on screen.
+  function setPickMode(on) {
+    FILES.pick = on;
+    $("#files").classList.toggle("picking", on);
+    $("#files-pick").hidden = !on;
+    $("#files-title").textContent = on ? "选择工作目录" : "文件";
+  }
+
+  function openFolderPicker(start) {
+    setPickMode(true);
+    FILES.node = S.node;
+    FILES.session = "";
+    $("#files").hidden = false;
+    $("#files-hidden").setAttribute("aria-pressed", FILES.hidden ? "true" : "false");
+    loadDir(start);
+  }
+
+  function pickFolder() {
+    var path = FILES.path;
+    if (!path) return;
+    var btn = $("#files-pick-ok");
+    btn.disabled = true;
+    api("/api/cwd/check", { method: "POST", node: FILES.node, body: { path: path } }).then(function (d) {
+      if (!d.ok) { toast(d.error, true); return; }
+      S.draftCwd = d.cwd;
+      LS.set("draftCwd", d.cwd);
+      closeFilesView();
+      if (S.route === "home") renderHome();
+      else updateComposerMeta();
+      toast("新对话将在 " + (d.cwd.length > 40 ? "…" + d.cwd.slice(-39) : d.cwd) + " 中运行");
+      if (d.warning) toast(d.warning, true);
+    }).catch(function (e) { toast(e.message, true); })
+      .then(function () { btn.disabled = false; });
+  }
+
+  // shortPath shows the home folder as "~" and keeps the end of a long path,
+  // where the folder that matters is.
+  function shortPath(p, max) {
+    var h = S.config.home;
+    if (h && h !== "/" && (p === h || p.indexOf(h + "/") === 0)) p = "~" + p.slice(h.length);
+    return p.length > max ? "…" + p.slice(-(max - 1)) : p;
   }
 
   function joinPath(dir, name) { return dir === "/" ? "/" + name : dir + "/" + name; }
@@ -4407,15 +4468,21 @@
     }
     shown.forEach(function (e) {
       var full = joinPath(FILES.path, e.name);
+      if (FILES.pick && !e.dir) {
+        rows.push('<div class="file-row inert"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true">' +
+          '<path d="M7 3.5h6.5L18 8v12.5H7z"/><path d="M13 3.5V8h5"/></svg>' +
+          '<span class="file-text"><span class="file-name">' + esc(e.name) + "</span></span></div>");
+        return;
+      }
       var ico = e.dir
         ? '<path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>'
         : '<path d="M7 3.5h6.5L18 8v12.5H7z"/><path d="M13 3.5V8h5"/>';
       var meta = (e.dir ? "" : fmtSize(e.size) + " · ") + rel(e.mtime) + (e.link ? " · 链接" : "");
-      rows.push('<button type="button" class="file-row' + (e.dir ? " dir" : "") + '" ' +
-        (e.dir ? 'data-dir="' + esc(full) + '"' : 'data-file="' + esc(full) + '" data-name="' + esc(e.name) + '" data-size="' + e.size + '"') + ">" +
+      rows.push('<button type="button" class="file-row' + (e.dir ? " dir" : "") + '" data-entry="' + esc(full) + '" data-name="' + esc(e.name) + '" ' +
+        (e.dir ? 'data-dir="' + esc(full) + '"' : 'data-file="' + esc(full) + '" data-size="' + e.size + '"') + ">" +
         '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true">' + ico + "</svg>" +
         '<span class="file-text"><span class="file-name">' + esc(e.name) + '</span><span class="file-meta">' + esc(meta) + "</span></span>" +
-        (e.dir ? "" : '<svg class="ico sm file-dl" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.5v11M7.5 11 12 15.5 16.5 11M5 19.5h14"/></svg>') +
+        '<svg class="ico sm file-more" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="18" cy="12" r="1.2"/></svg>' +
         "</button>");
     });
     if (!shown.length) {
@@ -4424,6 +4491,7 @@
     }
     if (FILES.truncated) rows.push('<div class="empty">只显示了前 5000 项</div>');
     $("#files-list").innerHTML = rows.join("");
+    $("#files-pick-path").textContent = FILES.path;
   }
 
   function fileJob(kind, name, total) {
@@ -4515,6 +4583,11 @@
   }
 
   $("#files-btn").addEventListener("click", openFiles);
+  $("#files-pick-ok").addEventListener("click", pickFolder);
+  $("#files-pick-type").addEventListener("click", function () {
+    closeFilesView();
+    cwdInputSheet();
+  });
   $("#files-back").addEventListener("click", closeFilesView);
   $("#files-hidden").addEventListener("click", function () {
     FILES.hidden = !FILES.hidden;
@@ -4526,11 +4599,91 @@
     Array.prototype.forEach.call(this.files || [], uploadFile);
     this.value = "";
   });
+  // What can be done to one file or folder. Rename and delete each ask once
+  // more before acting.
+  function fileMenu(row) {
+    if (FILES.pick) return;
+    var path = row.getAttribute("data-entry"), name = row.getAttribute("data-name");
+    var isDir = row.hasAttribute("data-dir");
+    var items = isDir
+      ? [{ label: "打开", value: "open" }]
+      : [{ label: "下载", value: "download", sub: fmtSize(+row.getAttribute("data-size")) }];
+    items.push({ label: "重命名", value: "rename" }, { label: "删除", value: "delete", danger: true });
+    pickList(name, items).then(function (a) {
+      if (a === "open") loadDir(path);
+      else if (a === "download") downloadFile(path, name, +row.getAttribute("data-size"));
+      else if (a === "rename") renameFile(path, name);
+      else if (a === "delete") deleteFile(path, name, isDir);
+    });
+  }
+
+  function renameFile(path, name) {
+    var dir = FILES.path, node = FILES.node;
+    askText("重命名", { label: "新名称", value: name, ok: "确认重命名" }).then(function (v) {
+      v = (v || "").trim();
+      if (!v || v === name) return;
+      api("/api/files/rename", { method: "POST", node: FILES.node, body: { path: path, name: v } }).then(function () {
+        toast("已重命名为 " + v);
+        if (FILES.path === dir && FILES.node === node) loadDir(dir);
+      }).catch(function (e) { toast(e.message, true); });
+    });
+  }
+
+  function deleteFile(path, name, isDir) {
+    var dir = FILES.path, node = FILES.node;
+    confirmSheet("删除「" + truncate(name, 40) + "」？",
+      "<p>" + (isDir ? "文件夹和其中的所有内容都会被删除，" : "") + "删除后无法恢复。</p>" +
+      '<p class="small muted mono" style="word-break:break-all">' + esc(path) + "</p>",
+      "删除", true).then(function (ok) {
+      if (!ok) return;
+      api("/api/files/delete", { method: "POST", node: FILES.node, body: { path: path } }).then(function () {
+        toast("已删除 " + name);
+        if (FILES.path === dir && FILES.node === node) loadDir(dir);
+      }).catch(function (e) { toast(e.message, true); });
+    });
+  }
+
+  // Touch: long-press any row for its menu. Desktop: right-click.
+  (function () {
+    var list = $("#files-list"), timer = null, fired = false, x0 = 0, y0 = 0;
+    function cancel() { clearTimeout(timer); timer = null; }
+    list.addEventListener("touchstart", function (e) {
+      var row = e.target.closest("[data-entry]");
+      if (!row) return;
+      fired = false; x0 = e.touches[0].clientX; y0 = e.touches[0].clientY;
+      timer = setTimeout(function () {
+        fired = true;
+        if (navigator.vibrate) navigator.vibrate(10);
+        fileMenu(row);
+      }, 480);
+    }, { passive: true });
+    list.addEventListener("touchmove", function (e) {
+      var t = e.touches[0];
+      if (Math.abs(t.clientX - x0) > 8 || Math.abs(t.clientY - y0) > 8) cancel();
+    }, { passive: true });
+    // As in the sidebar: the click after a long press must not reach the
+    // menu now under the finger, nor open the folder.
+    list.addEventListener("touchend", function (e) {
+      cancel();
+      if (fired) e.preventDefault();
+    });
+    list.addEventListener("touchcancel", cancel);
+    list.addEventListener("click", function (e) {
+      if (fired) { fired = false; e.stopImmediatePropagation(); e.preventDefault(); }
+    }, true);
+    list.addEventListener("contextmenu", function (e) {
+      var row = e.target.closest("[data-entry]");
+      if (!row) return;
+      e.preventDefault();
+      fileMenu(row);
+    });
+  })();
+
   $("#files").addEventListener("click", function (e) {
+    var f = e.target.closest("[data-file]");
+    if (f) { fileMenu(f); return; }
     var d = e.target.closest("[data-dir]");
     if (d) { loadDir(d.getAttribute("data-dir")); return; }
-    var f = e.target.closest("[data-file]");
-    if (f) { downloadFile(f.getAttribute("data-file"), f.getAttribute("data-name"), +f.getAttribute("data-size")); return; }
     var o = e.target.closest("[data-open-dl]");
     if (o) {
       var id = o.getAttribute("data-open-dl");

@@ -331,17 +331,17 @@ func (c *Config) allowedCWD(p string) (string, error) {
 		p = c.defaultCWD()
 	}
 	if !filepath.IsAbs(p) {
-		return "", errors.New("working directory must be absolute")
+		return "", errors.New("工作目录必须是绝对路径")
 	}
 	p = filepath.Clean(p)
 	// Resolve symlinks so a link cannot escape an allowed root.
 	real, err := filepath.EvalSymlinks(p)
 	if err != nil {
-		return "", fmt.Errorf("working directory does not exist: %s", p)
+		return "", fmt.Errorf("目录不存在：%s", p)
 	}
 	st, err := os.Stat(real)
 	if err != nil || !st.IsDir() {
-		return "", fmt.Errorf("not a directory: %s", p)
+		return "", fmt.Errorf("不是文件夹：%s", p)
 	}
 	ok := false
 	for _, root := range c.AllowedRoots {
@@ -355,7 +355,7 @@ func (c *Config) allowedCWD(p string) (string, error) {
 		}
 	}
 	if !ok {
-		return "", fmt.Errorf("working directory %s is outside allowed roots (%s)", p, strings.Join(c.AllowedRoots, ", "))
+		return "", fmt.Errorf("只能使用允许的根目录（%s）里的文件夹，%s 不在其中", strings.Join(c.AllowedRoots, "、"), p)
 	}
 	return real, nil
 }

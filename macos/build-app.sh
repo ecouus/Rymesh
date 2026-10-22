@@ -14,7 +14,7 @@ VERSION=${VERSION:-$(git -C "$ROOT" describe --tags --always 2>/dev/null || echo
 APP=dist.noindex/Rymesh.app
 
 for f in "$ROOT/dist/rymesh_darwin_arm64" "$ROOT/dist/rymesh_darwin_amd64" \
-	"$ROOT/dist/rymesh_linux_amd64" "$ROOT/dist/rymesh_linux_arm64"; do
+	"$ROOT/dist/rymesh_linux_amd64.gz" "$ROOT/dist/rymesh_linux_arm64.gz"; do
 	[ -f "$f" ] || { echo "missing $f: run make dist first" >&2; exit 1; }
 done
 
@@ -29,10 +29,10 @@ lipo -create .build/arm64/release/RymeshMac .build/x86_64/release/RymeshMac \
 	-output "$APP/Contents/MacOS/Rymesh"
 lipo -create "$ROOT/dist/rymesh_darwin_arm64" "$ROOT/dist/rymesh_darwin_amd64" \
 	-output "$APP/Contents/Resources/rymesh"
-# Node programs the app uploads when it deploys to a Linux server
+# Node programs the app uploads when it deploys to a Linux server, gzipped
 # (nodeBinary looks in dist/ next to the console binary).
 mkdir -p "$APP/Contents/Resources/dist"
-cp "$ROOT/dist/rymesh_linux_amd64" "$ROOT/dist/rymesh_linux_arm64" "$APP/Contents/Resources/dist/"
+cp "$ROOT/dist/rymesh_linux_amd64.gz" "$ROOT/dist/rymesh_linux_arm64.gz" "$APP/Contents/Resources/dist/"
 
 # App icon: a 1024 master on Apple's icon grid (transparent margin).
 ICON="$ROOT/macos/Resources/AppIcon.png"

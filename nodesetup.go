@@ -89,9 +89,6 @@ func nodeSetup(token string, port int, name string) (*setupResult, error) {
 	if len(token) < 16 {
 		return nil, errors.New("需要 --token（至少 16 个字符）")
 	}
-	if err := migrateLegacyHome(); err != nil {
-		return nil, err
-	}
 	base, err := agentHome()
 	if err != nil {
 		return nil, err
@@ -341,7 +338,7 @@ func launchdInstall(exe, cfgPath, home, path, base string) error {
 
 func isRymesh(pid int) bool {
 	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
-	return err == nil && (strings.Contains(string(out), "rymesh") || strings.Contains(string(out), legacyName))
+	return err == nil && (strings.Contains(string(out), "rymesh"))
 }
 
 func xmlEsc(s string) string {

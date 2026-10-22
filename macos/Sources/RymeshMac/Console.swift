@@ -20,8 +20,9 @@ struct Pending: Equatable {
 }
 
 /// The Go console bundled in the app (Contents/Resources/rymesh) and a
-/// small client for its API. The console itself runs as a launchd service, so
-/// agents keep working when the app quits.
+/// small client for its API. The console runs as a background process while
+/// the app is open; agent tasks are processes of their own and keep working
+/// when it stops.
 final class Console {
     let binary: URL
     private(set) var port = 8899

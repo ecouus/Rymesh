@@ -15,12 +15,13 @@ var (
 )
 
 // Start runs the console with its data in dataDir (the app's files dir) and
-// returns a one-time login URL. Calling it again returns a fresh URL.
-func Start(dataDir string) (string, error) {
+// returns a one-time login URL. vaultKey (32 bytes from the Android Keystore)
+// seals the stored SSH keys. Calling it again returns a fresh URL.
+func Start(dataDir string, vaultKey []byte) (string, error) {
 	mu.Lock()
 	defer mu.Unlock()
 	if cur == nil {
-		e, err := console.StartEmbedded(dataDir)
+		e, err := console.StartEmbedded(dataDir, vaultKey)
 		if err != nil {
 			return "", err
 		}

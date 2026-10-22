@@ -35,8 +35,19 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.security.KeyStore;
+import java.security.SecureRandom;
+import java.util.Arrays;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+
+import javax.crypto.Cipher;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.GCMParameterSpec;
+
+import android.security.keystore.KeyGenParameterSpec;
+import android.security.keystore.KeyProperties;
 
 import org.json.JSONObject;
 
@@ -143,7 +154,7 @@ public class MainActivity extends Activity {
             try {
                 File files = getFilesDir();
                 installNodeBinaries(new File(files, "data/dist"));
-                String url = Mobile.start(files.getAbsolutePath());
+                String url = Mobile.start(files.getAbsolutePath(), vaultKey());
                 // The port only, never the ticket: logcat is readable over adb.
                 console = Uri.parse(url);
                 android.util.Log.i("Rymesh", "console on " + console.getPort());
@@ -375,8 +386,53 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Linux node programs, uploaded when the user deploys to a server. They
-     * are copied out of the APK once per installed version.
+     * The key that seals the SSH keys in the console's database (vaultseal.go).
+     * It is kept wrapped by a key that never leaves the Android Keystore, so
+     * the app's files alone do not reveal it. On failure the console falls
+     * back to a key file of its own.
+     */
+    private byte[] vaultKey() {
+        try {
+            final String alias = "rymesh-vault";
+            KeyStore ks = KeyStore.getInstance("AndroidKeyStore");
+            ks.load(null);
+            if (!ks.containsAlias(alias)) {
+                KeyGenerator g = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore");
+                g.init(new KeyGenParameterSpec.Builder(alias,
+                        KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
+                        .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                        .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                        .setKeySize(256).build());
+                g.generateKey();
+            }
+            SecretKey wrap = (SecretKey) ks.getKey(alias, null);
+            File f = new File(getFilesDir(), "vault.key.enc");
+            Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
+            if (f.exists()) {
+                byte[] b = java.nio.file.Files.readAllBytes(f.toPath());
+                c.init(Cipher.DECRYPT_MODE, wrap, new GCMParameterSpec(128, b, 0, 12));
+                return c.doFinal(b, 12, b.length - 12);
+            }
+            byte[] key = new byte[32];
+            new SecureRandom().nextBytes(key);
+            c.init(Cipher.ENCRYPT_MODE, wrap);
+            byte[] iv = c.getIV(), sealed = c.doFinal(key);
+            byte[] out = Arrays.copyOf(iv, iv.length + sealed.length);
+            System.arraycopy(sealed, 0, out, iv.length, sealed.length);
+            File tmp = new File(getFilesDir(), "vault.key.enc.tmp");
+            java.nio.file.Files.write(tmp.toPath(), out);
+            if (!tmp.renameTo(f)) throw new java.io.IOException("rename failed");
+            return key;
+        } catch (Exception e) {
+            android.util.Log.w("Rymesh", "vault key unavailable: " + e);
+            return null;
+        }
+    }
+
+    /**
+     * Linux node programs (gzipped), uploaded when the user deploys to a
+     * server. They are copied out of the APK once per installed version;
+     * files an earlier version left (unpacked programs) are removed.
      */
     private void installNodeBinaries(File dir) throws Exception {
         String stamp = String.valueOf(getPackageManager().getPackageInfo(getPackageName(), 0).lastUpdateTime);
@@ -386,8 +442,15 @@ public class MainActivity extends Activity {
         String[] names = am.list("dist");
         if (names == null) return;
         dir.mkdirs();
+        // In the APK they end in .gzip (a .gz asset would be stored
+        // unpacked); the console looks for .gz.
+        java.util.List<String> keep = new java.util.ArrayList<>();
+        for (String name : names) keep.add(name.replaceAll("\\.gzip$", ".gz"));
+        File[] old = dir.listFiles();
+        if (old != null) for (File f : old) if (!keep.contains(f.getName())) f.delete();
         for (String name : names) {
-            try (InputStream in = am.open("dist/" + name); OutputStream os = new FileOutputStream(new File(dir, name))) {
+            File dst = new File(dir, name.replaceAll("\\.gzip$", ".gz"));
+            try (InputStream in = am.open("dist/" + name); OutputStream os = new FileOutputStream(dst)) {
                 byte[] buf = new byte[1 << 16];
                 for (int n; (n = in.read(buf)) > 0; ) os.write(buf, 0, n);
             }

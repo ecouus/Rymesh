@@ -44,7 +44,10 @@ func embeddedConfig(dataDir string) (*Config, error) {
 }
 
 // StartEmbedded starts (or reopens) the console stored under dataDir.
-func StartEmbedded(dataDir string) (*Embedded, error) {
+//
+// vaultKey (32 bytes, kept by the app in the Android Keystore) seals the SSH
+// keys in the database; without one a key file in dataDir is used.
+func StartEmbedded(dataDir string, vaultKey []byte) (*Embedded, error) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return nil, err
 	}
@@ -71,9 +74,6 @@ func StartEmbedded(dataDir string) (*Embedded, error) {
 	if err := saveConfig(cfgPath, cfg); err != nil {
 		return nil, err
 	}
-	if err := migrateLegacyFiles(cfg.DataDir, cfg.LogDir); err != nil {
-		return nil, err
-	}
 	logf, err := os.OpenFile(filepath.Join(cfg.LogDir, "rymesh.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	var w io.Writer = io.Discard
 	if err == nil {
@@ -84,6 +84,7 @@ func StartEmbedded(dataDir string) (*Embedded, error) {
 	if err != nil {
 		return nil, err
 	}
+	st.setVaultKey(vaultKey)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		st.Close()

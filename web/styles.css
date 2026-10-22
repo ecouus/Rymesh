@@ -262,7 +262,18 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
 .home-title { font-size: 26px; font-weight: var(--fw-semibold); letter-spacing: -.03em; padding: 0 4px; }
 .home-sub { color: var(--text-faint); font-size: 13px; margin-top: 6px; padding: 0 4px; }
 .home-sub button { border: 0; background: none; padding: 0; color: var(--text-dim); font-family: var(--mono); font-size: 12.5px; text-align: left; overflow-wrap: anywhere; }
-.home-sub button:active { color: var(--text); }
+/* The working directory reads as a control: a pill like the composer's, with
+   a folder in front and a chevron behind. */
+.home-sub .cwd-chip {
+  display: inline-flex; align-items: center; gap: 5px; max-width: 100%; margin: 0 2px; padding: 3px 8px 3px 8px;
+  border-radius: 999px; background: var(--fill); color: var(--text); vertical-align: middle;
+  transition: background .15s;
+}
+.cwd-chip .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cwd-chip .ico { color: var(--text-dim); vertical-align: 0; }
+.cwd-chip .chev { margin-left: -1px; }
+@media (hover: hover) { .home-sub .cwd-chip:hover { background: var(--accent-soft); } }
+.home-sub .cwd-chip:active { background: var(--accent-soft); color: var(--text); }
 .home-recent { margin-top: 28px; }
 /* Start-up connection, in place of recent conversations. */
 .conn-card { background: var(--bg-soft); border-radius: 16px; padding: 22px 18px 18px; text-align: center; }
@@ -655,7 +666,8 @@ details[open]::details-content { grid-template-rows: minmax(0, 1fr); }
 
 /* ---------- Terminal and files: full-screen views over the chat ---------- */
 .term {
-  position: fixed; inset: 0; z-index: 58; display: flex; flex-direction: column; background: var(--bg);
+  /* Above the chat and the sidebar, below sheets and pickers opened from it. */
+  position: fixed; inset: 0; z-index: 48; display: flex; flex-direction: column; background: var(--bg);
   padding: env(safe-area-inset-top, 0px) 0 var(--safe-b); animation: fade-in var(--dur-move) var(--ease-move);
 }
 .term-head { display: flex; align-items: center; gap: 4px; padding: 6px 8px; }
@@ -708,7 +720,14 @@ details[open]::details-content { grid-template-rows: minmax(0, 1fr); }
 .file-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .file-name { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-meta { font-size: 11.5px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.file-dl { color: var(--text-faint); }
+.file-more { color: var(--text-faint); }
+/* Picking a working directory: files are context only. */
+.files.picking .files-upload, .files.picking .file-more { display: none; }
+.file-row.inert { opacity: .45; cursor: default; }
+.file-row.inert:active, .file-row.inert:hover { background: transparent; }
+.files-pick { display: flex; flex-direction: column; gap: 10px; padding: 12px 16px; background: var(--bg-soft); }
+.files-pick-path { font-family: var(--mono); font-size: 12.5px; color: var(--text-dim); word-break: break-all; }
+.file-row { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
 /* Transfers stay listed under the folder until replaced by newer ones. */
 .files-jobs { display: flex; flex-direction: column; gap: 6px; padding: 0 12px; }
 .files-jobs:not(:empty) { padding: 10px 12px; background: var(--bg-soft); }
@@ -933,6 +952,7 @@ details[open]::details-content { grid-template-rows: minmax(0, 1fr); }
 @media (hover: hover) { .pick-row:hover { background: var(--hover); } }
 .pick-row.on .pick-label { font-weight: var(--fw-semibold); }
 .pick-row.action { color: var(--blue); }
+.pick-row.danger { color: var(--red); }
 .pick-row .ico { color: var(--text); }
 .pick-text { flex: 1; min-width: 0; }
 .pick-label { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

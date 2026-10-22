@@ -54,8 +54,9 @@ type terminal struct {
 }
 
 type termManager struct {
-	mu    sync.Mutex
-	terms map[string]*terminal
+	mu       sync.Mutex
+	terms    map[string]*terminal
+	starting int // opens past the limit check, not yet in terms
 }
 
 func newTermManager() *termManager {
@@ -72,12 +73,20 @@ func (m *termManager) get(id string) (*terminal, bool) {
 }
 
 func (m *termManager) start(cwd string, cols, rows int) (*terminal, error) {
+	// Hold a slot from the check on, so concurrent opens cannot all pass the
+	// limit before any of them is registered.
 	m.mu.Lock()
-	if len(m.terms) >= termMax {
+	if len(m.terms)+m.starting >= termMax {
 		m.mu.Unlock()
 		return nil, fmt.Errorf("已打开 %d 个终端，请先关闭不用的", termMax)
 	}
+	m.starting++
 	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		m.starting--
+		m.mu.Unlock()
+	}()
 
 	master, slavePath, err := openPTY()
 	if err != nil {

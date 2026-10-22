@@ -2,8 +2,8 @@ import AppKit
 import UserNotifications
 import WebKit
 
-/// Menu bar item, console window and notifications. Quitting the app leaves
-/// the console service (and every running agent) alone.
+/// Menu bar item, console window and notifications. Quitting the app stops
+/// the console; running agents keep going.
 final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate,
     WKScriptMessageHandler, UNUserNotificationCenterDelegate {
     private var console: Console!
@@ -144,10 +144,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         }
     }
 
-    // Links out of the console open in the default browser.
+    // Only the console itself loads in the window, where the page has the
+    // native bridge. Everything else opens in the default browser, also other
+    // services on this Mac (a dev server on another port): cookies are not
+    // kept apart by port, so such a page would be sent the console's login.
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
                  decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        if let url = action.request.url, url.host != "127.0.0.1", url.scheme?.hasPrefix("http") == true {
+        let base = console.baseURL
+        if let url = action.request.url, url.scheme?.hasPrefix("http") == true,
+           url.host != base.host || url.port != base.port {
             NSWorkspace.shared.open(url)
             decisionHandler(.cancel)
             return

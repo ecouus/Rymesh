@@ -2,7 +2,6 @@ package console
 
 import (
 	"crypto/hmac"
-	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
@@ -111,10 +110,6 @@ func (a *authManager) setCookie(w http.ResponseWriter) string {
 	return ""
 }
 
-func (a *authManager) clearCookie(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
-}
-
 func (a *authManager) checkCSRF(r *http.Request, info *authInfo) bool {
 	if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
 		return true
@@ -150,9 +145,3 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 func writeErr(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]any{"error": msg})
 }
-
-func constantEqual(a, b string) bool {
-	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
-}
-
-var _ = sha256.Size

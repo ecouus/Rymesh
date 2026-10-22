@@ -225,9 +225,8 @@ func checkAgentUpdates(agents []AgentInfo) []AgentUpdateStatus {
 			Method:    agentUpdateMethod(a.Name, a.Binary),
 			CheckedAt: checkedAt,
 		}
-		if _, argv, text, err := agentUpdateCommand(a.Name, a); err == nil {
+		if _, _, text, err := agentUpdateCommand(a.Name, a); err == nil {
 			st.Command = text
-			_ = argv
 		}
 		res := latest[a.Name]
 		if res.err != nil {

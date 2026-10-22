@@ -132,13 +132,20 @@
 <div id="files" class="term files" role="dialog" aria-label="文件" hidden>
   <div class="term-head">
     <button id="files-back" class="icon-btn" type="button" aria-label="返回对话" title="返回对话"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5-7 7 7 7"/></svg></button>
-    <div class="term-title"><h2>文件</h2><div id="files-sub" class="sub"></div></div>
+    <div class="term-title"><h2 id="files-title">文件</h2><div id="files-sub" class="sub"></div></div>
     <button id="files-hidden" class="icon-btn" type="button" aria-label="显示隐藏文件" title="显示隐藏文件" aria-pressed="false"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6.5 9.5-6.5 9.5 6.5 9.5 6.5-3.5 6.5-9.5 6.5S2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/></svg></button>
     <label class="icon-btn files-upload" title="上传到当前文件夹" aria-label="上传到当前文件夹"><input id="files-input" type="file" multiple hidden><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5V4.5M7.5 9 12 4.5 16.5 9M5 19.5h14"/></svg></label>
   </div>
   <nav id="files-crumbs" class="files-crumbs" aria-label="路径"></nav>
   <div id="files-list" class="files-list"></div>
   <div id="files-jobs" class="files-jobs" aria-live="polite"></div>
+  <div id="files-pick" class="files-pick" hidden>
+    <div id="files-pick-path" class="files-pick-path"></div>
+    <div class="row">
+      <button id="files-pick-type" class="btn ghost" type="button">手动输入</button>
+      <button id="files-pick-ok" class="btn primary grow" type="button">使用此文件夹</button>
+    </div>
+  </div>
 </div>
 
 <div id="toast" class="toast" hidden></div>

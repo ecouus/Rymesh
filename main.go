@@ -104,7 +104,7 @@ install 选项:
 
 func serveMain(args []string) int {
 	fset := flag.NewFlagSet("serve", flag.ContinueOnError)
-	configPath := fset.String("config", systemConfigPath(), "config path")
+	configPath := fset.String("config", defaultConfigPath, "config path")
 	if err := fset.Parse(args); err != nil {
 		return 2
 	}
@@ -116,10 +116,6 @@ func serveMain(args []string) int {
 	}
 	if err := cfg.ensureDirs(); err != nil {
 		fmt.Fprintln(os.Stderr, "创建目录失败:", err)
-		return 1
-	}
-	if err := migrateLegacyFiles(cfg.DataDir, cfg.LogDir); err != nil {
-		fmt.Fprintln(os.Stderr, "迁移旧版数据库失败:", err)
 		return 1
 	}
 	logPath := filepath.Join(cfg.LogDir, "rymesh.log")
@@ -207,7 +203,7 @@ func serveMain(args []string) int {
 
 func installMain(args []string) int {
 	fset := flag.NewFlagSet("install", flag.ContinueOnError)
-	configPath := fset.String("config", systemConfigPath(), "config path")
+	configPath := fset.String("config", defaultConfigPath, "config path")
 	port := fset.Int("port", 0, "listen port")
 	dataDir := fset.String("data", "", "data dir")
 	logDir := fset.String("log", "", "log dir")
@@ -216,15 +212,6 @@ func installMain(args []string) int {
 	noEnable := fset.Bool("no-enable", false, "do not enable at boot")
 	if err := fset.Parse(args); err != nil {
 		return 2
-	}
-	if *configPath == legacyConfigPath || *configPath == defaultConfigPath {
-		exe, _ := os.Executable()
-		exe, _ = filepath.EvalSymlinks(exe)
-		if err := migrateLegacySystem(exe); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 1
-		}
-		*configPath = defaultConfigPath
 	}
 	cfg, err := loadConfig(*configPath)
 	if err != nil {
@@ -371,7 +358,7 @@ func pidFilePath(addrs []string) string {
 
 func statusMain(args []string) int {
 	fset := flag.NewFlagSet("status", flag.ContinueOnError)
-	configPath := fset.String("config", systemConfigPath(), "config path")
+	configPath := fset.String("config", defaultConfigPath, "config path")
 	_ = fset.Parse(args)
 	cfg, err := loadConfig(*configPath)
 	if err != nil {
@@ -423,7 +410,7 @@ func statusMain(args []string) int {
 
 func importMain(args []string) int {
 	fset := flag.NewFlagSet("import", flag.ContinueOnError)
-	configPath := fset.String("config", systemConfigPath(), "config path")
+	configPath := fset.String("config", defaultConfigPath, "config path")
 	_ = fset.Parse(args)
 	cfg, err := loadConfig(*configPath)
 	if err != nil {
@@ -452,7 +439,7 @@ func importMain(args []string) int {
 
 func tasksMain(args []string) int {
 	fset := flag.NewFlagSet("tasks", flag.ContinueOnError)
-	configPath := fset.String("config", systemConfigPath(), "config path")
+	configPath := fset.String("config", defaultConfigPath, "config path")
 	all := fset.Bool("all", false, "include finished tasks")
 	_ = fset.Parse(args)
 	cfg, err := loadConfig(*configPath)
@@ -485,7 +472,7 @@ func tasksMain(args []string) int {
 
 func cancelMain(args []string) int {
 	fset := flag.NewFlagSet("cancel", flag.ContinueOnError)
-	configPath := fset.String("config", systemConfigPath(), "config path")
+	configPath := fset.String("config", defaultConfigPath, "config path")
 	_ = fset.Parse(args)
 	rest := fset.Args()
 	if len(rest) != 1 {
@@ -525,7 +512,7 @@ func cancelMain(args []string) int {
 
 func logsMain(args []string) int {
 	fset := flag.NewFlagSet("logs", flag.ContinueOnError)
-	configPath := fset.String("config", systemConfigPath(), "config path")
+	configPath := fset.String("config", defaultConfigPath, "config path")
 	n := fset.Int("n", 100, "number of lines")
 	_ = fset.Parse(args)
 	cfg, err := loadConfig(*configPath)
@@ -565,7 +552,7 @@ func tailLines(f *os.File, n int) []string {
 
 func doctorMain(args []string) int {
 	fset := flag.NewFlagSet("doctor", flag.ContinueOnError)
-	configPath := fset.String("config", systemConfigPath(), "config path")
+	configPath := fset.String("config", defaultConfigPath, "config path")
 	_ = fset.Parse(args)
 	ok := true
 	fmt.Println("== 配置 ==")

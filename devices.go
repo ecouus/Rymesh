@@ -6,11 +6,14 @@ package console
 
 import (
 	"bufio"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -109,6 +112,9 @@ func (in deviceInput) apply(n *NodeConfig) error {
 		n.Transport = ""
 		if n.URL == "" || n.Token == "" {
 			return errors.New("直连设备需要地址和令牌")
+		}
+		if err := checkDirectURL(n.URL); err != nil {
+			return err
 		}
 	default:
 		return errors.New("未知的连接方式: " + n.Transport)
@@ -244,7 +250,7 @@ func (s *Server) handleDeviceTest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.ssh.retry(n) // an explicit test always tries again
-	out, err := s.ssh.run(ctx, n, `uname -s -m; B="$HOME/.rymesh/bin/rymesh"; [ -x "$B" ] || B="$HOME/.agentconsole/bin/agentconsole"; [ -x "$B" ] && "$B" version`, nil)
+	out, err := s.ssh.run(ctx, n, `uname -s -m; B="$HOME/.rymesh/bin/rymesh"; [ -x "$B" ] && "$B" version`, nil)
 	if err != nil && out == "" {
 		if strings.Contains(err.Error(), "unable to authenticate") {
 			res := map[string]any{"stage": "auth", "error": "服务器还不认识这把密钥"}
@@ -353,12 +359,22 @@ func (s *Server) deployNode(ctx context.Context, n NodeConfig, emit func(string)
 			return n, err
 		}
 	}
-	bin, src, err := nodeBinary(goos, goarch, s.config().DataDir)
+	bin, gz, src, err := nodeBinary(goos, goarch, s.config().DataDir)
 	if err != nil {
 		return n, err
 	}
+	// A compressed program goes over the wire as it is and is unpacked on the
+	// server; only a server without gzip gets it unpacked here.
+	unpack := "cat"
+	if gz {
+		if out, _ := s.ssh.run(ctx, n, `command -v gzip >/dev/null && echo yes`, nil); strings.TrimSpace(out) == "yes" {
+			unpack = "gzip -dc"
+		} else if bin, err = gunzip(bin); err != nil {
+			return n, fmt.Errorf("解压 %s 失败：%w", src, err)
+		}
+	}
 	emit(fmt.Sprintf("上传程序：%s/%s，%.1f MB（%s）", goos, goarch, float64(len(bin))/(1<<20), src))
-	const up = `set -e; D="$HOME/.rymesh/bin"; mkdir -p "$D"; cat > "$D/rymesh.new"; ` +
+	up := `set -e; D="$HOME/.rymesh/bin"; mkdir -p "$D"; ` + unpack + ` > "$D/rymesh.new"; ` +
 		`chmod 755 "$D/rymesh.new"; mv -f "$D/rymesh.new" "$D/rymesh"; "$D/rymesh" version`
 	if out, err := s.ssh.run(ctx, n, up, bin); err != nil {
 		return n, fmt.Errorf("上传失败：%s", strings.TrimSpace(out+" "+err.Error()))
@@ -366,29 +382,8 @@ func (s *Server) deployNode(ctx context.Context, n NodeConfig, emit func(string)
 	if out, _ := s.ssh.run(ctx, n, `[ -f /etc/rymesh/config.json ] && echo system`, nil); strings.TrimSpace(out) == "system" {
 		return s.adoptSystemNode(ctx, n, emit)
 	}
-	if out, _ := s.ssh.run(ctx, n, `[ -f /etc/agentconsole/config.json ] && echo legacy`, nil); strings.TrimSpace(out) == "legacy" {
-		emit("检测到旧版系统安装，备份并迁移服务及数据")
-		const migrate = `set -e
-[ "$(id -u)" = 0 ] || { echo '迁移系统级安装需要 root'; exit 1; }
-BACKUP="/var/backups/rymesh-migration-$(date +%Y%m%d-%H%M%S)"
-mkdir -m 700 "$BACKUP"
-systemctl stop agentconsole
-trap 'systemctl start agentconsole >/dev/null 2>&1 || true' EXIT
-set --
-for P in /etc/agentconsole /var/lib/agentconsole /var/log/agentconsole /etc/systemd/system/agentconsole.service; do
-  [ ! -e "$P" ] || set -- "$@" "$P"
-done
-tar -czf "$BACKUP/legacy.tar.gz" "$@"
-install -m 0755 "$HOME/.rymesh/bin/rymesh" /usr/local/bin/rymesh
-/usr/local/bin/rymesh install
-trap - EXIT`
-		if out, err := s.ssh.run(ctx, n, migrate, nil); err != nil {
-			return n, fmt.Errorf("迁移旧版系统安装失败：%s", strings.TrimSpace(out))
-		}
-		return s.adoptSystemNode(ctx, n, emit)
-	}
 	token := ""
-	if out, err := s.ssh.run(ctx, n, `C="$HOME/.rymesh/config.json"; [ -f "$C" ] || C="$HOME/.agentconsole/config.json"; [ -f "$C" ] && "$HOME/.rymesh/bin/rymesh" node token --config "$C" 2>/dev/null`, nil); err == nil {
+	if out, err := s.ssh.run(ctx, n, `C="$HOME/.rymesh/config.json"; [ -f "$C" ] && "$HOME/.rymesh/bin/rymesh" node token --config "$C" 2>/dev/null`, nil); err == nil {
 		token = strings.TrimSpace(out)
 	}
 	if token != "" {
@@ -532,26 +527,38 @@ func newNodeToken() (string, error) {
 
 // nodeBinary finds the node program for a platform: this binary when the
 // platform matches, else a `make dist` build next to it or in the data dir.
-func nodeBinary(goos, goarch, dataDir string) ([]byte, string, error) {
+func nodeBinary(goos, goarch, dataDir string) (bin []byte, gz bool, src string, err error) {
 	exe, err := os.Executable()
 	if err != nil {
-		return nil, "", err
+		return nil, false, "", err
 	}
 	exe, _ = filepath.EvalSymlinks(exe)
 	if goos == runtime.GOOS && goarch == runtime.GOARCH {
 		b, err := os.ReadFile(exe)
-		return b, "本程序", err
+		return b, false, "本程序", err
 	}
 	name := "rymesh_" + goos + "_" + goarch
 	wd, _ := os.Getwd()
 	for _, dir := range []string{filepath.Join(filepath.Dir(exe), "dist"), filepath.Join(filepath.Dir(exe), "..", "dist"),
 		filepath.Join(wd, "dist"), filepath.Join(dataDir, "dist")} {
+		// The apps ship the programs gzipped (make dist writes both).
+		if b, err := os.ReadFile(filepath.Join(dir, name+".gz")); err == nil {
+			return b, true, filepath.Join(dir, name+".gz"), nil
+		}
 		if b, err := os.ReadFile(filepath.Join(dir, name)); err == nil {
-			return b, filepath.Join(dir, name), nil
+			return b, false, filepath.Join(dir, name), nil
 		}
 	}
-	return nil, "", fmt.Errorf("没有 %s/%s 平台的程序：请在源码目录运行 make dist，或把 %s 放到 %s",
+	return nil, false, "", fmt.Errorf("没有 %s/%s 平台的程序：请在源码目录运行 make dist，或把 %s 放到 %s",
 		goos, goarch, name, filepath.Join(dataDir, "dist"))
+}
+
+func gunzip(b []byte) ([]byte, error) {
+	zr, err := gzip.NewReader(bytes.NewReader(b))
+	if err != nil {
+		return nil, err
+	}
+	return io.ReadAll(zr)
 }
 
 func parseUname(s string) (goos, goarch string) {

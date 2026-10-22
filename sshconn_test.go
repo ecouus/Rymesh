@@ -307,7 +307,7 @@ func mustAtoi(s string) int { n, _ := strconv.Atoi(s); return n }
 
 func TestEmbeddedHubOnly(t *testing.T) {
 	dir := t.TempDir()
-	e, err := StartEmbedded(dir)
+	e, err := StartEmbedded(dir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

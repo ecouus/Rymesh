@@ -1,9 +1,7 @@
 package console
 
 import (
-	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -11,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -64,6 +63,9 @@ func newServer(cfg *Config, cfgPath string, st *Store, logger *log.Logger, bindA
 	// The device list lives in the database (vault.go).
 	if err := initVault(st, cfg, cfgPath); err != nil {
 		logger.Printf("密钥库初始化失败: %v", err)
+	}
+	if err := st.sealStoredKeys(); err != nil {
+		logger.Printf("加密已保存的私钥失败（下次启动重试）: %v", err)
 	}
 	s := &Server{
 		cfg: cfg, cfgPath: cfgPath, store: st, agents: newAgentSet(),
@@ -170,6 +172,8 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/files", s.authed(s.handleFilesList))
 	m.HandleFunc("GET /api/files/download", s.authed(s.handleFilesDownload))
 	m.HandleFunc("POST /api/files/upload", s.authed(s.handleFilesUpload))
+	m.HandleFunc("POST /api/files/rename", s.authed(s.handleFilesRename))
+	m.HandleFunc("POST /api/files/delete", s.authed(s.handleFilesDelete))
 	m.HandleFunc("POST /api/terminals", s.authed(s.handleTermCreate))
 	m.HandleFunc("GET /api/terminals/{id}/stream", s.authed(s.handleTermStream))
 	m.HandleFunc("POST /api/terminals/{id}/input", s.authed(s.handleTermInput))
@@ -328,25 +332,32 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 			"last_at": s.store.GetMeta("last_import_at"),
 			"report":  lastReport,
 		},
-		"config": map[string]any{
-			"default_cwd":            cfg.defaultCWD(),
-			"allowed_roots":          cfg.AllowedRoots,
-			"max_concurrent":         cfg.MaxConcurrent,
-			"data_dir":               cfg.DataDir,
-			"log_dir":                cfg.LogDir,
-			"port":                   cfg.Port,
-			"bind_addrs":             s.bindAddrs,
-			"easytier_iface":         cfg.EasyTierIface,
-			"easytier_ip":            easytierIP(s.bindAddrs),
-			"db_path":                filepath.Join(cfg.DataDir, "rymesh.db"),
-			"permission_ttl_minutes": cfg.PermissionTTLMin,
-			"session_ttl_hours":      cfg.SessionTTLHours,
-			"import_on_start":        cfg.ImportOnStart,
-			"import_history_limit":   cfg.ImportHistoryLimit,
-			"import_exclude_roots":   cfg.ImportExcludeRoots,
-			"task_log_max_bytes":     cfg.TaskLogMaxBytes,
-		},
+		"config": s.configView(cfg),
 	})
+}
+
+// configView is the configuration as the page shows it (bootstrap and the
+// settings page).
+func (s *Server) configView(cfg *Config) map[string]any {
+	return map[string]any{
+		"home":                   userHome(),
+		"default_cwd":            cfg.defaultCWD(),
+		"allowed_roots":          cfg.AllowedRoots,
+		"max_concurrent":         cfg.MaxConcurrent,
+		"data_dir":               cfg.DataDir,
+		"log_dir":                cfg.LogDir,
+		"port":                   cfg.Port,
+		"bind_addrs":             s.bindAddrs,
+		"easytier_iface":         cfg.EasyTierIface,
+		"easytier_ip":            easytierIP(s.bindAddrs),
+		"db_path":                filepath.Join(cfg.DataDir, "rymesh.db"),
+		"permission_ttl_minutes": cfg.PermissionTTLMin,
+		"session_ttl_hours":      cfg.SessionTTLHours,
+		"import_on_start":        cfg.ImportOnStart,
+		"import_history_limit":   cfg.ImportHistoryLimit,
+		"import_exclude_roots":   cfg.ImportExcludeRoots,
+		"task_log_max_bytes":     cfg.TaskLogMaxBytes,
+	}
 }
 
 func mergeTasks(active, recent []*Task, limit int) []*Task {
@@ -373,13 +384,12 @@ func mergeTasks(active, recent []*Task, limit int) []*Task {
 
 func easytierIP(addrs []string) string {
 	for _, a := range addrs {
-		host, _, err := splitHostPort(a)
+		host, _, err := net.SplitHostPort(a)
 		if err != nil {
 			continue
 		}
-		ip := parseIP(host)
-		if ip != "" && host != "127.0.0.1" && host != "::1" {
-			return ip
+		if host != "" && host != "127.0.0.1" && host != "::1" {
+			return host
 		}
 	}
 	return ""
@@ -397,19 +407,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{
 		"version": version, "started_at": s.started.UTC().Format(time.RFC3339Nano),
 		"agents": s.agents.List(false),
-		"config": map[string]any{
-			"default_cwd": cfg.defaultCWD(), "allowed_roots": cfg.AllowedRoots,
-			"max_concurrent": cfg.MaxConcurrent, "data_dir": cfg.DataDir,
-			"log_dir": cfg.LogDir, "port": cfg.Port, "bind_addrs": s.bindAddrs,
-			"easytier_iface": cfg.EasyTierIface, "easytier_ip": easytierIP(s.bindAddrs),
-			"db_path":                filepath.Join(cfg.DataDir, "rymesh.db"),
-			"permission_ttl_minutes": cfg.PermissionTTLMin,
-			"session_ttl_hours":      cfg.SessionTTLHours,
-			"import_on_start":        cfg.ImportOnStart,
-			"import_history_limit":   cfg.ImportHistoryLimit,
-			"import_exclude_roots":   cfg.ImportExcludeRoots,
-			"task_log_max_bytes":     cfg.TaskLogMaxBytes,
-		},
+		"config": s.configView(cfg),
 		"counts": counts, "source_counts": sources,
 		"status": serviceStatus(),
 	})
@@ -760,6 +758,9 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 func (s *Server) trashNative(sess *Session) (string, error) {
 	home, _ := os.UserHomeDir()
 	var match string
+	if sess.NativeID == "" {
+		return "", nil // never ran in the CLI: no transcript to move
+	}
 	if sess.Agent == "claude" {
 		root := filepath.Join(home, ".claude", "projects")
 		_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -769,7 +770,7 @@ func (s *Server) trashNative(sess *Session) (string, error) {
 			}
 			return nil
 		})
-	} else if sess.Agent == "codex" && sess.NativeID != "" {
+	} else if sess.Agent == "codex" {
 		root := filepath.Join(home, ".codex", "sessions")
 		_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 			// Rollout names are rollout-<time>-<uuid>.jsonl. A substring match
@@ -1471,9 +1472,11 @@ func (s *Server) launch(t *Task) error {
 		PermTimeout: cfg.PermissionTTLMin * 60, RunnerID: randomID(9),
 		Model: settings.Model, Effort: settings.Effort,
 	}
-	if exe, err := os.Executable(); err == nil {
-		spec.Executable = exe
+	exe, err := os.Executable()
+	if err != nil {
+		return err
 	}
+	spec.Executable = exe
 	if err := atomicWriteJSON(filepath.Join(taskDir, "task.json"), spec); err != nil {
 		return err
 	}
@@ -1486,10 +1489,6 @@ func (s *Server) launch(t *Task) error {
 	}
 	if !claimed {
 		return errTaskAlreadyClaimed
-	}
-	exe, err := os.Executable()
-	if err != nil {
-		return err
 	}
 	devnull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	if err != nil {
@@ -1563,22 +1562,6 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
 	return nil
 }
 
-func splitHostPort(a string) (string, string, error) {
-	i := strings.LastIndex(a, ":")
-	if i < 0 {
-		return "", "", errors.New("no port")
-	}
-	host := strings.Trim(a[:i], "[]")
-	return host, a[i+1:], nil
-}
-
-func parseIP(host string) string {
-	if host == "" {
-		return ""
-	}
-	return host
-}
-
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
@@ -1596,5 +1579,8 @@ func copyFile(src, dst string) error {
 	return out.Close()
 }
 
-var _ = context.Background
-var _ = sql.ErrNoRows
+// userHome is this machine's home folder, which the page shows as "~".
+func userHome() string {
+	h, _ := os.UserHomeDir()
+	return h
+}

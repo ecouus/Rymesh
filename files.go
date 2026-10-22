@@ -20,6 +20,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // filesMaxEntries bounds one listing; a directory with more says so.
@@ -44,7 +46,8 @@ func (s *Server) filePath(w http.ResponseWriter, raw string) (string, bool) {
 	if raw == "" {
 		raw = cfg.defaultCWD()
 	}
-	if strings.HasPrefix(raw, "~") {
+	// Only "~" and "~/…": "~bob" is another user's home, not ours plus "bob".
+	if raw == "~" || strings.HasPrefix(raw, "~/") {
 		if home, err := os.UserHomeDir(); err == nil {
 			raw = home + raw[1:]
 		}
@@ -170,7 +173,7 @@ func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := q.Get("name")
-	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\x00") {
+	if !validName(name) {
 		writeErr(w, 400, "文件名无效")
 		return
 	}
@@ -180,6 +183,13 @@ func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 		} else {
 			writeErr(w, 400, "不是文件夹")
 		}
+		return
+	}
+	// A known size that cannot fit is refused before any of it is written,
+	// rather than filling the disk and failing at the end.
+	if free, ok := freeSpace(dir); ok && r.ContentLength > 0 && uint64(r.ContentLength) > free {
+		writeErr(w, http.StatusInsufficientStorage, fmt.Sprintf("磁盘空间不足：需要 %s，只剩 %s",
+			humanBytes(uint64(r.ContentLength)), humanBytes(free)))
 		return
 	}
 	tmp, err := os.CreateTemp(dir, ".rymesh-upload-*")
@@ -220,6 +230,79 @@ func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"name": filepath.Base(final), "path": final, "size": n})
 }
 
+// validName reports whether name is usable as one path element.
+func validName(name string) bool {
+	return name != "" && name != "." && name != ".." && !strings.ContainsAny(name, "/\x00")
+}
+
+// handleFilesRename gives a file or folder a new name in the same folder. It
+// refuses to replace something that already has that name.
+func (s *Server) handleFilesRename(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path string `json:"path"`
+		Name string `json:"name"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		return
+	}
+	p, ok := s.filePath(w, req.Path)
+	if !ok {
+		return
+	}
+	if !validName(req.Name) {
+		writeErr(w, 400, "文件名无效")
+		return
+	}
+	if _, err := os.Lstat(p); err != nil {
+		fileErr(w, err)
+		return
+	}
+	target := filepath.Join(filepath.Dir(p), req.Name)
+	if target == p {
+		writeJSON(w, 200, map[string]any{"path": p})
+		return
+	}
+	if _, err := os.Lstat(target); err == nil {
+		writeErr(w, 409, "已经有同名的文件或文件夹")
+		return
+	}
+	if err := os.Rename(p, target); err != nil {
+		fileErr(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"path": target})
+}
+
+// handleFilesDelete removes a file, a link (not what it points at) or a
+// folder with everything in it. The root, top-level system folders and the
+// home folder are refused: one slip there would wreck the machine.
+func (s *Server) handleFilesDelete(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path string `json:"path"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		return
+	}
+	p, ok := s.filePath(w, req.Path)
+	if !ok {
+		return
+	}
+	home, _ := os.UserHomeDir()
+	if filepath.Dir(p) == "/" || (home != "" && p == filepath.Clean(home)) {
+		writeErr(w, 403, "不能删除根目录、顶层系统目录或主目录")
+		return
+	}
+	if _, err := os.Lstat(p); err != nil {
+		fileErr(w, err)
+		return
+	}
+	if err := os.RemoveAll(p); err != nil {
+		fileErr(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
 // freeName calls place with dir/name, or "name (1).ext", "name (2).ext"…
 // until one is not taken. place must fail with fs.ErrExist on a taken name.
 func freeName(dir, name string, place func(string) error) (string, error) {
@@ -242,4 +325,26 @@ func freeName(dir, name string, place func(string) error) (string, error) {
 		}
 	}
 	return "", errors.New("同名文件过多")
+}
+
+// freeSpace is the space an unprivileged write can still use in dir.
+func freeSpace(dir string) (uint64, bool) {
+	var st unix.Statfs_t
+	if unix.Statfs(dir, &st) != nil {
+		return 0, false
+	}
+	return uint64(st.Bavail) * uint64(st.Bsize), true
+}
+
+func humanBytes(n uint64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	v, i := float64(n)/unit, 0
+	for v >= unit && i < 3 {
+		v /= unit
+		i++
+	}
+	return fmt.Sprintf("%.1f %cB", v, "KMGT"[i])
 }

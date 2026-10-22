@@ -28,6 +28,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/netip"
 	"net/url"
 	"os"
 	"strings"
@@ -423,6 +424,31 @@ func dialFailure(err error) string {
 	return sshErrorText(err)
 }
 
+// checkDirectURL accepts a direct device's address. Over plain HTTP the node
+// token travels in the clear, so http:// is limited to addresses off the
+// public internet (loopback, LAN, and VPN ranges such as EasyTier's or
+// Tailscale's); a public address needs https or an SSH connection. A host
+// name cannot be told apart and is left to the user.
+func checkDirectURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return errors.New("地址必须形如 http://10.0.0.2:8899")
+	}
+	if u.Scheme == "http" {
+		if ip, err := netip.ParseAddr(u.Hostname()); err == nil && !nonPublicAddr(ip) {
+			return errors.New("公网地址不能用明文 HTTP 直连（令牌会明文传输），请改用 HTTPS 或 SSH 连接")
+		}
+	}
+	return nil
+}
+
+var sharedAddrSpace = netip.MustParsePrefix("100.64.0.0/10") // carrier-grade NAT, Tailscale
+
+func nonPublicAddr(ip netip.Addr) bool {
+	ip = ip.Unmap()
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || sharedAddrSpace.Contains(ip)
+}
+
 func cliTransport(n NodeConfig, keys keySource) http.RoundTripper {
 	if n.Transport == transportSSH {
 		return newSSHPool(keys).transport(n)
@@ -451,7 +477,7 @@ func nodeMain(args []string) int {
 		return nodeSetupMain(rest) // runs on the node itself; no hub config
 	}
 	fset := flag.NewFlagSet("node "+sub, flag.ContinueOnError)
-	configPath := fset.String("config", systemConfigPath(), "config path")
+	configPath := fset.String("config", defaultConfigPath, "config path")
 	rotate := fset.Bool("rotate", false, "generate a new token")
 	name := fset.String("name", "", "display name")
 	nodeURL := fset.String("url", "", "node base URL, e.g. http://10.0.0.2:8899")
@@ -533,9 +559,8 @@ func nodeMain(args []string) int {
 			fmt.Fprintln(os.Stderr, "设备 id 只能包含字母、数字、- 和 _，且不能是 local")
 			return 2
 		}
-		u, err := url.Parse(*nodeURL)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			fmt.Fprintln(os.Stderr, "地址必须形如 http://10.0.0.2:8899")
+		if err := checkDirectURL(*nodeURL); err != nil {
+			fmt.Fprintln(os.Stderr, err)
 			return 2
 		}
 		n := NodeConfig{ID: id, Name: *name, URL: strings.TrimRight(*nodeURL, "/"), Token: *token}

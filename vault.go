@@ -48,8 +48,6 @@ var vaultSchema = []string{`CREATE TABLE IF NOT EXISTS ssh_keys (
 	source      TEXT NOT NULL,
 	created_at  INTEGER NOT NULL
 )`,
-	// Key comments written before the product was renamed.
-	`UPDATE ssh_keys SET public = replace(public, ' agentconsole-', ' rymesh-') WHERE public LIKE '% agentconsole-%'`,
 	`CREATE TABLE IF NOT EXISTS devices (
 	id   TEXT PRIMARY KEY,
 	pos  INTEGER NOT NULL,
@@ -79,7 +77,10 @@ func (s *Store) privateKey(id string) ([]byte, error) {
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, errors.New("密钥已被删除，请为这台设备重新选择密钥")
 	}
-	return b, err
+	if err != nil {
+		return nil, err
+	}
+	return s.openPrivate(b)
 }
 
 func (s *Store) listKeys() ([]vaultKey, error) {
@@ -113,7 +114,8 @@ func (s *Store) keyNameTaken(name string) bool {
 	return n > 0
 }
 
-// addKey stores a private key (unencrypted OpenSSH PEM). A key already in
+// addKey stores a private key (unencrypted OpenSSH PEM, sealed in the
+// database by vaultseal.go). A key already in
 // the vault (same fingerprint) is returned as is, with created false.
 func (s *Store) addKey(name, source string, privPEM []byte) (k vaultKey, created bool, err error) {
 	signer, err := ssh.ParsePrivateKey(privPEM)
@@ -125,11 +127,15 @@ func (s *Store) addKey(name, source string, privPEM []byte) (k vaultKey, created
 	if k, ok := s.keyByFingerprint(fp); ok {
 		return k, false, nil
 	}
+	sealed, err := s.sealPrivate(privPEM)
+	if err != nil {
+		return vaultKey{}, false, err
+	}
 	name = s.uniqueKeyName(name)
 	k = vaultKey{ID: "k" + strings.ToLower(randomID(7)), Name: name, Type: pub.Type(), Fingerprint: fp,
 		Public: authorizedLine(pub, name), Source: source, Created: time.Now().Unix(), UsedBy: []string{}}
 	_, err = s.db.Exec(`INSERT INTO ssh_keys (id, name, type, fingerprint, public, private, source, created_at) VALUES (?,?,?,?,?,?,?,?)`,
-		k.ID, k.Name, k.Type, k.Fingerprint, k.Public, privPEM, k.Source, k.Created)
+		k.ID, k.Name, k.Type, k.Fingerprint, k.Public, sealed, k.Source, k.Created)
 	return k, err == nil, err
 }
 
@@ -754,7 +760,7 @@ func sealBundle(p bundlePayload, code, from string) ([]byte, error) {
 
 func openBundle(data []byte, code string) (*bundlePayload, error) {
 	var f bundleFile
-	if err := json.Unmarshal(data, &f); err != nil || (f.Format != bundleFormat && f.Format != legacyName+"-bundle") {
+	if err := json.Unmarshal(data, &f); err != nil || f.Format != bundleFormat {
 		return nil, errors.New("不是 Rymesh 导出的文件")
 	}
 	if f.Version != 1 {

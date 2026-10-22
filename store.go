@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -111,6 +110,9 @@ type Store struct {
 	// on it instead of finding the change at their next poll.
 	changeMu sync.Mutex
 	changed  chan struct{}
+
+	vaultMu  sync.Mutex
+	vaultKey []byte // seals private keys (vaultseal.go)
 }
 
 // Changed returns a channel that is closed at the next change.
@@ -146,9 +148,6 @@ func openStore(dataDir string) (*Store, error) {
 		return nil, err
 	}
 	path := filepath.Join(dataDir, "rymesh.db")
-	if old := filepath.Join(dataDir, legacyName+".db"); !fileExists(path) && fileExists(old) {
-		path = old // renamed by the service at its next start (legacy.go)
-	}
 	dsn := "file:" + path +
 		"?_pragma=busy_timeout(8000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)"
 	db, err := sql.Open("sqlite", dsn)
@@ -965,9 +964,4 @@ func truncateTitle(s string, max int) string {
 		return s
 	}
 	return strings.TrimSpace(string(r[:max])) + "…"
-}
-
-func parseTime(s string) time.Time {
-	t, _ := time.Parse(time.RFC3339Nano, s)
-	return t
 }

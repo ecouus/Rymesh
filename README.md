@@ -467,7 +467,7 @@ Codex / Claude 账号凭据。
 export ANDROID_HOME=~/Library/Android/sdk ANDROID_NDK_HOME=$ANDROID_HOME/ndk/<版本> \
        JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
 go install golang.org/x/mobile/cmd/gomobile@latest golang.org/x/mobile/cmd/gobind@latest
-make android     # → android/app/build/outputs/apk/debug/app-debug.apk
+make android     # → android/app/build/outputs/apk/release/app-release.apk
 ```
 
 可以在 App 内生成密钥并添加服务器，也可以从电脑导出设备后在手机上导入（见上文“密钥库与迁移”）。

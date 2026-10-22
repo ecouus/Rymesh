@@ -4,3 +4,4 @@
 *.db-*
 TEST_REPORT.md
 .DS_Store
+/ref/

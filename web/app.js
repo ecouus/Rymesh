@@ -1538,6 +1538,9 @@
     return list.length ? list[0].id : "read-only";
   }
 
+  // The name, large and faint, fills the space above the greeting.
+  var HOME_HERO = '<div class="home-hero" aria-hidden="true"><span>Rymesh</span></div>';
+
   function renderHome() {
     S.route = "home";
     closeStream();
@@ -1566,7 +1569,7 @@
       setTop("Rymesh", "");
       $("#composer-wrap").hidden = true;
       document.body.classList.remove("has-composer");
-      $("#main").innerHTML = '<div class="home-empty onboarding">' +
+      $("#main").innerHTML = '<div class="home-empty onboarding">' + HOME_HERO +
         '<div class="home-title">欢迎</div>' +
         '<div class="home-sub">添加一台服务器开始使用：通过 SSH 连接，并在服务器上自动部署节点。服务器只需开放 SSH。</div>' +
         '<button class="btn primary block" type="button" data-add-device="1" style="margin-top:24px">添加服务器</button>' +
@@ -1586,7 +1589,7 @@
         '<span class="recent-time">' + esc(rel(s.last_message_at || s.updated_at)) + "</span></button>";
     }).join("");
     $("#main").innerHTML =
-      '<div class="home-empty">' +
+      '<div class="home-empty">' + HOME_HERO +
       '<div class="home-title">' + esc(greeting()) + "</div>" +
       '<div class="home-sub">新对话将在 ' + (multiNode() ? esc(nodeLabel(S.node)) + (S.draftCwd ? " 的 " : " 上") : "") +
       (S.draftCwd ? '<button type="button" data-home-cwd="1" title="更改工作目录">' +

@@ -26,6 +26,10 @@
   --safe-b: env(safe-area-inset-bottom, 0px);
   --mono: ui-monospace, "SF Mono", SFMono-Regular, "JetBrains Mono", Menlo, Consolas,
     "DejaVu Sans Mono", "Noto Sans Mono", "Liberation Mono", monospace;
+  /* The welcome page's extruded name: face, side, cast shadow. */
+  --hero-face: #f4f4f5;
+  --hero-side: #e2e2e6;
+  --hero-shade: rgba(0, 0, 0, .06);
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
@@ -50,6 +54,9 @@
     --code-bg: #161618;
     --user-bubble: #1e1e21;
     --shadow: none;
+    --hero-face: #1d1d20;
+    --hero-side: #141416;
+    --hero-shade: rgba(0, 0, 0, .55);
     color-scheme: dark;
   }
 }
@@ -74,6 +81,9 @@
   --code-bg: #161618;
   --user-bubble: #1e1e21;
   --shadow: none;
+  --hero-face: #1d1d20;
+  --hero-side: #141416;
+  --hero-shade: rgba(0, 0, 0, .55);
   color-scheme: dark;
 }
 
@@ -173,9 +183,27 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
   justify-content: flex-end; padding: 24px 16px 20px; max-width: 752px; margin: 0 auto;
 }
 .home-glyph { display: none; }
+/* The name in faint extruded letters, centred in the room the greeting
+   leaves above it. Purely decorative; gone when the page is short (the
+   keyboard is up). */
+.home-hero {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  min-height: 0; min-width: 0; overflow: hidden; padding: 8px 0 20px; pointer-events: none; user-select: none; -webkit-user-select: none;
+}
+.home-hero span {
+  font-size: clamp(46px, 14.5vw, 104px); font-weight: 800; letter-spacing: -.01em; line-height: 1.1;
+  white-space: nowrap;
+  color: var(--hero-face);
+  transform: perspective(520px) rotateX(18deg);
+  text-shadow:
+    0 1px 0 var(--hero-side), 0 2px 0 var(--hero-side), 0 3px 0 var(--hero-side),
+    0 4px 0 var(--hero-side), 0 5px 0 var(--hero-side), 0 6px 0 var(--hero-side),
+    0 7px 0 var(--hero-side), 0 14px 16px var(--hero-shade);
+}
+@media (max-height: 560px) { .home-hero { display: none; } }
 .home-title { font-size: 26px; font-weight: 600; letter-spacing: -.03em; padding: 0 4px; }
 .home-sub { color: var(--text-faint); font-size: 13px; margin-top: 6px; padding: 0 4px; }
-.home-sub button { border: 0; background: none; padding: 0; color: var(--text-dim); font-family: var(--mono); font-size: 12.5px; }
+.home-sub button { border: 0; background: none; padding: 0; color: var(--text-dim); font-family: var(--mono); font-size: 12.5px; text-align: left; overflow-wrap: anywhere; }
 .home-sub button:active { color: var(--text); }
 .home-recent { margin-top: 28px; }
 /* Start-up connection, in place of recent conversations. */

@@ -2509,3 +2509,22 @@ func TestImporterSkipsCodexSubagentThreads(t *testing.T) {
 		t.Fatalf("sessions = %d %+v", len(got), got)
 	}
 }
+
+func TestDefaultCWDIsHomeAndSurvivesMissingDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	c := defaultConfig()
+	if c.DefaultCWD != home || c.AllowedRoots[0] != home {
+		t.Fatalf("default cwd %q roots %v", c.DefaultCWD, c.AllowedRoots)
+	}
+	// A configured directory that does not exist on this machine falls back
+	// to home instead of breaking new conversations.
+	c.DefaultCWD = filepath.Join(home, "gone")
+	if got := c.defaultCWD(); got != home {
+		t.Fatalf("fallback = %q", got)
+	}
+	real, _ := filepath.EvalSymlinks(home)
+	if got, err := c.allowedCWD(""); err != nil || got != real {
+		t.Fatalf("allowedCWD(\"\") = %q, %v", got, err)
+	}
+}

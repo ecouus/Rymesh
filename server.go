@@ -348,7 +348,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 			"report":  lastReport,
 		},
 		"config": map[string]any{
-			"default_cwd":            cfg.DefaultCWD,
+			"default_cwd":            cfg.defaultCWD(),
 			"allowed_roots":          cfg.AllowedRoots,
 			"max_concurrent":         cfg.MaxConcurrent,
 			"data_dir":               cfg.DataDir,
@@ -417,7 +417,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		"version": version, "started_at": s.started.UTC().Format(time.RFC3339Nano),
 		"agents": s.agents.List(false),
 		"config": map[string]any{
-			"default_cwd": cfg.DefaultCWD, "allowed_roots": cfg.AllowedRoots,
+			"default_cwd": cfg.defaultCWD(), "allowed_roots": cfg.AllowedRoots,
 			"max_concurrent": cfg.MaxConcurrent, "data_dir": cfg.DataDir,
 			"log_dir": cfg.LogDir, "port": cfg.Port, "bind_addrs": s.bindAddrs,
 			"easytier_iface": cfg.EasyTierIface, "easytier_ip": easytierIP(s.bindAddrs),

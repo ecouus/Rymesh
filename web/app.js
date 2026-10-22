@@ -459,7 +459,7 @@
       S.perms = d.permissions || [];
       S.activeTasks = S.tasks.filter(isActiveTask);
       ensureDraftAgent();
-      if (!S.draftCwd) S.draftCwd = S.config.default_cwd || "/srv/project";
+      if (!S.draftCwd) S.draftCwd = S.config.default_cwd || "";
       showApp();
       updateThemeColor();
       renderApprovalNotifications();
@@ -1464,7 +1464,7 @@
     S.oldestSeq = 0;
     S.hasOlder = false;
     ensureDraftAgent();
-    if (!S.draftCwd) S.draftCwd = S.config.default_cwd || "/srv/project";
+    if (!S.draftCwd) S.draftCwd = S.config.default_cwd || "";
     document.body.classList.add("has-composer");
     $("#composer-wrap").hidden = false;
     $("#conn-dot").hidden = true;
@@ -3280,7 +3280,7 @@
     var agent = agentMeta(S.draftAgent);
     if (!agent || !agent.name || !agent.available) { toast("请先选择可用的 Agent", true); return; }
     var profile = selectedProfile();
-    var cwd = S.draftCwd || S.config.default_cwd || "/srv/project";
+    var cwd = S.draftCwd || S.config.default_cwd || "";
     // A retry after a lost response must not queue the same message twice.
     if (!S.pendingSend || S.pendingSend.text !== text) {
       S.pendingSend = { text: text, rid: rid() };

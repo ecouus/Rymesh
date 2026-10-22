@@ -74,13 +74,29 @@ func (c *Config) clone() *Config {
 	return &n
 }
 
+// homeDir is the home of the user the console runs as: the default place for
+// new conversations, as a terminal would open there.
+func homeDir() string {
+	if h, err := os.UserHomeDir(); err == nil && filepath.IsAbs(h) {
+		return h
+	}
+	return "/tmp"
+}
+
 func defaultConfig() *Config {
+	home := homeDir()
+	roots := []string{home}
+	for _, r := range []string{"/home", "/root", "/tmp"} {
+		if r != home && !strings.HasPrefix(home, r+"/") {
+			roots = append(roots, r)
+		}
+	}
 	return &Config{
 		Version:          configVersion,
 		Port:             defaultPort,
 		EasyTierIface:    "tun0",
-		DefaultCWD:       "/srv/project",
-		AllowedRoots:     []string{"/srv/project", "/home", "/root", "/tmp"},
+		DefaultCWD:       home,
+		AllowedRoots:     roots,
 		MaxConcurrent:    4,
 		DataDir:          defaultDataDir,
 		LogDir:           defaultLogDir,
@@ -135,7 +151,7 @@ func (c *Config) normalize() error {
 		c.LogDir = defaultLogDir
 	}
 	if c.DefaultCWD == "" {
-		c.DefaultCWD = "/srv/project"
+		c.DefaultCWD = homeDir()
 	}
 	if len(c.AllowedRoots) == 0 {
 		c.AllowedRoots = []string{c.DefaultCWD}
@@ -388,7 +404,7 @@ func mustB64(s string) []byte {
 // allowedCWD validates a user-supplied working directory.
 func (c *Config) allowedCWD(p string) (string, error) {
 	if p == "" {
-		p = c.DefaultCWD
+		p = c.defaultCWD()
 	}
 	if !filepath.IsAbs(p) {
 		return "", errors.New("working directory must be absolute")
@@ -465,14 +481,16 @@ func listenAddresses(c *Config) ([]string, error) {
 	return out, nil
 }
 
-func detectCWD() string {
-	for _, p := range []string{"/srv/project", "/home", "/root", "/tmp"} {
-		if st, err := os.Stat(p); err == nil && st.IsDir() {
-			return p
-		}
+// defaultCWD is where a new conversation starts: the configured directory,
+// or the home directory if that one has gone missing on this machine.
+func (c *Config) defaultCWD() string {
+	if st, err := os.Stat(c.DefaultCWD); err == nil && st.IsDir() {
+		return c.DefaultCWD
 	}
-	wd, _ := os.Getwd()
-	return wd
+	if h := homeDir(); h != "" {
+		return h
+	}
+	return c.DefaultCWD
 }
 
 func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339Nano) }

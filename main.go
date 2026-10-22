@@ -234,7 +234,6 @@ func installMain(args []string) int {
 			fmt.Fprintln(os.Stderr, "生成配置失败:", err)
 			return 1
 		}
-		cfg.DefaultCWD = detectCWD()
 	}
 	if *port > 0 {
 		cfg.Port = *port

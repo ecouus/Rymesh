@@ -440,6 +440,8 @@
       if (S.hubOnly && !S.nodes.some(function (n) { return n.id === S.node; })) {
         var first = S.nodes.filter(function (n) { return n.online; })[0] || S.nodes[0];
         S.node = first ? first.id : "local";
+        S.draftCwd = ""; // a directory on the previous device means nothing here
+        LS.del("draftCwd");
         renderNodeSwitch(); // it was drawn before the device was chosen
       }
       return api("/api/bootstrap");
@@ -538,6 +540,118 @@
     }).join("");
   }
 
+  // ------------------------------------------------------------ native bridge
+
+  // The Android app injects AgentConsoleNative; the Mac app listens on the
+  // "ac" message handler. In a plain browser both are absent and the web
+  // fallbacks apply.
+  var androidNative = window.AgentConsoleNative || null;
+  var macNative = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ac || null;
+
+  function copyText(text, msg) {
+    var done = function () { toast(msg || "已复制"); };
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(done).catch(function () { fallbackCopy(text, done); });
+    } else fallbackCopy(text, done);
+  }
+
+  function canShare() { return !!(androidNative || navigator.share); }
+  function shareText(text, title) {
+    if (androidNative) { androidNative.share(text, title || ""); return; }
+    if (navigator.share) { navigator.share({ title: title || "", text: text }).catch(function () {}); return; }
+    copyText(text);
+  }
+
+  // saveTextFile hands a text file to the user: the system save dialog in the
+  // apps, a download in a browser.
+  function saveTextFile(name, text) {
+    if (androidNative) { androidNative.saveFile(name, text); return; }
+    if (macNative) { macNative.postMessage({ op: "save", name: name, text: text }); return; }
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([text], { type: "application/octet-stream" }));
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  }
+
+  // ------------------------------------------------------------------ overlay
+
+  // A second layer above the sheet for pickers and short prompts, so choosing
+  // something inside a form does not throw the form away.
+  function openOverlay(title, html) {
+    var el = document.createElement("div");
+    el.className = "overlay";
+    el.innerHTML = '<div class="overlay-backdrop" data-ov-close="1"></div>' +
+      '<div class="overlay-panel" role="dialog" aria-modal="true">' +
+      (title ? '<div class="overlay-head">' + esc(title) + "</div>" : "") +
+      '<div class="overlay-body">' + html + "</div></div>";
+    document.body.appendChild(el);
+    var closed = false, onClose = null;
+    function close() {
+      if (closed) return;
+      closed = true;
+      el.remove();
+      overlays.splice(overlays.indexOf(handle), 1);
+      if (onClose) onClose();
+    }
+    var handle = { el: el, body: el.querySelector(".overlay-body"), close: close,
+      onClose: function (fn) { onClose = fn; } };
+    overlays.push(handle);
+    el.addEventListener("click", function (e) { if (e.target.closest("[data-ov-close]")) close(); });
+    return handle;
+  }
+  var overlays = [];
+
+  // pickList shows choices in a bottom panel and resolves with the chosen
+  // value, or null if dismissed. Items: {value, label, sub, tag, selected,
+  // action} — an item with action is drawn as a command row.
+  function pickList(title, items) {
+    return new Promise(function (resolve) {
+      var ov = openOverlay(title, '<div class="pick-list">' + items.map(function (it, i) {
+        if (it.section) return '<div class="pick-section">' + esc(it.section) + "</div>";
+        return '<button type="button" class="pick-row' + (it.action ? " action" : "") + (it.selected ? " on" : "") +
+          '" data-pick="' + i + '"' + (it.disabled ? " disabled" : "") + ">" +
+          '<span class="pick-text"><span class="pick-label">' + esc(it.label) +
+          (it.tag ? ' <span class="pick-tag">' + esc(it.tag) + "</span>" : "") + "</span>" +
+          (it.sub ? '<span class="pick-sub">' + esc(it.sub) + "</span>" : "") + "</span>" +
+          (it.selected ? '<svg class="ico sm" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>' : "") +
+          "</button>";
+      }).join("") + "</div>");
+      var chosen = null;
+      ov.onClose(function () { resolve(chosen); });
+      ov.body.addEventListener("click", function (e) {
+        var b = e.target.closest("[data-pick]");
+        if (!b) return;
+        chosen = items[+b.getAttribute("data-pick")].value;
+        ov.close();
+      });
+    });
+  }
+
+  // askText asks for one line of text; resolves with it, or null.
+  function askText(title, o) {
+    o = o || {};
+    return new Promise(function (resolve) {
+      var ov = openOverlay(title,
+        (o.note ? '<p class="small muted" style="margin:0 0 12px">' + o.note + "</p>" : "") +
+        '<form class="ask-form"><label class="field"><span>' + esc(o.label || "") + "</span>" +
+        '<input name="v" type="' + (o.type || "text") + '" value="' + esc(o.value || "") + '" placeholder="' + esc(o.placeholder || "") +
+        '" autocomplete="off" autocapitalize="off" spellcheck="false"></label>' +
+        '<div class="row" style="gap:8px"><button type="button" class="btn ghost grow" data-ov-close="1">取消</button>' +
+        '<button type="submit" class="btn primary grow">' + esc(o.ok || "确定") + "</button></div></form>");
+      var out = null;
+      ov.onClose(function () { resolve(out); });
+      var input = ov.body.querySelector("input");
+      setTimeout(function () { input.focus(); input.select(); }, 60);
+      ov.body.querySelector("form").addEventListener("submit", function (e) {
+        e.preventDefault();
+        out = input.value;
+        ov.close();
+      });
+    });
+  }
+
   // ------------------------------------------------------------ device setup
 
   // A POST whose answer is an event stream (deploy progress).
@@ -567,95 +681,195 @@
     });
   }
 
+  function shortFp(fp) { return String(fp || "").replace(/^SHA256:/, "").slice(0, 12); }
+
+  // keyChoices turns /api/keys into picker items. Values: "id:<vault id>",
+  // "path:<file>", "agent", "new".
+  function keyChoices(d, current, withNew) {
+    var items = [];
+    (d.keys || []).forEach(function (k) {
+      items.push({ value: "id:" + k.id, label: k.name, sub: k.type.replace("ssh-", "") + " · " + shortFp(k.fingerprint) +
+        (k.used_by.length ? " · 用于 " + k.used_by.join("、") : ""), selected: current === "id:" + k.id });
+    });
+    var files = (d.detected || []).filter(function (k) { return !k.imported; });
+    if (files.length) items.push({ section: "~/.ssh 中的密钥" });
+    files.forEach(function (k) {
+      items.push({ value: "path:" + k.path, label: k.name, tag: k.encrypted ? "有密码短语" : "",
+        sub: shortFp(k.fingerprint) + (k.encrypted ? " · 使用前需导入" : ""), selected: current === "path:" + k.path });
+    });
+    if (d.agent) items.push({ value: "agent", label: "ssh-agent", sub: "使用 ssh-agent 里已加载的密钥", selected: current === "agent" });
+    if (withNew) items.push({ value: "new", label: "生成新密钥…", action: true });
+    return items;
+  }
+
+  function keyLabel(d, v) {
+    if (!v) return "";
+    if (v === "agent") return "ssh-agent";
+    var k = (d.keys || []).filter(function (x) { return "id:" + x.id === v; })[0];
+    if (k) return k.name;
+    var f = (d.detected || []).filter(function (x) { return "path:" + x.path === v; })[0];
+    return f ? f.name + "（~/.ssh）" : "";
+  }
+
+  function keyValueOf(dev) {
+    if (dev.key_id) return "id:" + dev.key_id;
+    if (dev.key_path) return "path:" + dev.key_path;
+    return dev.use_agent ? "agent" : "";
+  }
+
+  function keyFields(v) {
+    return { key_id: v.indexOf("id:") === 0 ? v.slice(3) : "", key_path: v.indexOf("path:") === 0 ? v.slice(5) : "",
+      use_agent: v === "agent" };
+  }
+
+  // generateKeyFlow asks for a name and creates a key in the vault.
+  function generateKeyFlow() {
+    var def = (S.nodeName || "设备") + "-" + new Date().toISOString().slice(5, 10).replace("-", "");
+    return askText("生成新密钥", { label: "名称（便于在服务器上认出它）", value: def, ok: "生成",
+      note: "生成一把 ed25519 密钥，私钥保存在本应用的数据库里。" }).then(function (name) {
+      if (name === null) return null;
+      return api("/api/keys/generate", { method: "POST", body: { name: name.trim() }, hub: true }).then(function (d) {
+        toast("已生成密钥「" + d.key.name + "」");
+        return d.key;
+      });
+    }).catch(function (e) { toast(e.message, true); return null; });
+  }
+
+  // importKeyFlow copies a ~/.ssh key into the vault, asking for its
+  // passphrase if it has one.
+  function importKeyFlow(k) {
+    function go(pass) {
+      return api("/api/keys/import", { method: "POST", hub: true, body: { path: k.path, passphrase: pass || "" } })
+        .then(function (d) { toast("已导入「" + d.key.name + "」"); return d.key; });
+    }
+    var first = k.encrypted ? askText("导入 " + k.name, { label: "密码短语", type: "password", ok: "导入",
+      note: "只用这一次：解开后由本应用保存，以后不再需要密码短语。" }).then(function (p) { return p === null ? null : go(p); }) : go("");
+    return first.catch(function (e) { toast(e.message, true); return null; });
+  }
+
+  // pubBox shows a public key with copy and share; compact leaves out the
+  // key text (the add-server form, for a key the user already knows).
+  function pubBox(pub, fresh, compact) {
+    if (compact) {
+      return '<div class="key-card compact"><span class="small muted grow">公钥</span>' +
+        '<button type="button" class="btn sm" data-copy-text="' + esc(pub) + '">复制</button>' +
+        (canShare() ? '<button type="button" class="btn sm" data-share-text="' + esc(pub) + '">分享…</button>' : "") + "</div>";
+    }
+    return '<div class="key-card' + (fresh ? " fresh" : "") + '">' +
+      (fresh ? '<div class="key-card-head">新密钥已生成</div>' : "") +
+      '<div class="small muted">公钥（可以公开）：</div><pre class="mono">' + esc(pub) + "</pre>" +
+      '<div class="row" style="gap:8px"><button type="button" class="btn sm grow" data-copy-text="' + esc(pub) + '">复制公钥</button>' +
+      (canShare() ? '<button type="button" class="btn sm grow" data-share-text="' + esc(pub) + '">分享…</button>' : "") +
+      "</div>" + (fresh ? '<div class="small muted" style="margin-top:8px">连接时可以用服务器密码自动安装它，或者手动加入服务器的 <code>~/.ssh/authorized_keys</code>。</div>' : "") +
+      "</div>";
+  }
+
+  document.addEventListener("click", function (e) {
+    var c = e.target.closest("[data-copy-text]");
+    if (c) { copyText(c.getAttribute("data-copy-text")); return; }
+    var s = e.target.closest("[data-share-text]");
+    if (s) shareText(s.getAttribute("data-share-text"), "公钥");
+  });
+
   function addDeviceSheet() {
     var body = openSheet("添加服务器",
       '<div class="stack device-form">' +
-      '<label class="field" id="dev-import-wrap" hidden><span>从 ~/.ssh/config 导入</span><select id="dev-import"><option value="">选择主机…</option></select></label>' +
+      '<button type="button" class="g-row link pick-btn" id="dev-import" hidden><span class="g-label">从 ~/.ssh/config 填入</span><span class="g-value"></span></button>' +
       '<label class="field"><span>名称</span><input id="dev-name" placeholder="例如 生产服务器" maxlength="60"></label>' +
       '<div class="row"><label class="field grow"><span>主机</span><input id="dev-host" class="mono" placeholder="IP 或域名" autocapitalize="off" spellcheck="false"></label>' +
       '<label class="field" style="width:84px"><span>SSH 端口</span><input id="dev-port" class="mono" inputmode="numeric" value="22"></label></div>' +
       '<label class="field"><span>用户</span><input id="dev-user" class="mono" value="root" autocapitalize="off" spellcheck="false"></label>' +
-      '<label class="field"><span>认证</span><select id="dev-key"></select></label>' +
-      '<div id="dev-pub" class="dev-pub" hidden></div>' +
+      '<div class="field"><span>认证密钥</span><button type="button" class="pick-btn input-like" id="dev-key"><span class="t"></span>' +
+      '<svg class="ico sm" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg></button></div>' +
+      '<div id="dev-pub"></div>' +
       '<details class="fold"><summary>高级</summary><label class="field" style="margin-top:8px"><span>节点端口（服务器本机回环端口）</span>' +
       '<input id="dev-rport" class="mono" inputmode="numeric" value="8899"></label></details>' +
       '<button id="dev-save" class="btn primary block" type="button">连接</button>' +
       '<div id="dev-flow"></div></div>');
+    var keys = { keys: [], detected: [] }, chosen = "", fresh = "";
+    function renderKey() {
+      var label = keyLabel(keys, chosen);
+      var b = $("#dev-key");
+      b.querySelector(".t").textContent = label || "选择或生成密钥";
+      b.classList.toggle("placeholder", !label);
+      var k = (keys.keys || []).filter(function (x) { return "id:" + x.id === chosen; })[0] ||
+        (keys.detected || []).filter(function (x) { return "path:" + x.path === chosen; })[0];
+      $("#dev-pub").innerHTML = k && k.public ? pubBox(k.public, chosen === fresh, chosen !== fresh) : "";
+    }
+    function loadKeys(select) {
+      return api("/api/keys", { hub: true }).then(function (d) {
+        keys = d;
+        if (select) chosen = select;
+        else if (!chosen) {
+          var first = keyChoices(d, "", false).filter(function (x) { return x.value; })[0];
+          chosen = first ? first.value : "";
+        }
+        renderKey();
+      });
+    }
+    loadKeys().catch(function (e) { toast(e.message, true); });
+
     var hosts = [];
     api("/api/ssh/hosts", { hub: true }).then(function (d) {
       hosts = d.hosts || [];
-      if (!hosts.length) return;
-      $("#dev-import-wrap").hidden = false;
-      $("#dev-import").innerHTML = '<option value="">选择主机…</option>' + hosts.map(function (h, i) {
-        return '<option value="' + i + '">' + esc(h.alias + (h.host !== h.alias ? "（" + h.host + "）" : "")) + "</option>";
-      }).join("");
+      if (hosts.length) $("#dev-import").hidden = false;
     }).catch(function () {});
-    function fillKeys(selectPath) {
-      return api("/api/keys", { hub: true }).then(function (d) {
-        var opts = (d.keys || []).map(function (k) {
-          return '<option value="key:' + esc(k.path) + '">' + esc(k.name) + (k.source === "app" ? "（客户端生成）" : "（~/.ssh）") + "</option>";
-        });
-        if (d.agent) opts.push('<option value="agent">ssh-agent</option>');
-        opts.push('<option value="new">生成新密钥…</option>');
-        $("#dev-key").innerHTML = opts.join("");
-        if (selectPath) $("#dev-key").value = "key:" + selectPath;
-        showPub(d.keys || []);
-        $("#dev-key").__keys = d.keys || [];
+    $("#dev-import").addEventListener("click", function () {
+      pickList("从 ~/.ssh/config 填入", hosts.map(function (h, i) {
+        return { value: i, label: h.alias, sub: (h.user ? h.user + "@" : "") + h.host + (h.port && h.port !== 22 ? ":" + h.port : "") };
+      })).then(function (i) {
+        var h = hosts[i];
+        if (!h) return;
+        $("#dev-name").value = h.alias; $("#dev-host").value = h.host; $("#dev-port").value = h.port || 22;
+        if (h.user) $("#dev-user").value = h.user;
+        if (h.key_path) {
+          var want = h.key_path.replace(/^~\//, "");
+          var m = (keys.detected || []).filter(function (k) { return k.path.slice(-want.length) === want; })[0];
+          if (m) {
+            var v = (keys.keys || []).filter(function (k) { return k.fingerprint === m.fingerprint; })[0];
+            chosen = v ? "id:" + v.id : "path:" + m.path;
+            renderKey();
+          }
+        }
       });
-    }
-    function showPub(keys) {
-      var v = $("#dev-key").value, box = $("#dev-pub");
-      var k = keys.filter(function (x) { return "key:" + x.path === v; })[0];
-      if (k && k.source === "app") {
-        box.hidden = false;
-        box.innerHTML = '<div class="small muted">把这行公钥加入服务器的 <code>~/.ssh/authorized_keys</code>：</div>' +
-          '<pre class="mono">' + esc(k.public) + '</pre><button type="button" class="btn sm" data-copy-pub="1">复制公钥</button>';
-        box.__pub = k.public;
-      } else box.hidden = true;
-    }
-    fillKeys();
-    $("#dev-import").addEventListener("change", function () {
-      var h = hosts[+this.value];
-      if (!h) return;
-      $("#dev-name").value = h.alias; $("#dev-host").value = h.host; $("#dev-port").value = h.port || 22;
-      if (h.user) $("#dev-user").value = h.user;
-      if (h.key_path) {
-        var want = h.key_path.replace(/^~\//, "");
-        var match = ($("#dev-key").__keys || []).filter(function (k) { return k.path.slice(-want.length) === want; })[0];
-        if (match) $("#dev-key").value = "key:" + match.path;
-      }
-      showPub($("#dev-key").__keys || []);
     });
-    $("#dev-key").addEventListener("change", function () {
-      if (this.value !== "new") { showPub(this.__keys || []); return; }
-      api("/api/keys/generate", { method: "POST", body: {}, hub: true }).then(function (d) {
-        return fillKeys(d.key.path);
-      }).then(function () { toast("已生成新密钥"); }).catch(function (e) { toast(e.message, true); });
-    });
-    body.addEventListener("click", function (e) {
-      if (e.target.closest("[data-copy-pub]")) {
-        var pub = $("#dev-pub").__pub;
-        fallbackCopy(pub, function () { toast("公钥已复制"); });
-      }
+    $("#dev-key").addEventListener("click", function () {
+      pickList("认证密钥", keyChoices(keys, chosen, true)).then(function (v) {
+        if (v === "new") {
+          return generateKeyFlow().then(function (k) {
+            if (!k) return;
+            fresh = "id:" + k.id;
+            return loadKeys(fresh);
+          });
+        }
+        if (!v) return;
+        var f = (keys.detected || []).filter(function (x) { return "path:" + x.path === v; })[0];
+        if (f && f.encrypted) {
+          return importKeyFlow(f).then(function (k) { if (k) return loadKeys("id:" + k.id); });
+        }
+        chosen = v;
+        renderKey();
+      });
     });
     $("#dev-save").addEventListener("click", function () {
-      var key = $("#dev-key").value;
-      var req = {
+      if (!chosen) { toast("请先选择或生成一把密钥", true); return; }
+      var req = Object.assign({
         transport: "ssh", name: $("#dev-name").value.trim(), ssh_host: $("#dev-host").value.trim(),
         ssh_port: parseInt($("#dev-port").value, 10) || 22, ssh_user: $("#dev-user").value.trim(),
-        remote_port: parseInt($("#dev-rport").value, 10) || 8899,
-        use_agent: key === "agent", key_path: key.indexOf("key:") === 0 ? key.slice(4) : ""
-      };
+        remote_port: parseInt($("#dev-rport").value, 10) || 8899
+      }, keyFields(chosen));
       var btn = this; btn.disabled = true;
       api("/api/devices", { method: "POST", body: req, hub: true }).then(function (d) {
         btn.hidden = true;
-        $$(".device-form > .field, .device-form > .row, .device-form > details", body).forEach(function (el) { el.hidden = true; });
+        $$(".device-form > .field, .device-form > .row, .device-form > details, .device-form > .pick-btn, #dev-pub", body)
+          .forEach(function (el) { el.hidden = true; });
         deviceFlow(d.device.id, $("#dev-flow"));
       }).catch(function (e) { toast(e.message, true); btn.disabled = false; });
     });
   }
 
-  // deviceFlow drives test → confirm fingerprint → deploy inside a sheet.
+  // deviceFlow drives test → confirm fingerprint → install key → deploy
+  // inside a sheet.
   function deviceFlow(id, box) {
     var path = "/api/devices/" + encodeURIComponent(id);
     box.innerHTML = '<div class="flow-step"><span class="spinner"></span> 正在连接…</div>';
@@ -673,6 +887,10 @@
             .then(function () { deviceFlow(id, box); })
             .catch(function (e) { toast(e.message, true); deviceFlow(id, box); });
         });
+        return;
+      }
+      if (r.stage === "auth") {
+        authStep(id, box, r);
         return;
       }
       if (r.stage === "error") {
@@ -706,16 +924,79 @@
     });
   }
 
+  // authStep: the server refused the key. Install it with the server password
+  // once (as ssh-copy-id does), or add it by hand and retry.
+  function authStep(id, box, r) {
+    var path = "/api/devices/" + encodeURIComponent(id);
+    if (!r.public) {
+      box.innerHTML = '<div class="flow-step"><div class="error-block">服务器不接受 ssh-agent 里的密钥。</div>' +
+        '<button class="btn block" type="button" data-retry="1">重试</button></div>';
+      box.querySelector("[data-retry]").addEventListener("click", function () { deviceFlow(id, box); });
+      return;
+    }
+    var cmd = "mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '" + r.public + "' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys";
+    box.innerHTML = '<div class="flow-step">' +
+      '<div class="notice">服务器还不认识这把密钥。用下面任一方式把公钥放到服务器上：</div>' +
+      '<div class="choice-card"><div class="choice-title">用服务器密码自动安装</div>' +
+      '<form data-install="1"><input class="input" type="password" name="pw" placeholder="服务器登录密码" autocomplete="off">' +
+      '<button class="btn primary block" type="submit" style="margin-top:8px">安装公钥并连接</button></form>' +
+      '<div class="small muted" style="margin-top:6px">密码只用于这一次连接，不会保存；需要服务器允许密码登录。</div></div>' +
+      '<div class="choice-card"><div class="choice-title">手动添加</div>' +
+      '<div class="small muted">在服务器上执行这条命令（或把公钥加入 <code>~/.ssh/authorized_keys</code>）：</div>' +
+      '<pre class="mono">' + esc(cmd) + "</pre>" +
+      '<div class="row" style="gap:8px"><button type="button" class="btn sm grow" data-copy-text="' + esc(cmd) + '">复制命令</button>' +
+      '<button type="button" class="btn sm grow" data-copy-text="' + esc(r.public) + '">复制公钥</button>' +
+      (canShare() ? '<button type="button" class="btn sm grow" data-share-text="' + esc(r.public) + '">分享…</button>' : "") + "</div>" +
+      '<button class="btn block" type="button" data-retry="1" style="margin-top:10px">已添加，重新连接</button></div></div>';
+    box.querySelector("[data-retry]").addEventListener("click", function () { deviceFlow(id, box); });
+    box.querySelector("[data-install]").addEventListener("submit", function (e) {
+      e.preventDefault();
+      var pw = this.pw.value, b = this.querySelector("button");
+      if (!pw) { this.pw.focus(); return; }
+      b.disabled = true; b.textContent = "正在安装…";
+      var form = this;
+      api(path + "/install-key", { method: "POST", hub: true, body: { password: pw } }).then(function () {
+        form.pw.value = "";
+        toast("公钥已安装");
+        deviceFlow(id, box);
+      }).catch(function (err) {
+        toast(err.message, true);
+        b.disabled = false; b.textContent = "安装公钥并连接";
+      });
+    });
+  }
+
   function deviceSheet(id) {
     var n = S.nodes.filter(function (x) { return x.id === id; })[0] || { id: id, name: id };
     var body = openSheet(n.name,
       '<div class="stack"><div class="group">' +
       '<div class="g-row"><span class="g-label">地址</span><span class="g-value mono">' + esc(n.target || n.url || "") + "</span></div>" +
-      '<div class="g-row"><span class="g-label">状态</span><span class="g-value">' + esc(n.online ? "在线 " + (n.version || "") : (n.error || "离线")) + "</span></div></div>" +
+      '<div class="g-row"><span class="g-label">状态</span><span class="g-value">' + esc(n.online ? "在线 " + (n.version || "") : (n.error || "离线")) + "</span></div>" +
+      '<button type="button" class="g-row link" data-dev-key="1" hidden><span class="g-label">认证密钥</span><span class="g-value"></span></button></div>' +
       '<div id="dev-flow"></div>' +
       '<button class="btn danger block" type="button" data-del-device="1">删除设备</button>' +
       '<p class="small muted">删除只移除本客户端里的记录，不会卸载服务器上的节点。</p></div>');
     deviceFlow(id, $("#dev-flow"));
+    Promise.all([api("/api/devices", { hub: true }), api("/api/keys", { hub: true })]).then(function (res) {
+      var dev = (res[0].devices || []).filter(function (x) { return x.id === id; })[0];
+      var keys = res[1], row = body.querySelector("[data-dev-key]");
+      if (!dev || dev.transport !== "ssh" || !row) return;
+      var cur = keyValueOf(dev);
+      row.hidden = false;
+      row.querySelector(".g-value").textContent = keyLabel(keys, cur) || "未设置";
+      row.addEventListener("click", function () {
+        pickList("认证密钥", keyChoices(keys, cur, true)).then(function (v) {
+          if (v === "new") return generateKeyFlow().then(function (k) { return k && "id:" + k.id; });
+          var f = (keys.detected || []).filter(function (x) { return "path:" + x.path === v; })[0];
+          if (f && f.encrypted) return importKeyFlow(f).then(function (k) { return k && "id:" + k.id; });
+          return v;
+        }).then(function (v) {
+          if (!v || v === cur) return;
+          return api("/api/devices/" + encodeURIComponent(id), { method: "PATCH", hub: true, body: keyFields(v) })
+            .then(function () { toast("已更换密钥"); deviceSheet(id); });
+        }).catch(function (e) { toast(e.message, true); });
+      });
+    }).catch(function () {});
     body.querySelector("[data-del-device]").addEventListener("click", function () {
       confirmSheet("删除设备「" + n.name + "」？", "<p>之后可以重新添加；服务器上的节点和会话不受影响。</p>", "删除", true).then(function (ok) {
         if (!ok) return;
@@ -728,11 +1009,150 @@
     });
   }
 
+  // ------------------------------------------------------- keys and transfer
+
+  function keysSheet() {
+    var body = openSheet("密钥", '<div class="empty"><span class="spinner"></span></div>');
+    api("/api/keys", { hub: true }).then(function (d) {
+      var mine = (d.keys || []).map(function (k) {
+        return '<button type="button" class="g-row link" data-key="' + esc(k.id) + '"><span class="g-label">' + esc(k.name) +
+          '<span class="g-sub">' + esc(k.type.replace("ssh-", "") + " · " + shortFp(k.fingerprint)) +
+          (k.used_by.length ? " · 用于 " + esc(k.used_by.join("、")) : "") + "</span></span></button>";
+      }).join("");
+      var files = (d.detected || []).filter(function (k) { return !k.imported; }).map(function (k, i) {
+        return '<div class="g-row"><span class="g-label">' + esc(k.name) + '<span class="g-sub">' + esc(shortFp(k.fingerprint)) +
+          (k.encrypted ? " · 有密码短语" : "") + (k.used_by.length ? " · 用于 " + esc(k.used_by.join("、")) : "") + "</span></span>" +
+          '<button type="button" class="btn sm" data-import-key="' + i + '">导入</button></div>';
+      }).join("");
+      var detected = (d.detected || []).filter(function (k) { return !k.imported; });
+      body.innerHTML = '<div class="stack">' +
+        (mine ? '<div class="group">' + mine + "</div>" : '<p class="muted small">还没有密钥。</p>') +
+        '<button type="button" class="btn block" data-gen-key="1">生成新密钥</button>' +
+        (files ? '<div><div class="section-title">在 ~/.ssh 中发现</div><div class="group">' + files + "</div>" +
+          '<div class="g-note">导入后私钥保存在本应用的数据库里，可以随设备一起导出到其它客户端；原文件不受影响。</div></div>' : "") +
+        "</div>";
+      body.addEventListener("click", function (e) {
+        var k = e.target.closest("[data-key]");
+        if (k) { keyDetailSheet((d.keys || []).filter(function (x) { return x.id === k.getAttribute("data-key"); })[0]); return; }
+        if (e.target.closest("[data-gen-key]")) { generateKeyFlow().then(function (nk) { if (nk) keysSheet(); }); return; }
+        var imp = e.target.closest("[data-import-key]");
+        if (imp) importKeyFlow(detected[+imp.getAttribute("data-import-key")]).then(function (nk) { if (nk) keysSheet(); });
+      });
+    }).catch(function (e) { body.innerHTML = '<div class="error-block">' + esc(e.message) + "</div>"; });
+  }
+
+  function keyDetailSheet(k) {
+    if (!k) return;
+    var body = openSheet(k.name, '<div class="stack">' + pubBox(k.public, false) +
+      '<div class="group"><div class="g-row"><span class="g-label">类型</span><span class="g-value">' + esc(k.type) + "</span></div>" +
+      '<div class="g-row"><span class="g-label">指纹</span><span class="g-value mono">' + esc(k.fingerprint) + "</span></div>" +
+      '<div class="g-row"><span class="g-label">用于</span><span class="g-value">' + esc(k.used_by.join("、") || "—") + "</span></div></div>" +
+      '<div class="row" style="gap:8px"><button type="button" class="btn grow" data-rename="1">重命名</button>' +
+      '<button type="button" class="btn danger grow" data-delete="1">删除</button></div>' +
+      '<button type="button" class="btn ghost block" data-back="1">返回密钥列表</button></div>');
+    body.addEventListener("click", function (e) {
+      if (e.target.closest("[data-back]")) { keysSheet(); return; }
+      if (e.target.closest("[data-rename]")) {
+        askText("重命名密钥", { label: "名称", value: k.name, ok: "保存" }).then(function (name) {
+          if (name === null || !name.trim() || name.trim() === k.name) return;
+          return api("/api/keys/" + encodeURIComponent(k.id), { method: "PATCH", hub: true, body: { name: name.trim() } })
+            .then(function () { toast("已重命名"); keysSheet(); });
+        }).catch(function (err) { toast(err.message, true); });
+        return;
+      }
+      if (e.target.closest("[data-delete]")) {
+        confirmSheet("删除密钥「" + k.name + "」？", "<p>私钥会从本应用中删除且无法恢复。已经加到服务器上的公钥不受影响，需要时请自行从 <code>authorized_keys</code> 中移除。</p>", "删除", true)
+          .then(function (ok) {
+            if (!ok) { keyDetailSheet(k); return; }
+            return api("/api/keys/" + encodeURIComponent(k.id), { method: "DELETE", hub: true, body: {} })
+              .then(function () { toast("已删除"); keysSheet(); });
+          }).catch(function (err) { toast(err.message, true); keysSheet(); });
+      }
+    });
+  }
+
+  function exportSheet() {
+    var body = openSheet("导出设备", '<div class="empty"><span class="spinner"></span></div>');
+    api("/api/devices", { hub: true }).then(function (d) {
+      var devs = d.devices || [];
+      if (!devs.length) { body.innerHTML = '<p class="muted">还没有可以导出的设备。</p>'; return; }
+      body.innerHTML = '<div class="stack"><p class="small muted" style="margin:0">把选中的服务器连同它们的密钥、主机指纹和节点令牌导出成一个加密文件，在另一台设备（例如手机）上导入即可直接使用。</p>' +
+        '<div class="group">' + devs.map(function (n) {
+          return '<label class="g-row check-row"><input type="checkbox" value="' + esc(n.id) + '" checked>' +
+            '<span class="g-label">' + esc(n.name) + '<span class="g-sub">' + esc(n.ssh_user ? n.ssh_user + "@" + n.ssh_host : n.url || "") + "</span></span></label>";
+        }).join("") + "</div>" +
+        '<button type="button" class="btn primary block" data-do-export="1">导出</button></div>';
+      body.querySelector("[data-do-export]").addEventListener("click", function () {
+        var ids = $$("input[type=checkbox]:checked", body).map(function (c) { return c.value; });
+        if (!ids.length) { toast("请至少选择一台设备", true); return; }
+        this.disabled = true;
+        api("/api/vault/export", { method: "POST", hub: true, body: { devices: ids } }).then(function (r) {
+          exportResult(body, r);
+        }).catch(function (e) { toast(e.message, true); body.querySelector("[data-do-export]").disabled = false; });
+      });
+    }).catch(function (e) { body.innerHTML = '<div class="error-block">' + esc(e.message) + "</div>"; });
+  }
+
+  function exportResult(body, r) {
+    body.innerHTML = '<div class="stack">' +
+      '<div class="code-card"><div class="small muted">解密码</div><div class="code-big mono">' + esc(r.code) + "</div>" +
+      '<button type="button" class="btn sm" data-copy-text="' + esc(r.code) + '">复制解密码</button></div>' +
+      '<div class="notice">解密码只显示这一次。请把它和文件<b>分开</b>传递（例如文件用 AirDrop 或数据线，解密码手动输入）。</div>' +
+      (r.warnings.length ? '<div class="error-block">' + r.warnings.map(esc).join("\n") + "</div>" : "") +
+      '<button type="button" class="btn primary block" data-save="1">保存文件</button>' +
+      '<p class="small muted" style="margin:0">' + esc(r.filename) + "</p></div>";
+    body.querySelector("[data-save]").addEventListener("click", function () { saveTextFile(r.filename, r.bundle); });
+  }
+
+  function importSheet() {
+    var body = openSheet("导入设备",
+      '<form class="stack" data-import-form="1">' +
+      '<p class="small muted" style="margin:0">选择从另一台设备导出的 <code>.acbundle</code> 文件，并输入导出时显示的解密码。</p>' +
+      '<label class="file-pick"><input type="file" name="file" accept=".acbundle,application/json,application/octet-stream,*/*">' +
+      '<span class="file-pick-label">选择文件…</span></label>' +
+      '<details class="fold"><summary>或粘贴文件内容</summary><textarea name="text" class="input mono" rows="4" style="margin-top:8px"></textarea></details>' +
+      '<label class="field"><span>解密码</span><input name="code" class="mono" placeholder="XXXX-XXXX-XXXX-XXXX" autocomplete="off" autocapitalize="characters" spellcheck="false"></label>' +
+      '<button type="submit" class="btn primary block">导入</button></form>');
+    var form = body.querySelector("form"), bundle = "";
+    form.file.addEventListener("change", function () {
+      var f = this.files && this.files[0];
+      if (!f) return;
+      var rd = new FileReader();
+      rd.onload = function () { bundle = String(rd.result || ""); form.querySelector(".file-pick-label").textContent = f.name; };
+      rd.readAsText(f);
+    });
+    form.addEventListener("submit", function (e) {
+      e.preventDefault();
+      var data = bundle || form.text.value.trim();
+      if (!data) { toast("请选择文件", true); return; }
+      if (!form.code.value.trim()) { form.code.focus(); return; }
+      var b = form.querySelector("[type=submit]"); b.disabled = true; b.textContent = "正在导入…";
+      api("/api/vault/import", { method: "POST", hub: true, body: { bundle: data, code: form.code.value } }).then(function (r) {
+        closeSheet();
+        toast("已导入 " + (r.added + r.updated) + " 台设备" + (r.keys ? "、" + r.keys + " 把密钥" : ""));
+        loadNodes().then(function () { if (S.hubOnly && S.node === "local") boot(); else if (S.route === "settings") renderSettings(); });
+      }).catch(function (err) { toast(err.message, true); b.disabled = false; b.textContent = "导入"; });
+    });
+  }
+
   document.addEventListener("click", function (e) {
     if (e.target.closest("[data-add-device]")) { addDeviceSheet(); return; }
+    if (e.target.closest("[data-keys]")) { keysSheet(); return; }
+    if (e.target.closest("[data-export]")) { exportSheet(); return; }
+    if (e.target.closest("[data-import]")) { importSheet(); return; }
     var d = e.target.closest("[data-device]");
     if (d && S.route === "settings") deviceSheet(d.getAttribute("data-device"));
   });
+
+  // The Android app's back gesture: close the top layer, or go home; false
+  // lets the app leave.
+  window.acBack = function () {
+    if (overlays.length) { overlays[overlays.length - 1].close(); return true; }
+    if (!$("#sheet").hidden) { closeSheet(); return true; }
+    if (!$("#sidebar").hidden && !wide.matches) { closeSidebar(); return true; }
+    if (location.hash && location.hash !== "#/" && location.hash !== "#") { location.hash = "#/"; return true; }
+    return false;
+  };
 
   function nodeSheet() {
     var body = openSheet("切换设备", '<div class="group">' + nodeRows() + "</div>" +
@@ -823,6 +1243,7 @@
     if (!meta) return;
     var light = S.theme === "light" || (S.theme === "auto" && matchMedia("(prefers-color-scheme: light)").matches);
     meta.setAttribute("content", light ? "#ffffff" : "#0f0f10");
+    if (window.AgentConsoleNative) window.AgentConsoleNative.setTheme(!light);
   }
   matchMedia("(prefers-color-scheme: light)").addEventListener?.("change", updateThemeColor);
 
@@ -1060,7 +1481,8 @@
       $("#main").innerHTML = '<div class="home-empty onboarding">' +
         '<div class="home-title">欢迎</div>' +
         '<div class="home-sub">添加一台服务器开始使用：通过 SSH 连接，并在服务器上自动部署节点。服务器只需开放 SSH。</div>' +
-        '<button class="btn primary block" type="button" data-add-device="1" style="margin-top:24px">添加服务器</button></div>';
+        '<button class="btn primary block" type="button" data-add-device="1" style="margin-top:24px">添加服务器</button>' +
+        '<button class="btn block" type="button" data-import="1" style="margin-top:10px">从其它设备导入</button></div>';
       return;
     }
     var a = agentMeta(S.draftAgent);
@@ -3011,7 +3433,12 @@
       '<button type="button" class="g-row link" data-add-device="1"><span class="g-label">添加服务器</span>' +
       '<span class="g-value">通过 SSH</span></button></div>' +
       '<div class="g-note">客户端通过 SSH 连接服务器并自动部署节点；服务器只需开放 SSH。' +
-      (multiNode() ? "下面的 Agent、通用与服务设置属于当前设备「" + esc(nodeLabel(S.node)) + "」。" : "") + "</div></div>";
+      (multiNode() ? "下面的 Agent、通用与服务设置属于当前设备「" + esc(nodeLabel(S.node)) + "」。" : "") + "</div></div>" +
+      '<div><div class="section-title">密钥与迁移</div><div class="group">' +
+      '<button type="button" class="g-row link" data-keys="1"><span class="g-label">密钥</span><span class="g-value">SSH 密钥库</span></button>' +
+      '<button type="button" class="g-row link" data-export="1"><span class="g-label">导出设备</span><span class="g-value">加密文件</span></button>' +
+      '<button type="button" class="g-row link" data-import="1"><span class="g-label">导入设备</span></button></div>' +
+      '<div class="g-note">导出的文件用随机生成的解密码加密，可以把电脑上的服务器配置快速迁到手机。只包含 SSH 与节点凭据，不含任何 Agent 账号。</div></div>';
     $("#main").innerHTML = '<div class="pad stack settings">' + devices + (noDevice() ? "" :
       '<div><div class="section-title">Agent</div><div class="group">' + agents + "</div></div>") +
 
@@ -3041,7 +3468,7 @@
       "</dl></div></details>" +
       "</div></div>" +
 
-      "") +
+      "") + (S.hubOnly ? "" :
       '<div><div class="section-title">账户</div><div class="group">' +
       '<details><summary><span class="g-label">修改密码</span></summary><div class="g-body">' +
       '<label class="field"><span>当前密码</span><input id="pw-old" type="password" autocomplete="current-password"></label>' +
@@ -3050,11 +3477,10 @@
       '<button id="change-pw" class="btn primary block">修改密码</button>' +
       '<p class="small muted" style="margin:9px 0 0">修改后会轮换会话签名密钥，其它已登录设备需要重新登录。</p></div></details>' +
       '<button id="logout-btn" type="button" class="g-row danger">退出登录</button>' +
-      "</div></div>" +
+      "</div></div>") +
 
       '<div class="about">Agent Console ' + esc(d.version || "") +
-      " · 所有 Agent 任务在服务器后台运行，与浏览器连接解耦。" +
-      "Codex 非交互模式没有人工审批通道，默认使用只读沙箱；Claude 的高风险操作会在此界面请求批准。</div>" +
+      " · Agent 在各自的服务器上运行，关闭页面或应用不会中断任务；需要审批或回答的问题会出现在对话里。</div>" +
       "</div>";
 
     var agentLabels = {};
@@ -3201,7 +3627,7 @@
     });
     }
 
-    $("#change-pw").addEventListener("click", function () {
+    if (!S.hubOnly) $("#change-pw").addEventListener("click", function () {
       var oldp = $("#pw-old").value, np = $("#pw-new").value, np2 = $("#pw-new2").value;
       if (np !== np2) { toast("两次输入的新密码不一致", true); return; }
       if (!np) { toast("新密码不能为空", true); return; }
@@ -3214,7 +3640,7 @@
       }).catch(function (e) { toast(e.message, true); b.disabled = false; b.textContent = "修改密码"; });
     });
 
-    $("#logout-btn").addEventListener("click", function () {
+    if (!S.hubOnly) $("#logout-btn").addEventListener("click", function () {
       api("/api/logout", { method: "POST", body: {}, hub: true }).catch(function () {}).then(function () {
         LS.del("lastSession");
         showLogin();
@@ -3243,6 +3669,21 @@
   $("#approval-btn").addEventListener("click", function () {
     if ($("#approval-stack").hidden) showApprovalStack();
     else hideApprovalStack();
+  });
+
+  // On touch screens the native <select> opens the system's dated dialog; the
+  // page's own picker replaces it, and the <select> stays the source of truth.
+  $("#agent-select").addEventListener("mousedown", function (e) {
+    if (!matchMedia("(pointer: coarse)").matches) return;
+    e.preventDefault();
+    var sel = this;
+    pickList("Agent", $$("option", sel).map(function (o) {
+      return { value: o.value, label: o.textContent, selected: o.value === sel.value, disabled: o.disabled };
+    })).then(function (v) {
+      if (v === null || v === sel.value) return;
+      sel.value = v;
+      sel.dispatchEvent(new Event("change"));
+    });
   });
 
   $("#agent-select").addEventListener("change", function () {

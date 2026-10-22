@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The web icon's prompt glyph (web/icon.svg), sized for the adaptive-icon safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="512" android:viewportHeight="512">
+    <path android:pathData="M172,190 L232,256 L172,322 M268,322 L344,322"
+        android:strokeColor="#FFFFFF" android:strokeWidth="34"
+        android:strokeLineCap="round" android:strokeLineJoin="round" />
+</vector>

@@ -5,7 +5,7 @@ import WebKit
 /// Menu bar item, console window and notifications. Quitting the app leaves
 /// the console service (and every running agent) alone.
 final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate,
-    UNUserNotificationCenterDelegate {
+    WKScriptMessageHandler, UNUserNotificationCenterDelegate {
     private var console: Console!
     private var window: NSWindow?
     private var web: WKWebView?
@@ -97,6 +97,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         if window == nil {
             let cfg = WKWebViewConfiguration()
             cfg.websiteDataStore = .default()
+            cfg.userContentController.add(self, name: "ac") // window.webkit.messageHandlers.ac
             let wv = WKWebView(frame: .zero, configuration: cfg)
             wv.navigationDelegate = self
             wv.uiDelegate = self
@@ -153,6 +154,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
                  for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         if let url = action.request.url { NSWorkspace.shared.open(url) }
         return nil
+    }
+
+    // MARK: Page requests (the web UI's saveTextFile and <input type=file>)
+
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard let body = message.body as? [String: Any], body["op"] as? String == "save",
+              let name = body["name"] as? String, let text = body["text"] as? String else { return }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = name
+        panel.canCreateDirectories = true
+        let save = { (resp: NSApplication.ModalResponse) in
+            guard resp == .OK, let url = panel.url else { return }
+            do {
+                try text.write(to: url, atomically: true, encoding: .utf8)
+            } catch {
+                let a = NSAlert()
+                a.messageText = "保存失败"
+                a.informativeText = error.localizedDescription
+                a.runModal()
+            }
+        }
+        if let w = window { panel.beginSheetModal(for: w, completionHandler: save) } else { save(panel.runModal()) }
+    }
+
+    func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters,
+                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping ([URL]?) -> Void) {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = parameters.allowsMultipleSelection
+        panel.canChooseDirectories = false
+        if let w = window {
+            panel.beginSheetModal(for: w) { completionHandler($0 == .OK ? panel.urls : nil) }
+        } else {
+            completionHandler(panel.runModal() == .OK ? panel.urls : nil)
+        }
     }
 
     private func open(_ p: Pending) {

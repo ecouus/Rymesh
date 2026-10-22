@@ -51,11 +51,15 @@ type Server struct {
 }
 
 func newServer(cfg *Config, cfgPath string, st *Store, logger *log.Logger, bindAddrs []string) *Server {
+	// The device list lives in the database (vault.go).
+	if err := initVault(st, cfg, cfgPath); err != nil {
+		logger.Printf("密钥库初始化失败: %v", err)
+	}
 	s := &Server{
 		cfg: cfg, cfgPath: cfgPath, store: st, agents: newAgentSet(),
 		auth: newAuthManager(cfg), mux: http.NewServeMux(), logger: logger,
 		started: time.Now(), bindAddrs: bindAddrs, launching: map[string]bool{},
-		streamSem: make(chan struct{}, 32), ssh: newSSHPool(),
+		streamSem: make(chan struct{}, 32), ssh: newSSHPool(st),
 	}
 	s.ing = newIngestor(st, cfg.DataDir, logger)
 	s.ing.onDone = func() { s.schedule() }
@@ -140,8 +144,14 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/devices/{id}/trust", s.authed(s.handleDeviceTrust))
 	m.HandleFunc("POST /api/devices/{id}/deploy", s.authed(s.handleDeviceDeploy))
 	m.HandleFunc("GET /api/ssh/hosts", s.authed(s.handleSSHHosts))
+	m.HandleFunc("POST /api/devices/{id}/install-key", s.authed(s.handleInstallKey))
 	m.HandleFunc("GET /api/keys", s.authed(s.handleListKeys))
 	m.HandleFunc("POST /api/keys/generate", s.authed(s.handleGenerateKey))
+	m.HandleFunc("POST /api/keys/import", s.authed(s.handleImportKey))
+	m.HandleFunc("PATCH /api/keys/{id}", s.authed(s.handlePatchKey))
+	m.HandleFunc("DELETE /api/keys/{id}", s.authed(s.handleDeleteKey))
+	m.HandleFunc("POST /api/vault/export", s.authed(s.handleVaultExport))
+	m.HandleFunc("POST /api/vault/import", s.authed(s.handleVaultImport))
 	m.HandleFunc("/n/{node}/api/{rest...}", s.authed(s.handleNodeProxy))
 
 	// Updates act on the Codex/Claude CLIs, not on this console. "Restart"
@@ -460,7 +470,7 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		cfg.MaxConcurrent = n
 	}
-	if err := saveConfig(s.cfgPath, &cfg); err != nil {
+	if err := saveConfigFile(s.cfgPath, &cfg); err != nil {
 		writeErr(w, 500, "保存配置失败: "+err.Error())
 		return
 	}
@@ -638,7 +648,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	if b, err := randomBytes(32); err == nil {
 		next.Secret = base64.StdEncoding.EncodeToString(b)
 	}
-	if err := saveConfig(s.cfgPath, &next); err != nil {
+	if err := saveConfigFile(s.cfgPath, &next); err != nil {
 		writeErr(w, 500, "保存配置失败: "+err.Error())
 		return
 	}

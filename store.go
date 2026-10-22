@@ -126,6 +126,10 @@ func openStore(dataDir string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	// The database holds the client's SSH keys and node tokens (vault.go).
+	for _, f := range []string{path, path + "-wal", path + "-shm"} {
+		_ = os.Chmod(f, 0o600)
+	}
 	return s, nil
 }
 
@@ -203,7 +207,7 @@ func (s *Store) migrate() error {
 		`CREATE INDEX IF NOT EXISTS permissions_status_idx ON permissions(status, created_at)`,
 		`CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`,
 	}
-	for _, q := range stmts {
+	for _, q := range append(stmts, vaultSchema...) {
 		if _, err := s.db.Exec(q); err != nil {
 			return fmt.Errorf("migrate: %w\n%s", err, q)
 		}

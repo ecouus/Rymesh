@@ -15,7 +15,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -56,6 +55,7 @@ type deviceInput struct {
 	SSHPort    *int    `json:"ssh_port"`
 	SSHUser    *string `json:"ssh_user"`
 	KeyPath    *string `json:"key_path"`
+	KeyID      *string `json:"key_id"`
 	UseAgent   *bool   `json:"use_agent"`
 	RemotePort *int    `json:"remote_port"`
 	URL        *string `json:"url"`
@@ -76,6 +76,7 @@ func (in deviceInput) apply(n *NodeConfig) error {
 	set(&n.SSHHost, in.SSHHost)
 	set(&n.SSHUser, in.SSHUser)
 	set(&n.KeyPath, in.KeyPath)
+	set(&n.KeyID, in.KeyID)
 	set(&n.URL, in.URL)
 	set(&n.Token, in.Token)
 	if in.SSHPort != nil {
@@ -95,7 +96,7 @@ func (in deviceInput) apply(n *NodeConfig) error {
 		if n.SSHHost == "" || n.SSHUser == "" {
 			return errors.New("需要主机和用户名")
 		}
-		if n.KeyPath == "" && !n.UseAgent {
+		if n.KeyPath == "" && n.KeyID == "" && !n.UseAgent {
 			return errors.New("请选择密钥或使用 ssh-agent")
 		}
 		if n.SSHPort < 0 || n.SSHPort > 65535 || n.RemotePort < 0 || n.RemotePort > 65535 {
@@ -123,10 +124,8 @@ func (s *Server) saveNodes(fn func(nodes []NodeConfig) ([]NodeConfig, error)) er
 		return err
 	}
 	next.Nodes = nodes
-	if s.cfgPath != "" {
-		if err := saveConfig(s.cfgPath, next); err != nil {
-			return fmt.Errorf("保存配置失败：%w", err)
-		}
+	if err := s.store.saveDevices(nodes); err != nil {
+		return fmt.Errorf("保存设备失败：%w", err)
 	}
 	s.publishConfig(next)
 	return nil
@@ -210,6 +209,7 @@ func (s *Server) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
 // handleDeviceTest walks the add-device flow one step at a time:
 //
 //	stage "hostkey" — first contact: show the fingerprint for confirmation
+//	stage "auth"    — the server refused the key: offer to install it
 //	stage "ready"   — connected; reports platform and any installed node
 //	stage "error"   — with a message the page shows as is
 func (s *Server) handleDeviceTest(w http.ResponseWriter, r *http.Request) {
@@ -241,8 +241,17 @@ func (s *Server) handleDeviceTest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	s.ssh.retry(n) // an explicit test always tries again
 	out, err := s.ssh.run(ctx, n, `uname -s -m; B="$HOME/.agentconsole/bin/agentconsole"; [ -x "$B" ] && "$B" version`, nil)
 	if err != nil && out == "" {
+		if strings.Contains(err.Error(), "unable to authenticate") {
+			res := map[string]any{"stage": "auth", "error": "服务器还不认识这把密钥"}
+			if pub, err := s.publicKeyOf(n); err == nil {
+				res["public"] = pub
+			}
+			writeJSON(w, 200, res)
+			return
+		}
 		writeJSON(w, 200, map[string]any{"stage": "error", "error": sshErrorText(err)})
 		return
 	}
@@ -585,53 +594,4 @@ func (s *Server) handleSSHHosts(w http.ResponseWriter, r *http.Request) {
 		hosts = []sshHost{}
 	}
 	writeJSON(w, 200, map[string]any{"hosts": hosts})
-}
-
-type keyInfo struct {
-	Name   string `json:"name"`
-	Path   string `json:"path"`
-	Public string `json:"public"`
-	Source string `json:"source"` // "ssh" (~/.ssh) or "app" (generated here)
-}
-
-func (s *Server) keyDir() string { return filepath.Join(s.config().DataDir, "keys") }
-
-func (s *Server) handleListKeys(w http.ResponseWriter, r *http.Request) {
-	var keys []keyInfo
-	add := func(dir, source string) {
-		pubs, _ := filepath.Glob(filepath.Join(dir, "*.pub"))
-		sort.Strings(pubs)
-		for _, pub := range pubs {
-			priv := strings.TrimSuffix(pub, ".pub")
-			if _, err := os.Stat(priv); err != nil {
-				continue
-			}
-			b, _ := os.ReadFile(pub)
-			keys = append(keys, keyInfo{Name: filepath.Base(priv), Path: priv, Public: strings.TrimSpace(string(b)), Source: source})
-		}
-	}
-	add(s.keyDir(), "app")
-	add(expandHome("~/.ssh"), "ssh")
-	if keys == nil {
-		keys = []keyInfo{}
-	}
-	writeJSON(w, 200, map[string]any{"keys": keys, "agent": os.Getenv("SSH_AUTH_SOCK") != ""})
-}
-
-func (s *Server) handleGenerateKey(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Name string `json:"name"`
-	}
-	if err := decodeJSON(w, r, &req); err != nil {
-		return
-	}
-	if req.Name == "" {
-		req.Name = "agentconsole-" + time.Now().Format("20060102")
-	}
-	path, pub, err := generateKey(s.keyDir(), req.Name)
-	if err != nil {
-		writeErr(w, 400, err.Error())
-		return
-	}
-	writeJSON(w, 201, map[string]any{"key": keyInfo{Name: req.Name, Path: path, Public: pub, Source: "app"}})
 }

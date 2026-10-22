@@ -10,9 +10,6 @@ package console
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"net"
@@ -77,9 +74,10 @@ func (n NodeConfig) baseURL() string {
 	return n.URL
 }
 
-// sshAuth collects the configured authentication methods: a key file
-// (unencrypted; protected keys belong in ssh-agent) and/or the agent.
-func sshAuth(n NodeConfig) ([]ssh.AuthMethod, func(), error) {
+// sshAuth collects the configured authentication methods: a vault key, a key
+// file (unencrypted; protected keys are imported into the vault or kept in
+// ssh-agent) and/or the agent.
+func sshAuth(n NodeConfig, keys keySource) ([]ssh.AuthMethod, func(), error) {
 	var methods []ssh.AuthMethod
 	cleanup := func() {}
 	if n.UseAgent {
@@ -94,7 +92,23 @@ func sshAuth(n NodeConfig) ([]ssh.AuthMethod, func(), error) {
 		cleanup = func() { conn.Close() }
 		methods = append(methods, ssh.PublicKeysCallback(agent.NewClient(conn).Signers))
 	}
-	if n.KeyPath != "" {
+	if n.KeyID != "" {
+		if keys == nil {
+			cleanup()
+			return nil, func() {}, errors.New("密钥库不可用")
+		}
+		b, err := keys.privateKey(n.KeyID)
+		if err != nil {
+			cleanup()
+			return nil, func() {}, err
+		}
+		signer, err := ssh.ParsePrivateKey(b)
+		if err != nil {
+			cleanup()
+			return nil, func() {}, fmt.Errorf("解析私钥失败：%w", err)
+		}
+		methods = append(methods, ssh.PublicKeys(signer))
+	} else if n.KeyPath != "" {
 		b, err := os.ReadFile(expandHome(n.KeyPath))
 		if err != nil {
 			cleanup()
@@ -105,7 +119,7 @@ func sshAuth(n NodeConfig) ([]ssh.AuthMethod, func(), error) {
 			cleanup()
 			var pp *ssh.PassphraseMissingError
 			if errors.As(err, &pp) {
-				return nil, func() {}, errors.New("私钥有密码保护，请把它加入 ssh-agent 并改用 ssh-agent 认证")
+				return nil, func() {}, errors.New("私钥有密码短语保护：请在「密钥」里导入它（输入一次密码短语），或改用 ssh-agent")
 			}
 			return nil, func() {}, fmt.Errorf("解析私钥失败：%w", err)
 		}
@@ -150,8 +164,8 @@ func hostKeyAlgorithms(n NodeConfig) []string {
 		ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSASHA256}
 }
 
-func dialSSH(ctx context.Context, n NodeConfig) (*ssh.Client, error) {
-	auth, cleanup, err := sshAuth(n)
+func dialSSH(ctx context.Context, n NodeConfig, keys keySource) (*ssh.Client, error) {
+	auth, cleanup, err := sshAuth(n, keys)
 	if err != nil {
 		return nil, err
 	}
@@ -234,17 +248,18 @@ type sshPool struct {
 	mu         sync.Mutex
 	entries    map[string]*sshEntry
 	transports map[string]*http.Transport
+	keys       keySource
 }
 
-func newSSHPool() *sshPool {
-	return &sshPool{entries: map[string]*sshEntry{}, transports: map[string]*http.Transport{}}
+func newSSHPool(keys keySource) *sshPool {
+	return &sshPool{entries: map[string]*sshEntry{}, transports: map[string]*http.Transport{}, keys: keys}
 }
 
 // key identifies a device's connection settings; editing a device makes a
 // fresh entry instead of reusing a connection made with old credentials.
 func (n NodeConfig) sshKey() string {
 	return strings.Join([]string{n.ID, n.SSHHost, strconv.Itoa(n.SSHPort), n.SSHUser,
-		n.KeyPath, strconv.FormatBool(n.UseAgent), n.HostKey}, "|")
+		n.KeyPath, n.KeyID, strconv.FormatBool(n.UseAgent), n.HostKey}, "|")
 }
 
 func (p *sshPool) entry(n NodeConfig) *sshEntry {
@@ -271,7 +286,7 @@ func (p *sshPool) client(ctx context.Context, n NodeConfig) (*ssh.Client, error)
 	if time.Now().Before(e.failUntil) {
 		return nil, e.lastErr
 	}
-	c, err := dialSSH(ctx, n)
+	c, err := dialSSH(ctx, n, p.keys)
 	if err != nil {
 		e.lastErr = err
 		if e.backoff == 0 {
@@ -286,6 +301,15 @@ func (p *sshPool) client(ctx context.Context, n NodeConfig) (*ssh.Client, error)
 	e.client, e.lastErr, e.backoff = c, nil, 0
 	go p.keepalive(e, c)
 	return c, nil
+}
+
+// retry lifts the backoff after a failure: the user just fixed something
+// (installed the key, trusted the host) and asked to connect again.
+func (p *sshPool) retry(n NodeConfig) {
+	e := p.entry(n)
+	e.mu.Lock()
+	e.failUntil, e.backoff = time.Time{}, 0
+	e.mu.Unlock()
 }
 
 // keepalive drops the connection when the server stops answering, so the
@@ -414,43 +438,4 @@ func (b *lockedBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.buf.String()
-}
-
-// ---------------------------------------------------------------------------
-// Keys managed by the client (phones have no ~/.ssh)
-// ---------------------------------------------------------------------------
-
-// generateKey creates an ed25519 key pair in dir and returns the public key
-// line to add to a server's authorized_keys.
-func generateKey(dir, name string) (path, pub string, err error) {
-	if !validID(name) {
-		return "", "", errors.New("密钥名只能包含字母、数字、- 和 _")
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", "", err
-	}
-	path = filepath.Join(dir, name)
-	if _, err := os.Stat(path); err == nil {
-		return "", "", errors.New("已存在同名密钥")
-	}
-	pk, sk, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return "", "", err
-	}
-	block, err := ssh.MarshalPrivateKey(sk, "agentconsole "+name)
-	if err != nil {
-		return "", "", err
-	}
-	if err := os.WriteFile(path, pem.EncodeToMemory(block), 0o600); err != nil {
-		return "", "", err
-	}
-	spk, err := ssh.NewPublicKey(pk)
-	if err != nil {
-		return "", "", err
-	}
-	pub = strings.TrimSpace(string(ssh.MarshalAuthorizedKey(spk))) + " agentconsole-" + name
-	if err := os.WriteFile(path+".pub", []byte(pub+"\n"), 0o644); err != nil {
-		return "", "", err
-	}
-	return path, pub, nil
 }

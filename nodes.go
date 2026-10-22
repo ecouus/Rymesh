@@ -46,7 +46,8 @@ type NodeConfig struct {
 	SSHHost    string `json:"ssh_host,omitempty"`
 	SSHPort    int    `json:"ssh_port,omitempty"`
 	SSHUser    string `json:"ssh_user,omitempty"`
-	KeyPath    string `json:"key_path,omitempty"`
+	KeyPath    string `json:"key_path,omitempty"` // a key file (~/.ssh)
+	KeyID      string `json:"key_id,omitempty"`   // or a key in the vault (vault.go)
 	UseAgent   bool   `json:"use_agent,omitempty"`
 	HostKey    string `json:"host_key,omitempty"`
 	RemotePort int    `json:"remote_port,omitempty"`
@@ -260,9 +261,9 @@ func (s *Server) handleNodeProxy(w http.ResponseWriter, r *http.Request) {
 	proxy.ServeHTTP(w, r)
 }
 
-func cliTransport(n NodeConfig) http.RoundTripper {
+func cliTransport(n NodeConfig, keys keySource) http.RoundTripper {
 	if n.Transport == transportSSH {
-		return newSSHPool().transport(n)
+		return newSSHPool(keys).transport(n)
 	}
 	return nodeTransport
 }
@@ -308,8 +309,21 @@ func nodeMain(args []string) int {
 		fmt.Fprintln(os.Stderr, "读取配置失败:", err)
 		return 1
 	}
+	st, err := openStore(cfg.DataDir)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "打开数据库失败:", err)
+		return 1
+	}
+	defer st.Close()
+	if err := initVault(st, cfg, *configPath); err != nil {
+		fmt.Fprintln(os.Stderr, "读取设备失败:", err)
+		return 1
+	}
 	save := func() int {
-		if err := saveConfig(*configPath, cfg); err != nil {
+		if err := st.saveDevices(cfg.Nodes); err == nil {
+			err = saveConfigFile(*configPath, cfg)
+		}
+		if err != nil {
 			fmt.Fprintln(os.Stderr, "保存配置失败:", err)
 			return 1
 		}
@@ -366,7 +380,7 @@ func nodeMain(args []string) int {
 		if !replaced {
 			cfg.Nodes = append(cfg.Nodes, n)
 		}
-		v := probeNode(context.Background(), n, cliTransport(n))
+		v := probeNode(context.Background(), n, cliTransport(n, st))
 		if v.Online {
 			fmt.Printf("设备 %s 在线（%s）\n", n.Name, v.Version)
 		} else {
@@ -393,7 +407,7 @@ func nodeMain(args []string) int {
 	case "list":
 		fmt.Printf("本机  %s\n", cfg.nodeName())
 		for _, n := range cfg.Nodes {
-			v := probeNode(context.Background(), n, cliTransport(n))
+			v := probeNode(context.Background(), n, cliTransport(n, st))
 			state := "在线 " + v.Version
 			if !v.Online {
 				state = "不可用：" + v.Error

@@ -440,7 +440,7 @@ make macos       # → macos/dist/AgentConsole.app（Swift 外壳 + 通用二进
 
 把 `AgentConsole.app` 拖进“应用程序”。从网上下载的副本首次打开会被 Gatekeeper 拦下：
 系统设置 → 隐私与安全性 → “仍要打开”（或 `xattr -dr com.apple.quarantine /Applications/AgentConsole.app`）。
-App 提供独立窗口、菜单栏图标（待处理数量）、Dock 角标、审批/提问的系统通知（点击直达卡片）和“登录时打开”。
+App 提供独立窗口、菜单栏图标（待处理数量）、Dock 角标、审批/提问的系统通知（点击直达卡片）。
 控制台只在 App 运行时运行（普通进程，不开机自启、不常驻）；退出 App 会停止控制台，
 但正在运行的 Agent 任务是独立进程，继续执行，下次打开 App 时补上它们的输出。
 App 内置 Linux amd64/arm64 节点程序，可直接部署服务器；若服务器上已有系统级安装
@@ -450,12 +450,22 @@ App 内置 Linux amd64/arm64 节点程序，可直接部署服务器；若服务
 不想用 App 也可以只用命令行：`agentconsole client`（首次自动配置，免密打开浏览器）、
 `agentconsole client open`、`agentconsole client stop`。
 
-设置 → 设备 → 添加服务器：可从 `~/.ssh/config` 一键导入，密钥可选 `~/.ssh` 里的、ssh-agent，
-或由客户端生成（显示公钥供加入服务器 `authorized_keys`）。首次连接核对并固定主机指纹
-（若 `known_hosts` 已有记录则自动采用），指纹变化一律拒绝。随后一键部署：客户端上传对应平台
+设置 → 设备 → 添加服务器：可从 `~/.ssh/config` 一键填入，密钥可选密钥库里的、`~/.ssh` 里的、ssh-agent，
+或当场生成。首次连接核对并固定主机指纹（若 `known_hosts` 已有记录则自动采用），指纹变化一律拒绝。
+服务器还不认识这把密钥时，可以输入一次服务器密码自动把公钥写入 `~/.ssh/authorized_keys`
+（同 `ssh-copy-id`；只在主机指纹已固定后发送，密码不保存），或复制命令手动添加。随后一键部署：客户端上传对应平台
 的程序（`make dist` 产物），在服务器上以 SSH 用户身份执行 `agentconsole node setup`
 （安装到 `~/.agentconsole`，root 用 systemd、普通用户用 `systemctl --user`、macOS 用 launchd），
 已有节点则沿用其令牌原地升级，因此 Mac 与手机可以共用同一台服务器。
+
+**密钥库与迁移。** 客户端的设备列表（地址、固定的主机指纹、节点令牌）和 SSH 私钥保存在自己的
+SQLite 数据库里（`data/agentconsole.db`，权限 0600），不依赖 `~/.ssh`。设置 → 密钥 可生成、重命名、
+删除密钥，也可以把 `~/.ssh` 里的密钥导入（有密码短语的输入一次，之后不再需要）。
+设置 → 导出设备 把选中的服务器连同密钥打包成 `.acbundle` 文件，用随机生成的 16 位解密码
+（scrypt + AES-256-GCM）加密；在另一台客户端（例如手机）上 设置 → 导入设备，选文件、输入解密码即可直接使用。
+解密码只显示一次，请和文件分开传递。旧版本 `config.json` 里的设备和 `data/keys/` 里的密钥会在首次启动时
+自动迁入数据库（原配置备份为 `config.json.pre-vault`）。密钥库只保存 SSH 与节点凭据，不读取、不保存任何
+Codex / Claude 账号凭据。
 
 **Android**
 
@@ -466,8 +476,9 @@ go install golang.org/x/mobile/cmd/gomobile@latest golang.org/x/mobile/cmd/gobin
 make android     # → android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-App 内生成 SSH 密钥，把公钥加入服务器后即可添加服务器、部署节点（APK 内置 Linux
-amd64/arm64 节点程序）。App 退到后台时连接会断开，服务器上的 Agent 照常运行；回到前台自动重连。
+可以在 App 内生成密钥并添加服务器，也可以从电脑导出设备后在手机上导入（见上文“密钥库与迁移”）。
+APK 内置 Linux amd64/arm64 节点程序，可直接部署。界面跟随系统深浅色，返回手势先关闭弹层。
+App 退到后台时连接会断开，服务器上的 Agent 照常运行；回到前台自动重连。
 
 ## 12. 已知限制
 

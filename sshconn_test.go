@@ -23,8 +23,10 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// testSSHServer is a minimal sshd: public-key auth for one key, direct-tcpip
-// forwarding (what the relay uses) and exec sessions (what deploy uses).
+// testSSHServer is a minimal sshd: public-key auth for one key (and for keys
+// in $HOME/.ssh/authorized_keys), password auth when testPassword is set,
+// direct-tcpip forwarding (what the relay uses) and exec sessions (what
+// deploy uses).
 type testSSHServer struct {
 	addr    string
 	hostKey ssh.Signer
@@ -43,7 +45,23 @@ func newTestSSHServer(t *testing.T, clientPub ssh.PublicKey) *testSSHServer {
 func startTestSSHServer(t *testing.T, clientPub ssh.PublicKey, hostKey ssh.Signer) *testSSHServer {
 	t.Helper()
 	cfg := &ssh.ServerConfig{PublicKeyCallback: func(_ ssh.ConnMetadata, k ssh.PublicKey) (*ssh.Permissions, error) {
-		if string(k.Marshal()) == string(clientPub.Marshal()) {
+		if clientPub != nil && string(k.Marshal()) == string(clientPub.Marshal()) {
+			return nil, nil
+		}
+		b, _ := os.ReadFile(filepath.Join(os.Getenv("HOME"), ".ssh", "authorized_keys"))
+		for len(b) > 0 {
+			ak, _, _, rest, err := ssh.ParseAuthorizedKey(b)
+			if err != nil {
+				break
+			}
+			if string(ak.Marshal()) == string(k.Marshal()) {
+				return nil, nil
+			}
+			b = rest
+		}
+		return nil, io.EOF
+	}, PasswordCallback: func(_ ssh.ConnMetadata, pw []byte) (*ssh.Permissions, error) {
+		if testPassword != "" && string(pw) == testPassword {
 			return nil, nil
 		}
 		return nil, io.EOF
@@ -135,15 +153,22 @@ func (s *testSSHServer) serve(c net.Conn, cfg *ssh.ServerConfig) {
 	}
 }
 
+// testPassword, when set, is the password the test sshd accepts.
+var testPassword string
+
 // clientKey writes an unencrypted ed25519 key the way ssh-keygen would.
 func clientKey(t *testing.T) (path string, pub ssh.PublicKey) {
 	t.Helper()
-	path, line, err := generateKey(t.TempDir(), "test")
+	b, err := newKeyPair("test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	pub, _, _, _, _ = ssh.ParseAuthorizedKey([]byte(line))
-	return path, pub
+	path = filepath.Join(t.TempDir(), "id_test")
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	signer, _ := ssh.ParsePrivateKey(b)
+	return path, signer.PublicKey()
 }
 
 func sshNodeFor(t *testing.T, srv *testSSHServer, keyPath string, nodeURL string) NodeConfig {
@@ -235,7 +260,7 @@ func TestSSHRejectsChangedHostKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	n.HostKey = p.Key
-	if _, err := dialSSH(t.Context(), n); err != nil {
+	if _, err := dialSSH(t.Context(), n, nil); err != nil {
 		t.Fatalf("trusted key: %v", err)
 	}
 	// Same address, different server key: a man in the middle.
@@ -244,14 +269,14 @@ func TestSSHRejectsChangedHostKey(t *testing.T) {
 	impostor := startTestSSHServer(t, pub, signer)
 	host, port, _ := net.SplitHostPort(impostor.addr)
 	n.SSHHost, n.SSHPort = host, mustAtoi(port)
-	_, err = dialSSH(t.Context(), n)
+	_, err = dialSSH(t.Context(), n, nil)
 	var mm *hostKeyMismatchError
 	if err == nil || !errors.As(err, &mm) {
 		t.Fatalf("changed host key accepted: %v", err)
 	}
 }
 
-func TestSSHConfigImportAndKeyGeneration(t *testing.T) {
+func TestSSHConfigImport(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	_ = os.MkdirAll(filepath.Join(home, ".ssh"), 0o700)
@@ -275,16 +300,6 @@ Host prod web1
 	if len(r.Hosts) != 2 || r.Hosts[0].HostName != "203.0.113.7" || r.Hosts[0].Port != 2222 ||
 		r.Hosts[0].User != "deploy" || r.Hosts[1].Alias != "web1" {
 		t.Fatalf("hosts = %+v", r.Hosts)
-	}
-	path, pub, err := generateKey(srv.keyDir(), "phone")
-	if err != nil || !strings.HasPrefix(pub, "ssh-ed25519 ") {
-		t.Fatalf("generate = %q %v", pub, err)
-	}
-	if st, _ := os.Stat(path); st.Mode().Perm() != 0o600 {
-		t.Fatalf("private key mode = %v", st.Mode().Perm())
-	}
-	if _, _, err := generateKey(srv.keyDir(), "phone"); err == nil {
-		t.Fatal("overwrote an existing key")
 	}
 }
 

@@ -3,30 +3,50 @@ package dev.agentconsole.app;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.res.AssetManager;
+import android.content.res.Configuration;
 import android.graphics.Insets;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.view.Gravity;
 import android.view.View;
 import android.view.WindowInsets;
+import android.view.WindowInsetsController;
+import android.webkit.JavascriptInterface;
+import android.webkit.ValueCallback;
+import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.FrameLayout;
+import android.widget.ProgressBar;
+import android.widget.Toast;
 
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 
 import dev.agentconsole.mobile.Mobile;
 
 /**
  * One WebView over the embedded Go console (package mobile). The console is a
  * hub: it reaches the user's servers over SSH and runs no agents itself.
+ *
+ * The page asks this shell, through AgentConsoleNative, for what a web page
+ * cannot do well on a phone: the share sheet, saving a file, and matching the
+ * system bars to its theme.
  */
 public class MainActivity extends Activity {
+    private static final int REQ_SAVE = 1, REQ_OPEN = 2;
+
     private WebView web;
+    private FrameLayout root;
+    private ProgressBar loading;
+    private String pendingSave;                  // file text waiting for a destination
+    private ValueCallback<Uri[]> pendingChooser; // <input type=file> waiting for a pick
 
     @Override
     protected void onCreate(Bundle state) {
@@ -38,6 +58,7 @@ public class MainActivity extends Activity {
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
+        web.addJavascriptInterface(new Bridge(), "AgentConsoleNative");
         web.setWebViewClient(new WebViewClient() {
             // Links out of the console (docs, URLs in answers) open in the browser.
             @Override
@@ -47,26 +68,53 @@ public class MainActivity extends Activity {
                 startActivity(new Intent(Intent.ACTION_VIEW, u));
                 return true;
             }
+
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                loading.setVisibility(View.GONE);
+            }
         });
-        // Android 15+ draws edge to edge: keep the page clear of the status bar,
-        // navigation bar and keyboard. A WebView ignores its own padding, so
-        // the insets go on a container around it.
-        android.widget.FrameLayout root = new android.widget.FrameLayout(this);
-        root.setBackgroundColor(0xFFFFFFFF);
+        web.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> cb, FileChooserParams params) {
+                if (pendingChooser != null) pendingChooser.onReceiveValue(null);
+                pendingChooser = cb;
+                Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*");
+                try {
+                    startActivityForResult(i, REQ_OPEN);
+                } catch (Exception e) {
+                    pendingChooser = null;
+                    return false;
+                }
+                return true;
+            }
+        });
+
+        // Android 15+ draws edge to edge. The container takes the system bars,
+        // the display cutout and the keyboard as padding, and consumes them:
+        // otherwise the page adds the cutout again through
+        // env(safe-area-inset-top) and the top bar sits far below the status bar.
+        root = new FrameLayout(this);
         root.addView(web);
+        loading = new ProgressBar(this);
+        root.addView(loading, new FrameLayout.LayoutParams(dp(36), dp(36), Gravity.CENTER));
         root.setOnApplyWindowInsetsListener((View v, WindowInsets in) -> {
             if (Build.VERSION.SDK_INT >= 30) {
-                Insets i = in.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.ime());
+                Insets i = in.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout()
+                        | WindowInsets.Type.ime());
                 v.setPadding(i.left, i.top, i.right, i.bottom);
-            } else {
-                v.setPadding(in.getSystemWindowInsetLeft(), in.getSystemWindowInsetTop(),
-                        in.getSystemWindowInsetRight(), in.getSystemWindowInsetBottom());
+                return WindowInsets.CONSUMED;
             }
-            return in;
+            v.setPadding(in.getSystemWindowInsetLeft(), in.getSystemWindowInsetTop(),
+                    in.getSystemWindowInsetRight(), in.getSystemWindowInsetBottom());
+            return in.consumeSystemWindowInsets();
         });
         setContentView(root);
-        if (state != null) {
-            web.restoreState(state);
+        if (Build.VERSION.SDK_INT >= 30) getWindow().setDecorFitsSystemWindows(false);
+        applyBars(isNight());
+
+        if (state != null && web.restoreState(state) != null) {
+            loading.setVisibility(View.GONE);
             return;
         }
         new Thread(() -> {
@@ -82,6 +130,79 @@ public class MainActivity extends Activity {
                 runOnUiThread(() -> web.loadData(html, "text/html; charset=utf-8", "utf-8"));
             }
         }).start();
+    }
+
+    private int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }
+
+    private boolean isNight() {
+        return (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
+    }
+
+    /** Colours the area behind the system bars and picks light or dark bar icons. */
+    private void applyBars(boolean dark) {
+        int bg = dark ? 0xFF0F0F10 : 0xFFFFFFFF; // --bg in web/styles.css
+        root.setBackgroundColor(bg);
+        web.setBackgroundColor(bg);
+        getWindow().getDecorView().setBackgroundColor(bg);
+        if (Build.VERSION.SDK_INT >= 30) {
+            WindowInsetsController c = getWindow().getInsetsController();
+            if (c != null) {
+                int light = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
+                c.setSystemBarsAppearance(dark ? 0 : light, light);
+            }
+        } else {
+            View d = getWindow().getDecorView();
+            int f = d.getSystemUiVisibility();
+            int light = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+            d.setSystemUiVisibility(dark ? f & ~light : f | light);
+        }
+    }
+
+    /** Methods the page calls as window.AgentConsoleNative.*; they run on a binder thread. */
+    private class Bridge {
+        @JavascriptInterface
+        public void share(String text, String title) {
+            runOnUiThread(() -> {
+                Intent i = new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text);
+                if (title != null && !title.isEmpty()) i.putExtra(Intent.EXTRA_SUBJECT, title);
+                startActivity(Intent.createChooser(i, title == null || title.isEmpty() ? "分享" : title));
+            });
+        }
+
+        @JavascriptInterface
+        public void saveFile(String name, String text) {
+            runOnUiThread(() -> {
+                pendingSave = text;
+                Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
+                        .setType("application/octet-stream").putExtra(Intent.EXTRA_TITLE, name);
+                startActivityForResult(i, REQ_SAVE);
+            });
+        }
+
+        @JavascriptInterface
+        public void setTheme(boolean dark) {
+            runOnUiThread(() -> applyBars(dark));
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int req, int result, Intent data) {
+        super.onActivityResult(req, result, data);
+        Uri uri = result == RESULT_OK && data != null ? data.getData() : null;
+        if (req == REQ_OPEN) {
+            if (pendingChooser != null) pendingChooser.onReceiveValue(uri == null ? null : new Uri[]{uri});
+            pendingChooser = null;
+        } else if (req == REQ_SAVE) {
+            String text = pendingSave;
+            pendingSave = null;
+            if (uri == null || text == null) return;
+            try (OutputStream os = getContentResolver().openOutputStream(uri, "wt")) {
+                os.write(text.getBytes(StandardCharsets.UTF_8));
+                Toast.makeText(this, "已保存", Toast.LENGTH_SHORT).show();
+            } catch (Exception e) {
+                Toast.makeText(this, "保存失败：" + e.getMessage(), Toast.LENGTH_LONG).show();
+            }
+        }
     }
 
     /**
@@ -111,10 +232,27 @@ public class MainActivity extends Activity {
         web.saveState(out);
     }
 
+    // Back closes what is open in the page (picker, sheet, sidebar) or returns
+    // to the home screen before it leaves the app. Android 13+ delivers it
+    // through OnBackInvokedDispatcher (onBackPressed is not called when
+    // targeting 36); leaving puts the app in the background like the system
+    // default, so the console keeps its connections.
+    private void back() {
+        web.evaluateJavascript("window.acBack ? window.acBack() : false", v -> {
+            if (!"true".equals(v)) moveTaskToBack(true);
+        });
+    }
+
     @Override
-    public void onBackPressed() {
-        if (web.canGoBack()) web.goBack();
-        else super.onBackPressed();
+    public void onBackPressed() { back(); }
+
+    @Override
+    protected void onPostCreate(Bundle state) {
+        super.onPostCreate(state);
+        if (Build.VERSION.SDK_INT >= 33) {
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                    android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::back);
+        }
     }
 
     @Override

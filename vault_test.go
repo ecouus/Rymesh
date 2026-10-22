@@ -294,3 +294,29 @@ func TestInstallKeyWithPasswordOnce(t *testing.T) {
 		t.Fatalf("test after install = %s", rec.Body.String())
 	}
 }
+
+func TestFastNodeListAndSnapshot(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	h := newTestHub(t, testConfig(t), "")
+	_ = h.srv.saveNodes(func([]NodeConfig) ([]NodeConfig, error) {
+		return []NodeConfig{{ID: "dfar", Name: "Far", Transport: transportSSH, SSHHost: "203.0.113.1", SSHUser: "root", UseAgent: true}}, nil
+	})
+	// The fast listing never dials: an unreachable address answers at once.
+	rec := h.do("GET", "/api/nodes?fast=1", "")
+	r := decode[struct{ Nodes []nodeView }](t, rec)
+	if len(r.Nodes) != 2 || !r.Nodes[1].Checking || r.Nodes[1].Target != "root@203.0.113.1" {
+		t.Fatalf("fast nodes = %s", rec.Body.String())
+	}
+	if rec := h.do("GET", "/api/nodes/dfar/snapshot", ""); rec.Body.String() != "null" {
+		t.Fatalf("empty snapshot = %q", rec.Body.String())
+	}
+	if rec := h.do("PUT", "/api/nodes/dfar/snapshot", `{"sessions":[{"id":"a"}]}`); rec.Code != 200 {
+		t.Fatalf("put: %d", rec.Code)
+	}
+	if rec := h.do("GET", "/api/nodes/dfar/snapshot", ""); !strings.Contains(rec.Body.String(), `"id":"a"`) {
+		t.Fatalf("snapshot = %q", rec.Body.String())
+	}
+	if rec := h.do("PUT", "/api/nodes/nope/snapshot", `{}`); rec.Code != 404 {
+		t.Fatalf("unknown device: %d", rec.Code)
+	}
+}

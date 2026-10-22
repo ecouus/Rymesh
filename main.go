@@ -147,6 +147,7 @@ func serveMain(args []string) int {
 		return 1
 	}
 	srv := newServer(cfg, *configPath, st, logger, addrs)
+	srv.warmNodes()
 
 	if cfg.ImportOnStart {
 		rep := srv.runImport()

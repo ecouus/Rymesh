@@ -433,55 +433,134 @@
 
   // --------------------------------------------------------------------- boot
 
+  // Boot data of each device is kept (in the hub's database) so the next
+  // start can draw the last known state at once; reaching a distant server
+  // over SSH takes seconds.
+  function snapshotPath() { return "/api/nodes/" + encodeURIComponent(S.node) + "/snapshot"; }
+
+  function applyBoot(d, cached) {
+    S.booted = true;
+    S.nodeName = d.node_name || "";
+    if (!cached) S.csrf = d.csrf || S.csrf;
+    S.agents = d.agents || [];
+    S.profiles = d.profiles || {};
+    S.config = d.config || {};
+    S.counts = d.counts || {};
+    S.imports = d.import || {};
+    S.sessions = d.sessions || [];
+    S.tasks = d.tasks || [];
+    S.perms = d.permissions || [];
+    S.activeTasks = S.tasks.filter(isActiveTask);
+    ensureDraftAgent();
+    if (!S.draftCwd) S.draftCwd = S.config.default_cwd || "";
+  }
+
+  // Connection to the current device at start-up: "connecting", "failed"
+  // or "ok". The welcome page shows it where recent conversations go.
+  S.link = { state: "ok" };
+  var linkTimer = null;
+  function setLink(state, error) {
+    S.link = { state: state, error: error || "", since: S.link.state === state ? S.link.since : Date.now() };
+    clearInterval(linkTimer);
+    if (state === "connecting") {
+      linkTimer = setInterval(function () {
+        var el = $("#conn-elapsed");
+        if (el) el.textContent = Math.round((Date.now() - S.link.since) / 1000) + " 秒";
+      }, 1000);
+    }
+    if (S.route === "home" && S.booted) renderHome();
+  }
+
+  function connCard() {
+    var n = S.nodes.filter(function (x) { return x.id === S.node; })[0] || {};
+    var name = esc(nodeLabel(S.node)), target = esc(n.target || "");
+    if (S.link.state === "failed") {
+      return '<div class="conn-card failed"><div class="conn-title">无法连接 ' + name + "</div>" +
+        '<div class="conn-sub">' + esc(S.link.error || "连接失败") + "</div>" +
+        '<button class="btn sm" type="button" data-reboot="1">重试</button></div>';
+    }
+    var secs = Math.round((Date.now() - (S.link.since || Date.now())) / 1000);
+    return '<div class="conn-card"><div class="conn-anim" aria-hidden="true">' +
+      '<svg class="ico" viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2.5"/><path d="M11 18h2"/></svg>' +
+      '<span class="conn-dots"><i></i><i></i><i></i></span>' +
+      '<svg class="ico" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="7" rx="1.5"/><rect x="4" y="13" width="16" height="7" rx="1.5"/><path d="M8 7.5h.01M8 16.5h.01"/></svg>' +
+      "</div>" +
+      '<div class="conn-title">正在连接 ' + name + "</div>" +
+      '<div class="conn-sub">通过 SSH' + (target ? " · " + target : "") + ' · <span id="conn-elapsed">' + secs + " 秒</span></div></div>";
+  }
+
   function boot() {
     // The device list decides which device to load (a hub-only console has no
-    // local one), so it comes first.
-    return loadNodes().then(function () {
+    // local one), so it comes first. The fast listing answers from the hub's
+    // own records without waiting for SSH; live status follows.
+    var shown = false;
+    return loadNodes(true).then(function () {
       if (S.hubOnly && !S.nodes.some(function (n) { return n.id === S.node; })) {
         var first = S.nodes.filter(function (n) { return n.online; })[0] || S.nodes[0];
         S.node = first ? first.id : "local";
+        LS.set("node", S.node);
         S.draftCwd = ""; // a directory on the previous device means nothing here
         LS.del("draftCwd");
         renderNodeSwitch(); // it was drawn before the device was chosen
       }
-      return api("/api/bootstrap");
+      if (S.node === "local") return api("/api/bootstrap");
+      setLink("connecting");
+      return api(snapshotPath(), { hub: true }).catch(function () { return null; }).then(function (cached) {
+        // The welcome page comes up at once, from the last snapshot if there
+        // is one; the connection shows in place of recent conversations.
+        showApp();
+        updateThemeColor();
+        applyBoot(cached || {}, true);
+        route(true);
+        dockSidebar();
+        shown = true;
+        return api("/api/bootstrap");
+      });
     }).then(function (d) {
-      S.booted = true;
-      S.nodeName = d.node_name || "";
-      S.csrf = d.csrf || S.csrf;
-      S.agents = d.agents || [];
-      S.profiles = d.profiles || {};
-      S.config = d.config || {};
-      S.counts = d.counts || {};
-      S.imports = d.import || {};
-      S.sessions = d.sessions || [];
-      S.tasks = d.tasks || [];
-      S.perms = d.permissions || [];
-      S.activeTasks = S.tasks.filter(isActiveTask);
-      ensureDraftAgent();
-      if (!S.draftCwd) S.draftCwd = S.config.default_cwd || "";
+      var where = S.route, sid = S.session && S.session.id;
+      applyBoot(d, false);
+      S.link = { state: "ok" };
+      clearInterval(linkTimer);
+      if (S.node !== "local") {
+        api(snapshotPath(), { method: "PUT", hub: true, body: { node_name: d.node_name, agents: d.agents, profiles: d.profiles,
+          config: d.config, counts: d.counts, sessions: (d.sessions || []).slice(0, 100) } }).catch(function () {});
+      }
       showApp();
       updateThemeColor();
       renderApprovalNotifications();
-      route(true);
+      // An open conversation already loaded itself; just refresh around it.
+      if (shown && where === "chat" && sid) renderSessionList();
+      else route(true);
       dockSidebar();
       startPolling();
+      if (S.node !== "local" || S.nodes.length > 1) loadNodes(); // live status
     }).catch(function (err) {
+      if (err && err.status === 401) { setLink("ok"); showLogin(); return; }
+      // On the phone there is no local machine to fall back to: the welcome
+      // page says what is wrong and offers to retry.
+      if (S.hubOnly && S.node !== "local" && shown) {
+        setLink("failed", (err && err.message) || "");
+        if (S.route !== "home") toast("无法连接 " + nodeLabel(S.node), true);
+        return;
+      }
+      setLink("ok");
       // An unreachable device must not lock the user out: fall back to this
       // console's own machine.
-      if (S.node !== "local" && !(err && err.status === 401)) {
+      if (S.node !== "local") {
         toast((err && err.message) || "设备不可用", true);
         S.node = "local";
         LS.set("node", "local");
         return boot();
       }
-      if (err && err.status === 401) showLogin();
-      else { showLogin(); toast(err.message || "无法连接服务", true); }
+      showLogin(); toast(err.message || "无法连接服务", true);
     });
   }
+  document.addEventListener("click", function (e) {
+    if (e.target.closest("[data-reboot]")) boot();
+  });
 
-  function loadNodes() {
-    return api("/api/nodes", { hub: true }).then(function (d) {
+  function loadNodes(fast) {
+    return api("/api/nodes" + (fast ? "?fast=1" : ""), { hub: true }).then(function (d) {
       S.nodes = d.nodes || [];
       S.hubOnly = !!d.hub_only;
       if (S.node !== "local" && !S.nodes.some(function (n) { return n.id === S.node; })) {
@@ -523,10 +602,10 @@
 
   function nodeRows() {
     return S.nodes.map(function (n) {
-      return '<button type="button" class="g-row" data-node="' + esc(n.id) + '"' + (n.online ? "" : " disabled") + ">" +
+      return '<button type="button" class="g-row" data-node="' + esc(n.id) + '"' + (n.online || n.checking ? "" : " disabled") + ">" +
         '<span class="node-dot' + (n.online ? "" : " off") + '"></span>' +
         '<span class="g-label">' + esc(n.name) + (n.local ? ' <span class="muted small">主控</span>' : "") + "</span>" +
-        '<span class="g-value">' + esc(n.online ? (n.id === S.node ? "当前" : "") : (n.error || "离线")) + "</span></button>";
+        '<span class="g-value">' + esc(n.online ? (n.id === S.node ? "当前" : "") : n.checking ? "连接中…" : (n.error || "离线")) + "</span></button>";
     }).join("");
   }
 
@@ -1489,7 +1568,7 @@
     // The directory is shown (and changed) in the greeting, so the top bar
     // stays a plain title here.
     setTop("新对话", "");
-    $("#prompt").placeholder = "给 " + (a.label || a.name || "Agent") + " 发消息…";
+    $("#prompt").placeholder = S.draftAgent ? "给 " + (a.label || a.name) + " 发消息…" : "给 Agent 发消息…";
     var recent = S.sessions.slice(0, 3).map(function (s) {
       return '<button type="button" class="recent-card" data-recent="' + esc(s.id) + '">' +
         agentIcon(s.agent) +
@@ -1500,10 +1579,11 @@
     $("#main").innerHTML =
       '<div class="home-empty">' +
       '<div class="home-title">' + esc(greeting()) + "</div>" +
-      '<div class="home-sub">新对话将在 ' + (multiNode() ? esc(nodeLabel(S.node)) + " 的 " : "") +
-      '<button type="button" data-home-cwd="1" title="更改工作目录">' +
-      esc(truncate(S.draftCwd, 48)) + "</button> 中运行</div>" +
-      (recent ? '<div class="home-recent"><div class="home-recent-label">继续最近的对话</div>' + recent + "</div>" : "") +
+      '<div class="home-sub">新对话将在 ' + (multiNode() ? esc(nodeLabel(S.node)) + (S.draftCwd ? " 的 " : " 上") : "") +
+      (S.draftCwd ? '<button type="button" data-home-cwd="1" title="更改工作目录">' +
+      esc(truncate(S.draftCwd, 48)) + "</button> 中" : "") + "运行</div>" +
+      (S.link.state !== "ok" ? '<div class="home-recent">' + connCard() + "</div>" :
+      recent ? '<div class="home-recent"><div class="home-recent-label">继续最近的对话</div>' + recent + "</div>" : "") +
       "</div>";
     renderAgentSelect();
     updateComposerMeta();
@@ -3194,6 +3274,10 @@
     var ta = $("#prompt");
     var text = ta.value.trim();
     if (!text || S.sending) return;
+    if (S.link.state !== "ok") {
+      toast(S.link.state === "failed" ? "无法连接 " + nodeLabel(S.node) + "，请重试" : "正在连接 " + nodeLabel(S.node) + "，请稍候");
+      return;
+    }
     // A bare /model or /effort opens the picker, as in the interactive CLI;
     // with an argument it goes to the agent like any command.
     if (/^\/(model|effort)$/i.test(text)) {

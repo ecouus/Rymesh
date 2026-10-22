@@ -24,6 +24,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -103,6 +104,7 @@ type nodeView struct {
 	Transport string `json:"transport,omitempty"`
 	Target    string `json:"target,omitempty"` // user@host for SSH devices
 	Error     string `json:"error,omitempty"`
+	Checking  bool   `json:"checking,omitempty"` // not probed yet (fast listing)
 }
 
 // transportFor picks how the relay reaches a device.
@@ -114,7 +116,9 @@ func (s *Server) transportFor(n NodeConfig) http.RoundTripper {
 }
 
 // handleNodes lists this machine and every configured node with a live check
-// that the node is reachable and accepts the token.
+// that the node is reachable and accepts the token. With ?fast=1 it answers
+// at once from the last check instead: a first SSH connection to a distant
+// server takes seconds, and the page should not sit blank meanwhile.
 func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
 	cfg := s.config()
 	off := 1
@@ -125,16 +129,88 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
 	if !cfg.HubOnly {
 		out[0] = nodeView{ID: localNodeID, Name: cfg.nodeName(), Local: true, Online: true, Version: version}
 	}
+	fast := r.URL.Query().Get("fast") == "1"
 	var wg sync.WaitGroup
 	for i, n := range cfg.Nodes {
+		if fast {
+			out[i+off] = s.lastProbe(n)
+			continue
+		}
 		wg.Add(1)
 		go func(i int, n NodeConfig) {
 			defer wg.Done()
-			out[i+off] = probeNode(r.Context(), n, s.transportFor(n))
+			out[i+off] = s.probe(r.Context(), n)
 		}(i, n)
 	}
 	wg.Wait()
 	writeJSON(w, 200, map[string]any{"nodes": out, "hub_only": cfg.HubOnly})
+}
+
+// probe checks a device and remembers the result for fast listings.
+func (s *Server) probe(ctx context.Context, n NodeConfig) nodeView {
+	v := probeNode(ctx, n, s.transportFor(n))
+	s.nodeMu.Lock()
+	if s.nodeSeen == nil {
+		s.nodeSeen = map[string]nodeView{}
+	}
+	s.nodeSeen[n.ID] = v
+	s.nodeMu.Unlock()
+	return v
+}
+
+func (s *Server) lastProbe(n NodeConfig) nodeView {
+	s.nodeMu.Lock()
+	v, ok := s.nodeSeen[n.ID]
+	s.nodeMu.Unlock()
+	if ok {
+		v.Name = n.Name // may have been renamed since
+		return v
+	}
+	v = nodeView{ID: n.ID, Name: n.Name, URL: n.URL, Transport: n.Transport, Checking: true}
+	if n.Transport == transportSSH {
+		v.URL, v.Target = "", n.SSHUser+"@"+n.SSHHost
+	}
+	return v
+}
+
+// handleNodeSnapshot keeps the page's last view of a device (its bootstrap,
+// trimmed), so the next start can draw it before the SSH connection is up.
+// It lives in the database: a WebView's localStorage is written lazily and
+// is often lost when Android stops the app.
+func (s *Server) handleNodeSnapshot(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, ok := s.device(id); !ok {
+		writeErr(w, 404, "设备不存在")
+		return
+	}
+	key := "snapshot." + id
+	if r.Method == http.MethodGet {
+		w.Header().Set("Content-Type", "application/json")
+		v := s.store.GetMeta(key)
+		if v == "" {
+			v = "null"
+		}
+		_, _ = io.WriteString(w, v)
+		return
+	}
+	b, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 512<<10))
+	if err != nil || !json.Valid(b) {
+		writeErr(w, 400, "快照无效")
+		return
+	}
+	if err := s.store.SetMeta(key, string(b)); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
+// warmNodes connects to every device in the background when the console
+// starts, so the SSH handshakes overlap with the page loading.
+func (s *Server) warmNodes() {
+	for _, n := range s.config().Nodes {
+		go s.probe(context.Background(), n)
+	}
 }
 
 func probeNode(ctx context.Context, n NodeConfig, rt http.RoundTripper) nodeView {

@@ -85,6 +85,7 @@ func StartEmbedded(dataDir string) (*Embedded, error) {
 		return nil, err
 	}
 	srv := newServer(cfg, cfgPath, st, logger, []string{ln.Addr().String()})
+	srv.warmNodes()
 	hs := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 15 * time.Second, IdleTimeout: 180 * time.Second}
 	go func() { _ = hs.Serve(ln) }()
 	return &Embedded{srv: srv, store: st, http: hs, port: ln.Addr().(*net.TCPAddr).Port, logf: logf}, nil

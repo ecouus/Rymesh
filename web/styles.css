@@ -178,6 +178,19 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
 .home-sub button { border: 0; background: none; padding: 0; color: var(--text-dim); font-family: var(--mono); font-size: 12.5px; }
 .home-sub button:active { color: var(--text); }
 .home-recent { margin-top: 28px; }
+/* Start-up connection, in place of recent conversations. */
+.conn-card { background: var(--bg-soft); border-radius: 16px; padding: 22px 18px 18px; text-align: center; }
+.conn-anim { display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--text-dim); margin-bottom: 12px; }
+.conn-anim .ico { width: 26px; height: 26px; }
+.conn-dots { display: inline-flex; gap: 6px; }
+.conn-dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); animation: conn-flow 1.2s ease-in-out infinite; }
+.conn-dots i:nth-child(2) { animation-delay: .2s; }
+.conn-dots i:nth-child(3) { animation-delay: .4s; }
+@keyframes conn-flow { 0%, 100% { opacity: .25; transform: scale(.8); } 50% { opacity: 1; transform: scale(1.15); background: var(--text-dim); } }
+.conn-title { font-size: 14.5px; font-weight: 600; }
+.conn-sub { font-size: 12px; color: var(--text-faint); margin-top: 4px; word-break: break-word; }
+.conn-card.failed .conn-title { color: var(--red); }
+.conn-card.failed .btn { margin-top: 12px; }
 .home-recent-label { font-size: 12px; color: var(--text-faint); padding: 0 4px 8px; }
 .recent-card {
   display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;

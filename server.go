@@ -41,6 +41,8 @@ type Server struct {
 	launching map[string]bool
 	importMu  sync.Mutex
 	ssh       *sshPool
+	nodeMu    sync.Mutex
+	nodeSeen  map[string]nodeView // last probe of each device (nodes.go)
 	ticketMu  sync.Mutex
 	ticket    string // one-time local login (client.go)
 	// streamSem bounds concurrent SSE connections. Every stream polls the store
@@ -135,6 +137,8 @@ func (s *Server) routes() {
 	// Multi-device: list devices, and relay a device's API through this hub.
 	m.HandleFunc("GET /api/nodes", s.authed(s.handleNodes))
 	m.HandleFunc("GET /api/nodes/self", s.authed(s.handleNodeSelf))
+	m.HandleFunc("GET /api/nodes/{id}/snapshot", s.authed(s.handleNodeSnapshot))
+	m.HandleFunc("PUT /api/nodes/{id}/snapshot", s.authed(s.handleNodeSnapshot))
 	// Device management (this console's own device list and keys; devices.go).
 	m.HandleFunc("GET /api/devices", s.authed(s.handleListDevices))
 	m.HandleFunc("POST /api/devices", s.authed(s.handleCreateDevice))

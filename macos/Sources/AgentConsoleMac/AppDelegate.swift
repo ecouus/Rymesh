@@ -21,7 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     func applicationDidFinishLaunching(_ note: Notification) {
         buildMainMenu()
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        status.button?.image = NSImage(systemSymbolName: "terminal", accessibilityDescription: "Agent Console")
+        status.button?.image = NSImage(systemSymbolName: "terminal", accessibilityDescription: "Rymesh")
         status.button?.imagePosition = .imageLeading
         rebuildStatusMenu()
 
@@ -71,7 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 
     private func fail(_ message: String) {
         let a = NSAlert()
-        a.messageText = "Agent Console 无法启动"
+        a.messageText = "Rymesh 无法启动"
         a.informativeText = message
         a.runModal()
         NSApp.terminate(nil)
@@ -105,7 +105,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1180, height: 820),
                              styleMask: [.titled, .closable, .miniaturizable, .resizable],
                              backing: .buffered, defer: false)
-            w.title = "Agent Console"
+            w.title = "Rymesh"
             w.contentView = wv
             w.isReleasedWhenClosed = false
             w.center()
@@ -251,7 +251,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 
     private func rebuildStatusMenu() {
         let m = NSMenu()
-        m.addItem(withTitle: "打开 Agent Console", action: #selector(showWindow), keyEquivalent: "o").target = self
+        m.addItem(withTitle: "打开 Rymesh", action: #selector(showWindow), keyEquivalent: "o").target = self
         m.addItem(.separator())
         if pending.isEmpty {
             m.addItem(NSMenuItem(title: "没有待处理的请求", action: nil, keyEquivalent: ""))
@@ -281,10 +281,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         let main = NSMenu()
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
-        appMenu.addItem(withTitle: "关于 Agent Console", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: "关于 Rymesh", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "隐藏 Agent Console", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
-        appMenu.addItem(withTitle: "退出 Agent Console", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(withTitle: "隐藏 Rymesh", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        appMenu.addItem(withTitle: "退出 Rymesh", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
         main.addItem(appItem)
 

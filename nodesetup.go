@@ -245,7 +245,7 @@ func mergePath(first, second string) string {
 // tasks (detached runners) outlive a restart or upgrade of the node.
 func nodeUnit(exe, cfgPath, home, path, wantedBy string) string {
 	return fmt.Sprintf(`[Unit]
-Description=Agent Console node
+Description=Rymesh node
 After=network-online.target
 
 [Service]

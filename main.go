@@ -292,7 +292,7 @@ func installMain(args []string) int {
 	}
 	addrs, _ := listenAddresses(cfg)
 	fmt.Println()
-	fmt.Println("Agent Console 已安装")
+	fmt.Println("Rymesh 已安装")
 	fmt.Println("  配置:   " + *configPath)
 	fmt.Println("  数据:   " + cfg.DataDir)
 	fmt.Println("  日志:   " + filepath.Join(cfg.LogDir, "agentconsole.log"))
@@ -313,7 +313,7 @@ func installMain(args []string) int {
 // directory (which happened when the binary was installed from /tmp).
 func systemdUnit(exe, configPath string) string {
 	return fmt.Sprintf(`[Unit]
-Description=Agent Console — Codex / Claude Code multi-agent web console
+Description=Rymesh — remote console for Codex CLI / Claude Code
 After=network-online.target
 Wants=network-online.target
 

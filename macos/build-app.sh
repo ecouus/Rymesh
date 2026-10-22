@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds macos/dist.noindex/AgentConsole.app (.noindex keeps Spotlight from
+# Builds macos/dist.noindex/Rymesh.app (.noindex keeps Spotlight from
 # listing it next to the installed copy): the Swift shell plus the Go console, both
 # universal (Apple silicon + Intel), ad-hoc signed. No Apple developer account
 # is needed; a downloaded copy must be allowed once in System Settings →
@@ -11,7 +11,7 @@ set -eu
 cd "$(dirname "$0")"
 ROOT=..
 VERSION=${VERSION:-$(git -C "$ROOT" describe --tags --always 2>/dev/null || echo dev)}
-APP=dist.noindex/AgentConsole.app
+APP=dist.noindex/Rymesh.app
 
 for f in "$ROOT/dist/agentconsole_darwin_arm64" "$ROOT/dist/agentconsole_darwin_amd64" \
 	"$ROOT/dist/agentconsole_linux_amd64" "$ROOT/dist/agentconsole_linux_arm64"; do
@@ -26,7 +26,7 @@ rm -rf "${APP:?}"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 sed "s/__VERSION__/$VERSION/g" Resources/Info.plist > "$APP/Contents/Info.plist"
 lipo -create .build/arm64/release/AgentConsoleMac .build/x86_64/release/AgentConsoleMac \
-	-output "$APP/Contents/MacOS/AgentConsole"
+	-output "$APP/Contents/MacOS/Rymesh"
 lipo -create "$ROOT/dist/agentconsole_darwin_arm64" "$ROOT/dist/agentconsole_darwin_amd64" \
 	-output "$APP/Contents/Resources/agentconsole"
 # Node programs the app uploads when it deploys to a Linux server

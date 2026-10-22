@@ -1,4 +1,4 @@
-# Agent Console
+# Rymesh
 
 通过 EasyTier 内网、在手机浏览器中管理服务器上的 **Codex CLI** 与 **Claude Code**。
 Agent 任务由服务器独立托管：关闭浏览器、锁屏、断网或重启 Web 服务都不会终止正在执行的 Agent。
@@ -377,7 +377,7 @@ chmod 600 /root/agentconsole-backup-*.tgz
 
 ### 设置页：Agent 的更新与重启
 
-这里的“更新”和“重启”针对 **Codex CLI / Claude Code 本身**，不是 Agent Console：
+这里的“更新”和“重启”针对 **Codex CLI / Claude Code 本身**，不是 Rymesh：
 
 - **检查更新**：对 `@openai/codex` 与 `@anthropic-ai/claude-code` 执行
   `npm view <包> version`，与 `codex --version` / `claude --version` 对比。
@@ -435,11 +435,11 @@ Mac：agentconsole client（127.0.0.1）   Android：App 内嵌 Go 核心 + WebV
 **Mac App**
 
 ```bash
-make macos       # → macos/dist.noindex/AgentConsole.app（Swift 外壳 + 通用二进制 Go 控制台，ad-hoc 签名）
+make macos       # → macos/dist.noindex/Rymesh.app（Swift 外壳 + 通用二进制 Go 控制台，ad-hoc 签名）
 ```
 
-把 `AgentConsole.app` 拖进“应用程序”。从网上下载的副本首次打开会被 Gatekeeper 拦下：
-系统设置 → 隐私与安全性 → “仍要打开”（或 `xattr -dr com.apple.quarantine /Applications/AgentConsole.app`）。
+把 `Rymesh.app` 拖进“应用程序”。从网上下载的副本首次打开会被 Gatekeeper 拦下：
+系统设置 → 隐私与安全性 → “仍要打开”（或 `xattr -dr com.apple.quarantine /Applications/Rymesh.app`）。
 App 提供独立窗口、菜单栏图标（待处理数量）、Dock 角标、审批/提问的系统通知（点击直达卡片）。
 控制台只在 App 运行时运行（普通进程，不开机自启、不常驻）；退出 App 会停止控制台，
 但正在运行的 Agent 任务是独立进程，继续执行，下次打开 App 时补上它们的输出。

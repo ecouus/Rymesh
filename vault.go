@@ -749,10 +749,10 @@ func sealBundle(p bundlePayload, code, from string) ([]byte, error) {
 func openBundle(data []byte, code string) (*bundlePayload, error) {
 	var f bundleFile
 	if err := json.Unmarshal(data, &f); err != nil || f.Format != bundleFormat {
-		return nil, errors.New("不是 Agent Console 导出的文件")
+		return nil, errors.New("不是 Rymesh 导出的文件")
 	}
 	if f.Version != 1 {
-		return nil, errors.New("文件版本过新，请先升级 Agent Console")
+		return nil, errors.New("文件版本过新，请先升级 Rymesh")
 	}
 	if len(normalizeCode(code)) != 16 {
 		return nil, errors.New("解密码应为 16 位，形如 XXXX-XXXX-XXXX-XXXX")

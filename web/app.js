@@ -1,4 +1,4 @@
-/* Agent Console SPA — vanilla JS, no build step. */
+/* Rymesh SPA — vanilla JS, no build step. */
 (function () {
   "use strict";
 
@@ -1578,7 +1578,7 @@
     $("#settings-btn").classList.remove("active");
     setAgentPicker(true);
     if (noDevice()) {
-      setTop("Agent Console", "");
+      setTop("Rymesh", "");
       $("#composer-wrap").hidden = true;
       document.body.classList.remove("has-composer");
       $("#main").innerHTML = '<div class="home-empty onboarding">' +
@@ -3587,7 +3587,7 @@
       '<button id="logout-btn" type="button" class="g-row danger">退出登录</button>' +
       "</div></div>") +
 
-      '<div class="about">Agent Console ' + esc(d.version || "") +
+      '<div class="about">Rymesh ' + esc(d.version || "") +
       " · Agent 在各自的服务器上运行，关闭页面或应用不会中断任务；需要审批或回答的问题会出现在对话里。</div>" +
       "</div>";
 

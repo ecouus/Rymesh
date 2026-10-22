@@ -1,4 +1,4 @@
-/* Agent Console — monochrome ink on paper. Colour is reserved for state
+/* Rymesh — monochrome ink on paper. Colour is reserved for state
    (running, waiting, failed) and links; actions are ink, not brand blue. */
 :root {
   --bg: #ffffff;

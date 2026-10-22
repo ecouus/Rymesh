@@ -1,6 +1,6 @@
 {
-  "name": "Agent Console",
-  "short_name": "Agent Console",
+  "name": "Rymesh",
+  "short_name": "Rymesh",
   "description": "Codex CLI 与 Claude Code 的手机端控制台（EasyTier 内网）",
   "lang": "zh-CN",
   "start_url": "/",

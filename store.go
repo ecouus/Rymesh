@@ -829,12 +829,25 @@ func (s *Store) PendingPermissions(sessionID string) ([]*Permission, error) {
 	return out, rows.Err()
 }
 
-func (s *Store) ResolvePermission(id, status, response string) error {
+// ResolvePermission records the answer to a pending request. ok is false
+// when it was no longer pending: someone else answered it first.
+func (s *Store) ResolvePermission(id, status, response string) (ok bool, err error) {
 	if status != "allowed" && status != "denied" && status != "expired" && status != "answered" {
-		return fmt.Errorf("invalid permission status %q", status)
+		return false, fmt.Errorf("invalid permission status %q", status)
 	}
-	_, err := s.db.Exec(`UPDATE permissions SET status=?, resolved_at=?, response=? WHERE id=? AND status='pending'`,
+	res, err := s.db.Exec(`UPDATE permissions SET status=?, resolved_at=?, response=? WHERE id=? AND status='pending'`,
 		status, nowRFC3339(), response, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+// ReopenPermission undoes a ResolvePermission whose answer could not be
+// delivered to the agent.
+func (s *Store) ReopenPermission(id string) error {
+	_, err := s.db.Exec(`UPDATE permissions SET status='pending', resolved_at='', response='' WHERE id=?`, id)
 	return err
 }
 

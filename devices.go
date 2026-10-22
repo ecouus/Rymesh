@@ -118,6 +118,8 @@ func (in deviceInput) apply(n *NodeConfig) error {
 
 // saveNodes publishes and persists a change to the device list.
 func (s *Server) saveNodes(fn func(nodes []NodeConfig) ([]NodeConfig, error)) error {
+	s.cfgWrite.Lock()
+	defer s.cfgWrite.Unlock()
 	next := s.config().clone()
 	nodes, err := fn(next.Nodes)
 	if err != nil {

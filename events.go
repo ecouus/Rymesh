@@ -2,7 +2,9 @@ package console
 
 import (
 	"bufio"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"io"
@@ -206,13 +208,20 @@ func (ing *Ingestor) stopOrphanChild(taskID string) {
 	if err != nil {
 		return
 	}
-	cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	cmdline, err := processCmdline(pid)
 	if err != nil {
 		return
 	}
-	base := strings.ToLower(filepath.Base(agentBinary(t.Agent)))
-	cl := strings.ToLower(strings.ReplaceAll(string(cmdline), "\x00", " "))
-	if base == "" || (!strings.Contains(cl, base) && !strings.Contains(cl, strings.ToLower(t.Agent))) {
+	cl := strings.ToLower(cmdline)
+	names := []string{strings.ToLower(t.Agent)}
+	if b := agentBinary(t.Agent); b != "" {
+		names = append(names, strings.ToLower(filepath.Base(b)))
+	}
+	agent := false
+	for _, n := range names {
+		agent = agent || (n != "" && strings.Contains(cl, n))
+	}
+	if !agent {
 		return
 	}
 	_ = syscall.Kill(-pid, syscall.SIGTERM)
@@ -229,6 +238,9 @@ func (ing *Ingestor) stopOrphanChild(taskID string) {
 }
 
 func agentBinary(name string) string {
+	if agents == nil { // set up by the CLI entry point; absent when embedded
+		return ""
+	}
 	if a, ok := agents.Get(name); ok {
 		return a.Binary
 	}
@@ -269,17 +281,25 @@ func (ing *Ingestor) readOnce(taskID string, offset *int64) (advanced, sawExit b
 			break
 		}
 		lineOffset := *offset + consumed
-		consumed += n
-		advanced = true
+		var err error
 		if line == nil {
-			ing.skipOversizedLine(taskID, lineOffset, n)
-			continue
+			err = ing.skipOversizedLine(taskID, lineOffset, n)
+		} else {
+			err = ing.processLine(taskID, strings.TrimRight(string(line), "\r\n"))
 		}
-		ing.processLine(taskID, strings.TrimRight(string(line), "\r\n"))
-		if ing.isExitLine(line) {
+		if err != nil {
+			// Stop before this line: the offset must not move past an event
+			// that is not in the database, or it would never be shown. The
+			// next pass retries it; rows already written are ignored then.
+			ing.log.Printf("task %s: ingest at offset %d: %v (will retry)", taskID, lineOffset, err)
+			break
+		}
+		consumed += n
+		if line != nil && ing.isExitLine(line) {
 			sawExit = true
 		}
 	}
+	advanced = consumed > 0
 	if consumed > 0 {
 		*offset += consumed
 		_ = ing.store.SetTaskOffset(taskID, *offset)
@@ -328,15 +348,26 @@ func readEventLine(br *bufio.Reader, max int) (line []byte, n int64, ok bool) {
 
 // skipOversizedLine records that an event line was too large to ingest. The
 // task_seq is derived from the line's file offset so a re-read stays idempotent.
-func (ing *Ingestor) skipOversizedLine(taskID string, offset, size int64) {
+func (ing *Ingestor) skipOversizedLine(taskID string, offset, size int64) error {
 	ing.log.Printf("task %s: skipped oversized event line at offset %d (%d bytes)", taskID, offset, size)
-	t, err := ing.store.GetTask(taskID)
-	if err != nil {
-		return
+	t, err := ing.task(taskID)
+	if t == nil {
+		return err
 	}
-	ing.insert(t, 1<<40+offset, 0, nowRFC3339(), "notice", map[string]any{
+	return ing.insert(t, 1<<40+offset, 0, nowRFC3339(), "notice", map[string]any{
 		"text": fmt.Sprintf("一条事件过大（%d 字节），已跳过显示；Agent 输出不受影响。", size),
 	})
+}
+
+// task loads a task for ingesting its events. A task that no longer exists
+// (its session was deleted) yields nil and no error: its lines are skipped.
+// Any other failure is returned so the line is retried.
+func (ing *Ingestor) task(id string) (*Task, error) {
+	t, err := ing.store.GetTask(id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return t, err
 }
 
 func (ing *Ingestor) isExitLine(line []byte) bool {
@@ -349,9 +380,11 @@ func (ing *Ingestor) isExitLine(line []byte) bool {
 	return false
 }
 
-func (ing *Ingestor) processLine(taskID, line string) {
+// processLine stores one event line. An error means it was not (completely)
+// stored and must be read again.
+func (ing *Ingestor) processLine(taskID, line string) error {
 	if strings.TrimSpace(line) == "" {
-		return
+		return nil
 	}
 	var env struct {
 		Seq     int64           `json:"seq"`
@@ -365,11 +398,11 @@ func (ing *Ingestor) processLine(taskID, line string) {
 	}
 	if err := json.Unmarshal([]byte(line), &env); err != nil {
 		ing.log.Printf("task %s: bad event line: %v", taskID, err)
-		return
+		return nil
 	}
-	t, err := ing.store.GetTask(taskID)
-	if err != nil {
-		return
+	t, err := ing.task(taskID)
+	if t == nil {
+		return err
 	}
 	if env.TS == "" {
 		env.TS = nowRFC3339()
@@ -378,13 +411,14 @@ func (ing *Ingestor) processLine(taskID, line string) {
 	case "event":
 		var raw any
 		if err := json.Unmarshal(env.Payload, &raw); err != nil {
-			ing.insert(t, env.Seq, 0, env.TS, "raw", map[string]any{"text": string(env.Payload)})
-			return
+			return ing.insert(t, env.Seq, 0, env.TS, "raw", map[string]any{"text": string(env.Payload)})
 		}
 		ing.applyNativeState(t, raw)
 		norms := normalizeEvent(t.Agent, raw, env.TS)
 		for i, n := range norms {
-			ing.insert(t, env.Seq, i, env.TS, n.Kind, n.Payload)
+			if err := ing.insert(t, env.Seq, i, env.TS, n.Kind, n.Payload); err != nil {
+				return err
+			}
 		}
 	case "state":
 		ing.applyState(t, env.State)
@@ -392,28 +426,33 @@ func (ing *Ingestor) processLine(taskID, line string) {
 		ing.applyExit(t, env.Exit)
 	case "stderr":
 		if strings.TrimSpace(env.Line) != "" {
-			ing.insert(t, env.Seq, 0, env.TS, "stderr", map[string]any{"text": env.Line})
+			err = ing.insert(t, env.Seq, 0, env.TS, "stderr", map[string]any{"text": env.Line})
 		}
 	case "notice":
-		ing.insert(t, env.Seq, 0, env.TS, "notice", map[string]any{"text": env.Text})
+		err = ing.insert(t, env.Seq, 0, env.TS, "notice", map[string]any{"text": env.Text})
 	case "text":
-		ing.insert(t, env.Seq, 0, env.TS, "text", map[string]any{"text": env.Text})
+		err = ing.insert(t, env.Seq, 0, env.TS, "text", map[string]any{"text": env.Text})
+	}
+	if err != nil {
+		return err
 	}
 	if env.Seq > 0 {
 		_ = ing.store.SetTaskLastSeq(taskID, env.Seq)
 	}
+	return nil
 }
 
-func (ing *Ingestor) insert(t *Task, taskSeq int64, sub int, ts, kind string, payload any) {
+// insert stores one event; storing it again later is a no-op (unique key).
+func (ing *Ingestor) insert(t *Task, taskSeq int64, sub int, ts, kind string, payload any) error {
 	b, err := json.Marshal(payload)
 	if err != nil {
-		return
+		return nil // nothing that a retry could store
 	}
-	// System init carries a large tool list; keep only what the UI needs.
-	_, _ = ing.store.InsertEvent(&Event{
+	_, err = ing.store.InsertEvent(&Event{
 		SessionID: t.SessionID, TaskID: t.ID, TaskSeq: taskSeq, Sub: sub,
 		TS: ts, Kind: kind, Payload: b,
 	})
+	return err
 }
 
 func (ing *Ingestor) applyState(t *Task, st map[string]any) {
@@ -628,7 +667,7 @@ func (ing *Ingestor) scanControl(taskID string) {
 			case "answered", "expired":
 				status = d.Decision
 			}
-			_ = ing.store.ResolvePermission(id, status, d.Decision+" "+d.Message)
+			_, _ = ing.store.ResolvePermission(id, status, d.Decision+" "+d.Message)
 			ing.insert(t, 1<<42, permSub(id), nowRFC3339(),
 				"permission_result", map[string]any{"permission_id": id, "decision": status})
 		}

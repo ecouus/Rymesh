@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -462,6 +463,33 @@ func processAlive(pid int) bool {
 	}
 	err := syscall.Kill(pid, 0)
 	return err == nil || err == syscall.EPERM
+}
+
+// processCmdline returns a process's command line with arguments separated
+// by spaces, for telling a recorded PID from a process that reused it.
+// Linux has /proc; macOS has no /proc, so ask ps there.
+func processCmdline(pid int) (string, error) {
+	if pid <= 1 {
+		return "", fmt.Errorf("invalid pid %d", pid)
+	}
+	if b, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid)); err == nil {
+		return strings.TrimSpace(strings.ReplaceAll(string(b), "\x00", " ")), nil
+	}
+	out, err := exec.Command("ps", "-ww", "-o", "command=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return "", err
+	}
+	if s := strings.TrimSpace(string(out)); s != "" {
+		return s, nil
+	}
+	return "", fmt.Errorf("no process %d", pid)
+}
+
+// isTaskRunner reports whether pid is still the runner of taskID
+// (`rymesh run-task --task-dir …/tasks/<id>`).
+func isTaskRunner(pid int, taskID string) bool {
+	cl, err := processCmdline(pid)
+	return err == nil && strings.Contains(cl, "run-task") && strings.Contains(cl, taskID)
 }
 
 func extractNativeID(raw any) string {

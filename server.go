@@ -36,6 +36,10 @@ type Server struct {
 	started   time.Time
 	bindAddrs []string
 	cfgMu     sync.RWMutex
+	// cfgWrite serializes config changes: each one copies the current
+	// config, changes it, saves and publishes it, and two of them interleaved
+	// would publish one on top of a copy that lacks the other's change.
+	cfgWrite  sync.Mutex
 	schedMu   sync.Mutex
 	launching map[string]bool
 	importMu  sync.Mutex
@@ -92,6 +96,8 @@ func (s *Server) publishConfig(c *Config) {
 // updateConfig applies fn to a copy of the current config and publishes it,
 // returning the new config for persisting.
 func (s *Server) updateConfig(fn func(*Config)) *Config {
+	s.cfgWrite.Lock()
+	defer s.cfgWrite.Unlock()
 	next := s.config().clone()
 	fn(next)
 	s.publishConfig(next)
@@ -417,8 +423,15 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 	// config() hands out the shared *Config, which request handlers, the
 	// scheduler and the ingestor also read. Copy-on-write keeps those readers
 	// race-free while authManager (which holds the same pointer) is updated
-	// through updateConfig below.
+	// through publishConfig below.
+	s.cfgWrite.Lock()
+	defer s.cfgWrite.Unlock()
 	cfg := *s.config().clone()
+	// `rymesh node token` may have written a token this console has not read
+	// yet; saving without it would take it back out of the file.
+	if tok := s.fileNodeToken(); tok != "" {
+		cfg.NodeToken = tok
+	}
 	if req.DefaultCWD != nil {
 		cwd, err := cfg.allowedCWD(*req.DefaultCWD)
 		if err != nil {
@@ -1134,9 +1147,12 @@ func (s *Server) stopTask(t *Task) (cancelOutcome, string) {
 	return cancelSignalled, "cancelling"
 }
 
+// killTask signals a task's runner and its process group. The recorded PID
+// is only trusted while it still belongs to this task's runner: once the
+// runner is gone the number may name an unrelated process.
 func killTask(t *Task, sig syscall.Signal) {
 	pid := t.PID
-	if pid <= 1 {
+	if pid <= 1 || !isTaskRunner(pid, t.ID) {
 		return
 	}
 	pgid := t.PGID
@@ -1301,11 +1317,23 @@ func (s *Server) handleResolvePermission(w http.ResponseWriter, r *http.Request)
 		writeErr(w, 500, err.Error())
 		return
 	}
-	if err := atomicWriteJSON(filepath.Join(dir, "resp-"+p.ID+".json"), req); err != nil {
+	// Claim the request before answering it: two devices answering at once
+	// must not both write an answer, or the agent could act on one while the
+	// page records the other.
+	claimed, err := s.store.ResolvePermission(p.ID, status, strings.TrimSpace(req.Decision+" "+req.Message))
+	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	_ = s.store.ResolvePermission(p.ID, status, strings.TrimSpace(req.Decision+" "+req.Message))
+	if !claimed {
+		writeErr(w, 409, "审批请求已处理")
+		return
+	}
+	if err := atomicWriteJSON(filepath.Join(dir, "resp-"+p.ID+".json"), req); err != nil {
+		_ = s.store.ReopenPermission(p.ID)
+		writeErr(w, 500, err.Error())
+		return
+	}
 	// Record the outcome in the transcript now. The ingestor only writes this
 	// event for permissions that are still pending when the agent's done file
 	// appears, which is never the case after this handler, so a reopened

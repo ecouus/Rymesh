@@ -421,7 +421,6 @@ func statusMain(args []string) int {
 	return 0
 }
 
-
 func importMain(args []string) int {
 	fset := flag.NewFlagSet("import", flag.ContinueOnError)
 	configPath := fset.String("config", systemConfigPath(), "config path")

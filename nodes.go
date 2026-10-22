@@ -93,15 +93,26 @@ func (s *Server) nodeTokenOK(r *http.Request) bool {
 // gets the token over SSH and uses it at once, without a restart. The file is
 // read at most once a second, however many requests carry a wrong token.
 func (s *Server) reloadNodeToken() string {
-	if s.cfgPath == "" {
-		return ""
-	}
 	s.tokenMu.Lock()
 	defer s.tokenMu.Unlock()
 	if time.Since(s.tokenRead) < time.Second {
 		return ""
 	}
 	s.tokenRead = time.Now()
+	tok := s.fileNodeToken()
+	if tok == "" || tok == s.config().NodeToken {
+		return ""
+	}
+	s.updateConfig(func(c *Config) { c.NodeToken = tok })
+	s.logger.Printf("node token reloaded from %s", s.cfgPath)
+	return tok
+}
+
+// fileNodeToken is the node token in config.json as it is on disk now.
+func (s *Server) fileNodeToken() string {
+	if s.cfgPath == "" {
+		return ""
+	}
 	b, err := os.ReadFile(s.cfgPath)
 	if err != nil {
 		return ""
@@ -109,11 +120,9 @@ func (s *Server) reloadNodeToken() string {
 	var f struct {
 		NodeToken string `json:"node_token"`
 	}
-	if json.Unmarshal(b, &f) != nil || f.NodeToken == "" || f.NodeToken == s.config().NodeToken {
+	if json.Unmarshal(b, &f) != nil {
 		return ""
 	}
-	s.updateConfig(func(c *Config) { c.NodeToken = f.NodeToken })
-	s.logger.Printf("node token reloaded from %s", s.cfgPath)
 	return f.NodeToken
 }
 

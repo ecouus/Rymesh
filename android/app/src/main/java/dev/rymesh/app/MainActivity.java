@@ -47,6 +47,7 @@ public class MainActivity extends Activity {
     private ProgressBar loading;
     private String pendingSave;                  // file text waiting for a destination
     private ValueCallback<Uri[]> pendingChooser; // <input type=file> waiting for a pick
+    private volatile Uri console;                // the embedded console's origin
 
     @Override
     protected void onCreate(Bundle state) {
@@ -60,12 +61,20 @@ public class MainActivity extends Activity {
         s.setDomStorageEnabled(true);
         web.addJavascriptInterface(new Bridge(), "RymeshNative");
         web.setWebViewClient(new WebViewClient() {
-            // Links out of the console (docs, URLs in answers) open in the browser.
+            // Only the console itself loads here, where the page has the native
+            // bridge. Everything else (docs, URLs in answers, other local
+            // services such as a dev server on another port) opens outside.
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest req) {
                 Uri u = req.getUrl();
-                if ("127.0.0.1".equals(u.getHost())) return false;
-                startActivity(new Intent(Intent.ACTION_VIEW, u));
+                Uri c = console;
+                if (c != null && c.getScheme().equals(u.getScheme()) && c.getHost().equals(u.getHost())
+                        && c.getPort() == u.getPort()) return false;
+                try {
+                    startActivity(new Intent(Intent.ACTION_VIEW, u));
+                } catch (android.content.ActivityNotFoundException e) {
+                    Toast.makeText(MainActivity.this, "没有可以打开此链接的应用", Toast.LENGTH_SHORT).show();
+                }
                 return true;
             }
 
@@ -124,7 +133,8 @@ public class MainActivity extends Activity {
                 installNodeBinaries(new File(files, "data/dist"));
                 String url = Mobile.start(files.getAbsolutePath());
                 // The port only, never the ticket: logcat is readable over adb.
-                android.util.Log.i("Rymesh", "console on " + Uri.parse(url).getPort());
+                console = Uri.parse(url);
+                android.util.Log.i("Rymesh", "console on " + console.getPort());
                 runOnUiThread(() -> web.loadUrl(url));
             } catch (Exception e) {
                 String html = "<p style='font:16px sans-serif;padding:24px'>启动失败：" + e.getMessage() + "</p>";

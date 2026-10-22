@@ -712,6 +712,9 @@ func normalizeCode(code string) string {
 	}, code)
 }
 
+// bundleScryptN is the scrypt cost of export files (r=8: about 32 MiB).
+const bundleScryptN = 1 << 15
+
 func bundleAEAD(code string, salt []byte, n int) (cipher.AEAD, error) {
 	key, err := scrypt.Key([]byte(normalizeCode(code)), salt, n, 8, 1, 32)
 	if err != nil {
@@ -733,7 +736,7 @@ func sealBundle(p bundlePayload, code, from string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	const n = 1 << 15
+	const n = bundleScryptN
 	aead, err := bundleAEAD(code, salt, n)
 	if err != nil {
 		return nil, err
@@ -760,21 +763,22 @@ func openBundle(data []byte, code string) (*bundlePayload, error) {
 	if len(normalizeCode(code)) != 16 {
 		return nil, errors.New("解密码应为 16 位，形如 XXXX-XXXX-XXXX-XXXX")
 	}
-	if f.N < 1<<14 || f.N > 1<<20 {
+	// N is read before the code can be checked, and scrypt's memory grows
+	// with it (1<<20 is about 1 GiB): a damaged file must not be able to
+	// exhaust a phone. Every export has used this one value.
+	if f.N != bundleScryptN {
 		return nil, errors.New("文件已损坏")
 	}
 	salt, err1 := base64.StdEncoding.DecodeString(f.Salt)
 	nonce, err2 := base64.StdEncoding.DecodeString(f.Nonce)
 	sealed, err3 := base64.StdEncoding.DecodeString(f.Data)
-	if err1 != nil || err2 != nil || err3 != nil {
+	// Checked before the costly key derivation, like N.
+	if err1 != nil || err2 != nil || err3 != nil || len(salt) != 16 || len(nonce) != 12 {
 		return nil, errors.New("文件已损坏")
 	}
 	aead, err := bundleAEAD(code, salt, f.N)
 	if err != nil {
 		return nil, err
-	}
-	if len(nonce) != aead.NonceSize() {
-		return nil, errors.New("文件已损坏")
 	}
 	plain, err := aead.Open(nil, nonce, sealed, []byte(f.Format))
 	if err != nil {

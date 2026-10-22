@@ -34,16 +34,16 @@ lipo -create "$ROOT/dist/rymesh_darwin_arm64" "$ROOT/dist/rymesh_darwin_amd64" \
 mkdir -p "$APP/Contents/Resources/dist"
 cp "$ROOT/dist/rymesh_linux_amd64" "$ROOT/dist/rymesh_linux_arm64" "$APP/Contents/Resources/dist/"
 
-# App icon from the web icon.
+# App icon: a 1024 master on Apple's icon grid (transparent margin).
+ICON="$ROOT/macos/Resources/AppIcon.png"
 ICONSET=.build/AppIcon.iconset
 rm -rf "${ICONSET:?}"
 mkdir -p "$ICONSET"
 for s in 16 32 128 256 512; do
-	sips -z $s $s "$ROOT/web/icon-512.png" --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
+	sips -z $s $s "$ICON" --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
 	d=$((s * 2))
-	[ $d -le 512 ] && sips -z $d $d "$ROOT/web/icon-512.png" --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
+	sips -z $d $d "$ICON" --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
 done
-cp "$ROOT/web/icon-512.png" "$ICONSET/icon_256x256@2x.png"
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 
 # Ad-hoc signature (inner program first): enough to run on Apple silicon.

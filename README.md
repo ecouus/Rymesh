@@ -1,11 +1,13 @@
 # Rymesh
 
-通过 EasyTier 内网、在手机浏览器中管理服务器上的 **Codex CLI** 与 **Claude Code**。
-Agent 任务由服务器独立托管：关闭浏览器、锁屏、断网或重启 Web 服务都不会终止正在执行的 Agent。
+在手机或 Mac 上管理服务器上的 **Codex CLI** 与 **Claude Code**。
+Agent 任务由服务器独立托管：关闭页面、锁屏、断网或重启 Web 服务都不会终止正在执行的 Agent。
 
-- 实际访问地址：**http://10.0.0.6:8899**
-- 服务：`rymesh.service`（systemd，已 enable，开机自启）
-- 登录密码：默认 `admin`，首次登录强制修改（`rymesh password` 可查看）
+Mac App / Android App 自带主控，通过 SSH 直连服务器（Mac 也可以作为手机的节点），
+服务器只监听 `127.0.0.1`，免组网。见第 11 节。
+
+**没有密码登录。** App 和 `rymesh client open` 用一次性票据登录本机控制台，主控用节点令牌
+访问节点；直接在浏览器里打开某台机器的地址只会看到“请在应用中打开”。
 
 > **原则：本项目只是远程控制台。** 所有模型请求都由所选机器上的官方 CLI（`claude` / `codex`）
 > 用那台机器自己的登录发出；本程序不调用任何模型 API、不转发模型流量、不读取或传输凭据。
@@ -35,14 +37,14 @@ Agent 任务由服务器独立托管：关闭浏览器、锁屏、断网或重�
 | 任务取消、手动重跑、状态恢复 | ✅ |
 | 移动端 UI / Markdown / 代码高亮 / 深色模式 | ✅ |
 | PWA manifest | ✅（HTTP 私网下 Service Worker 通常不可注册） |
-| 基本认证 / CSRF / 登录锁定 / CSP / 首次登录改密 | ✅ |
+| 一次性票据登录（无密码）/ CSRF / CSP | ✅ |
 
 ---
 
 ## 2. 架构
 
 ```text
-手机浏览器 (EasyTier)
+浏览器 / Mac App / Android App（经主控，见第 10、11 节）
       │ HTTP + SSE
       ▼
 rymesh serve  (systemd, 127.0.0.1 + 10.0.0.6:8899)
@@ -99,7 +101,7 @@ rymesh run-task  (setsid，独立于 Web 服务)
 ├── store.go           SQLite schema 与查询
 ├── store_extra.go     任务/事件附加查询
 ├── importer.go       Codex/Claude 原生历史导入
-├── auth.go           登录、Cookie、CSRF、锁定、安全头
+├── auth.go           Cookie、CSRF、安全头
 ├── agents.go         Agent 探测（版本/认证/能力）
 ├── config.go         配置、PBKDF2、监听地址、工作目录校验
 ├── sse.go            SSE 流
@@ -143,7 +145,6 @@ rymesh run-task  (setsid，独立于 Web 服务)
 服务名      rymesh.service
 二进制      /usr/local/bin/rymesh
 配置        /etc/rymesh/config.json
-密码文件    /etc/rymesh/password.txt (0600，仅存初始默认密码；改密后自动删除)
 数据        /var/lib/rymesh
 数据库      /var/lib/rymesh/rymesh.db (WAL)
 任务日志    /var/lib/rymesh/tasks/<task-id>/events.jsonl
@@ -158,16 +159,15 @@ unit        /etc/systemd/system/rymesh.service
 cd /srv/rymesh
 go build -o rymesh ./cmd/rymesh
 install -m 0755 rymesh /usr/local/bin/rymesh
-rymesh install          # 生成配置/密码、写 unit、enable、启动
+rymesh install          # 生成配置、写 unit、enable、启动
 rymesh status
 rymesh doctor
 ```
 
 `rymesh install` 的关键行为：
 
-- 若 `/etc/rymesh/config.json` 不存在，生成随机 32 字节 Cookie 签名密钥，
-  并将登录密码设为默认 `admin`（`must_change_password=true`，首次登录必须修改）。
-  `--reset-password` 会把密码重置回 `admin` 并要求下次登录修改。
+- 若 `/etc/rymesh/config.json` 不存在，生成随机 32 字节 Cookie 签名密钥。
+  安装后在 Mac / Android App 里通过 SSH 添加这台服务器，部署会接管本安装（见第 11 节）。
 - 自动探测 `tun0` 的 IPv4 并只监听 `127.0.0.1` 与该地址；拒绝在未开启
   `allow_public_bind` 时绑定 `0.0.0.0`。
 - 单元文件使用 `KillMode=process`，`Restart=always`，`HOME=/root`，
@@ -177,13 +177,10 @@ rymesh doctor
 
 ---
 
-## 5. 手机使用教程
+## 5. 使用教程
 
-1. 在手机上打开 EasyTier，确认已加入与服务端相同的虚拟网络（服务端为 `10.0.0.6`）。
-2. 浏览器访问 **http://10.0.0.6:8899**。
-3. 输入密码登录。默认密码为 `admin`，登录后必须立即修改（不限制密码长度，非空即可）；
-   连续输错 5 次会锁定 60 秒。
-4. 打开页面默认是一个空白新对话：左上角下拉选择 Agent，输入消息即可开始。
+1. 打开 Mac / Android App，App 自动登录；添加服务器见第 11 节。
+2. 打开页面默认是一个空白新对话：左上角下拉选择 Agent，输入消息即可开始。
    当前工作目录只显示在顶栏副标题（如 `Codex CLI · /srv/project`），新对话时
    点击该副标题即可修改，输入框下方不再重复显示目录。输入框下方的「权限」随
    Agent 切换，直接对应 CLI 的原生模式：
@@ -193,25 +190,23 @@ rymesh doctor
      `计划模式`（plan）、`自动`（auto）、`不询问`（dontAsk）、
      `危险：绕过所有权限`（bypassPermissions）。
    选择按 Agent 分别记忆；标记「危险」的模式会在切换时弹出提示，任务卡片会记录实际模式。
-5. 左上角 **☰** 打开对话侧边栏：搜索/选择历史对话、新建对话。每个对话右侧的
+3. 左上角 **☰** 打开对话侧边栏：搜索/选择历史对话、新建对话。每个对话右侧的
    **⋯** 打开操作菜单，可「重命名对话」或「删除对话」。
    底部的「任务中心」查看所有任务、队列位置与耗时，可取消运行中任务，
    或对失败/中断/取消的任务手动「重新运行」。
-6. 「删除对话」会提示：控制台记录将被移除，且该 Agent 的原生会话文件会同步移动
+4. 「删除对话」会提示：控制台记录将被移除，且该 Agent 的原生会话文件会同步移动
    到服务端回收目录。确认后还需再确认一次；不需要手动输入会话 ID。
-7. 需要审批时（Claude），右上角会弹出待审批通知，顶栏同时显示待审批数量；
+5. 需要审批时（Claude），右上角会弹出待审批通知，顶栏同时显示待审批数量；
    点击通知会进入对应会话并定位到「需要批准」卡片，可允许/拒绝或填写拒绝原因。
    该请求由服务器持久化，断线或刷新后仍可处理。
-8. 关闭浏览器 / 锁屏 / 切网：任务继续。重新打开页面默认回到空白新对话，
+6. 关闭浏览器 / 锁屏 / 切网：任务继续。重新打开页面默认回到空白新对话，
    从侧边栏进入历史对话后会补齐断线期间的输出。
-9. 对话样式：你的消息在右侧浅蓝色气泡中，Agent 回复通栏显示、不使用气泡；
+7. 对话样式：你的消息在右侧浅蓝色气泡中，Agent 回复通栏显示、不使用气泡；
    用户问题与最终回答之间只显示一个「执行过程 · N 步」折叠项，点击后展开
    全部思考、工具调用、终端命令与工具结果。需要审批的卡片始终可见。
-10. 系统设置按钮位于右上角 **⚙**，可查看 Agent 版本与能力、服务绑定、
-    数据/日志路径、修改密码、切换主题。终端里开的会话会自动出现在列表中。页面没有底部标签栏。
-11. 添加到主屏幕：浏览器菜单中“添加到主屏幕”。注意：在 HTTP 私网地址下，
-    大多数浏览器不会注册 Service Worker，因此可能只是普通书签，无法完全离线；
-    这不影响后台任务（任务始终在服务器执行）。
+8. 系统设置按钮位于右上角 **⚙**（进入后左上角变为返回），可查看 Agent 版本与能力、服务绑定、
+    数据/日志路径、切换主题。终端里开的会话会自动出现在列表中。页面没有底部标签栏。
+9. App 退到后台或关闭：任务继续在服务器上执行，回到前台自动补齐。
 
 ### 同一会话的调度策略
 
@@ -269,13 +264,6 @@ systemctl kill -s SIGKILL --kill-whom=all rymesh
 journalctl -u rymesh -f
 tail -f /var/log/rymesh/rymesh.log
 
-# 密码
-rymesh password                       # 查看当前密码
-rymesh password --set NEW             # 直接设置，并要求下次登录修改
-rymesh password --set NEW --force-change
-rymesh password --generate            # 生成随机密码
-rymesh password --set admin --force-change   # 恢复默认密码并要求首次登录修改
-
 # 手动导入原生历史（服务运行时也可；会跳过 import_exclude_roots）
 # 一般不需要：import_on_start=true 时服务每 30 秒自动同步一次，只解析有变化的文件
 rymesh import
@@ -305,17 +293,15 @@ systemctl start rymesh
 chmod 600 /root/rymesh-backup-*.tgz
 ```
 
-备份包含密码哈希与 Cookie 签名密钥，请按敏感文件保管。恢复时解包到对应路径，
-确保 `/etc/rymesh` 为 `0700`、`config.json`/`password.txt` 为 `0600`，然后
+备份包含 Cookie 签名密钥与节点令牌，请按敏感文件保管。恢复时解包到对应路径，
+确保 `/etc/rymesh` 为 `0700`、`config.json` 为 `0600`，然后
 `systemctl start rymesh`。
 
 ### 故障排查
 
 | 现象 | 检查 |
 |---|---|
-| 手机打不开 | `ip -4 addr show tun0`；`ss -ltnp \| grep 8899` 应只有 127.0.0.1 与 10.0.0.6；EasyTier peer 是否在线 |
 | 502/连接被拒 | `systemctl status rymesh`；`curl http://127.0.0.1:8899/api/health` |
-| 登录 429 | 连续失败 5 次锁定 60 秒；重启服务可立即清除内存中的锁定 |
 | Agent 不可用 | 以 root 执行 `codex --version`、`claude --version`；unit 的 `HOME=/root` 与 PATH 是否正确 |
 | 审批不出现 | 任务是否 `waiting_input`；查看任务事件中的 `permission` 记录；Claude 版本是否支持 `--permission-prompt-tool` |
 | 任务显示 interrupted | 查看错误信息：runner 丢失或服务器重启；用「重新运行」或发送新消息继续会话 |
@@ -329,23 +315,22 @@ chmod 600 /root/rymesh-backup-*.tgz
 
 - **监听**：只绑定 loopback 与 EasyTier 网卡；`allow_public_bind=false`，
   即使配置了 `0.0.0.0` 也会拒绝启动。当前 `ss` 确认没有公网/以太网监听。
-- **认证**：PBKDF2-HMAC-SHA256（120k 次）；HMAC-SHA256 签名的 HttpOnly、
-  SameSite=Strict Cookie（默认 30 天）；每个变更请求要求 `X-CSRF-Token`。
-- **登录限制**：每 IP 5 次失败锁定 60 秒；不信任 `X-Forwarded-For`，防止绕过。
-- **首次登录**：默认密码 `admin` 仅用于局域网初始访问；`must_change_password=true` 时，
-  除改密与登出外所有 API 都返回 403，前端只显示不可跳过的改密表单。密码非空即可，
-  不设长度下限。
-- **授权**：所有 `/api/*`（除 health/session/login）要求认证；工作目录受 allowed roots 限制；
+- **认证**：没有密码登录。浏览器只能用一次性票据登录：票据由本机控制台写入只有本用户可读的
+  文件（`data/login-ticket`，0600），App 或 `rymesh client open` 读取后交给浏览器，用一次即换；
+  之后是 HMAC-SHA256 签名的 HttpOnly、SameSite=Strict Cookie（默认 30 天），每个变更请求要求
+  `X-CSRF-Token`。主控访问节点用 `Authorization: Bearer <node_token>`。
+- **授权**：所有 `/api/*`（除 health/session/login/ticket）要求认证；工作目录受 allowed roots 限制；
   Agent 名称白名单；请求体上限。
-- **不泄密**：API 不返回密码哈希、Cookie 密钥、Agent Token/API Key；设置页仅显示版本、
+- **不泄密**：API 不返回 Cookie 密钥、节点令牌、Agent Token/API Key；设置页仅显示版本、
   路径、认证方式摘要。
 - **审批**：默认模式（Claude `manual`、Codex `read-only`）下危险操作必须网页批准，不自动批准。
   `危险：完全访问` / `危险：绕过所有权限` 是用户逐次显式选择的模式，会跳过限制；
   切换时前端提示，任务记录保留当时的实际模式，便于审计。
 - **高危操作**：删除对话需要两次界面确认（不要求输入会话 ID）；原生会话文件仅移动到
   `/var/lib/rymesh/trash/`，不会直接删除。运行中或排队中的任务会阻止删除。
-- **HTTP**：控制台本身是 HTTP，依赖 EasyTier 隧道加密传输；如需额外 TLS，
-  可在前面加反向代理并只监听 loopback。
+- **HTTP**：控制台本身是 HTTP。App 的主控只监听本机，到服务器（或作为节点的 Mac）的
+  流量走 SSH 加密，主机指纹固定；用 `node add --url` 直连的节点依赖 EasyTier 等私有网络
+  隧道加密传输。
 
 ---
 
@@ -364,8 +349,6 @@ chmod 600 /root/rymesh-backup-*.tgz
 | `max_concurrent` | 4 | 并发任务上限（1–32） |
 | `data_dir` | `/var/lib/rymesh` | SQLite、任务日志、回收站 |
 | `log_dir` | `/var/log/rymesh` | 应用日志 |
-| `password_hash` | 默认 `admin` 的哈希 | PBKDF2-HMAC-SHA256（120k 次） |
-| `must_change_password` | true（新装） | 为 true 时除改密/登出外所有 API 返回 403 |
 | `session_ttl_hours` | 720 | 登录 Cookie 有效期 |
 | `permission_ttl_minutes` | 60 | 审批请求有效期 |
 | `task_log_max_bytes` | 64 MiB | 单任务事件文件上限（退出/状态记录始终保留） |
@@ -398,8 +381,9 @@ chmod 600 /root/rymesh-backup-*.tgz
 ## 10. 多设备（主控 + 节点）
 
 每台机器都安装一份 rymesh，作为**节点**运行自己的 Agent、数据库与原生历史同步。
-其中一台在配置里列出其它节点，即成为**主控**：手机只访问主控，页面通过
-`/n/<设备>/api/...` 由主控经 EasyTier 转发到对应节点（含 SSE 实时流）。Agent 始终在
+其中一台在配置里列出其它节点，即成为**主控**：浏览器只访问主控，页面通过
+`/n/<设备>/api/...` 由主控转发到对应节点（含 SSE 实时流）。本节是节点地址走
+EasyTier 等私有网络的方式；主控在 Mac / 手机 App 里、经 SSH 直连的方式见第 11 节。Agent 始终在
 所属机器上运行，主控、网络或浏览器断开都不影响它。
 
 ```bash
@@ -413,9 +397,9 @@ systemctl restart rymesh
 rymesh node list        # 在线状态与令牌校验
 ```
 
-- 节点只接受主控的 `Authorization: Bearer <node_token>`，或节点自己的登录 Cookie；
+- 节点只接受主控的 `Authorization: Bearer <node_token>`，或节点自己的票据登录 Cookie；
   节点应只监听 127.0.0.1 与 EasyTier IP。
-- 登录、改密、退出始终作用于主控，不会转发给节点。节点令牌错误显示为 502，不会把用户登出。
+- 票据登录与会话状态始终属于主控，不会转发给节点。节点令牌错误显示为 502，不会把用户登出。
 - 侧边栏顶部切换设备；设置页的 Agent / 通用 / 服务分组属于当前设备。
 - 其它设备上的待审批请求会汇总到通知里，点击直接切到该设备的会话。
 - macOS 节点：`go build` 后用 `rymesh serve --config ~/.rymesh/config.json` 运行
@@ -457,6 +441,16 @@ App 内置 Linux amd64/arm64 节点程序，可直接部署服务器；若服务
 的程序（`make dist` 产物），在服务器上以 SSH 用户身份执行 `rymesh node setup`
 （安装到 `~/.rymesh`，root 用 systemd、普通用户用 `systemctl --user`、macOS 用 launchd），
 已有节点则沿用其令牌原地升级，因此 Mac 与手机可以共用同一台服务器。
+
+**把 Mac 作为手机的节点。** Mac 没有公网 IP 也可以：只要手机能连到 Mac 的 SSH
+（同一 Wi-Fi、EasyTier、Tailscale，或 frp 转发 Mac 的 22 端口），通讯同样走 SSH 加密并固定主机指纹。
+
+1. Mac 上：系统设置 → 通用 → 共享 → 打开“远程登录”，并保持 Rymesh App 运行（关闭窗口不影响，
+   从菜单退出才会停止）。
+2. 手机上：设置 → 设备 → 添加服务器，填 Mac 的地址与用户名，测试连接并确认指纹，然后部署。
+   部署发现对方是运行着 Rymesh 的 Mac 时，不上传、不安装任何程序，只向 Mac 上的 Rymesh
+   取一个节点令牌（`rymesh node token`），Mac 上的控制台无需重启即生效。
+   Mac 睡眠时手机连不上它。
 
 **密钥库与迁移。** 客户端的设备列表（地址、固定的主机指纹、节点令牌）和 SSH 私钥保存在自己的
 SQLite 数据库里（`data/rymesh.db`，权限 0600），不依赖 `~/.ssh`。设置 → 密钥 可生成、重命名、

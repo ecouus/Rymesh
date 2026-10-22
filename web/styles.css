@@ -792,5 +792,6 @@ textarea.input { display: block; resize: vertical; font-size: 12px; }
   .app { margin-left: 280px; }
   .composer-wrap { left: 280px; }
   #menu-btn, .sidebar-head .icon-btn { display: none; }
+  #menu-btn.back { display: grid; }
   .has-composer .toast { left: calc(50% + 140px); }
 }

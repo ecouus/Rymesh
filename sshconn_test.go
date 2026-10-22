@@ -365,3 +365,111 @@ func TestDialFailureNamesTheCause(t *testing.T) {
 		t.Fatalf("auth: %q", got)
 	}
 }
+
+// A Mac that runs the app's console is joined as it is: deploy asks that
+// console's own program for a node token over SSH, installs nothing, and the
+// running console accepts the token without a restart.
+func TestDeployAdoptsMacClient(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	base := filepath.Join(home, ".rymesh")
+	cfgPath := filepath.Join(base, "config.json")
+
+	macCfg := testConfig(t)
+	macCfg.NodeName = "Mac"
+	mst, _ := openStore(macCfg.DataDir)
+	defer mst.Close()
+	_ = mst.CreateSession(&Session{Agent: "claude", Cwd: macCfg.DataDir, Title: "on the mac"})
+	mac := newServer(macCfg, cfgPath, mst, log.New(io.Discard, "", 0), nil)
+	ms := httptest.NewServer(mac.Handler())
+	defer ms.Close()
+	_, mport, _ := net.SplitHostPort(strings.TrimPrefix(ms.URL, "http://"))
+
+	keyPath, pub := clientKey(t)
+	sshd := newTestSSHServer(t, pub)
+	n := sshNodeFor(t, sshd, keyPath, ms.URL)
+	n.Token, n.RemotePort = "", 0
+	n.HostKey = string(ssh.MarshalAuthorizedKey(sshd.hostKey.PublicKey()))
+	hub := newTestHub(t, testConfig(t), "")
+	_ = hub.srv.saveNodes(func(_ []NodeConfig) ([]NodeConfig, error) { return []NodeConfig{n}, nil })
+
+	// No console on the machine: not adopted, deploy goes on as usual.
+	if _, ok, err := hub.srv.adoptClient(t.Context(), n, func(string) {}); ok || err != nil {
+		t.Fatalf("adopted a machine without a console: %v %v", ok, err)
+	}
+
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveConfig(cfgPath, macCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	// Stand-in for the app's program: `node token` writes the token to the
+	// config file and prints it, as the real command does.
+	withToken := *macCfg
+	withToken.NodeToken = "mac-node-token-0123456789"
+	withToken.Port, _ = strconv.Atoi(mport)
+	if err := saveConfig(cfgPath+".next", &withToken); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(home, "rymesh-app")
+	script := "#!/bin/sh\n[ \"$1 $2\" = \"node token\" ] || exit 2\ncp \"$4.next\" \"$4\"\necho " + withToken.NodeToken + "\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, clientBinFile), []byte(bin+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var steps []string
+	got, ok, err := hub.srv.adoptClient(t.Context(), n, func(s string) { steps = append(steps, s) })
+	if !ok || err != nil {
+		t.Fatalf("adopt = %v %v (%q)", ok, err, steps)
+	}
+	if got.Token != withToken.NodeToken || got.RemotePort != withToken.Port {
+		t.Fatalf("device = token %q port %d", got.Token, got.RemotePort)
+	}
+	if rec := hub.do("GET", "/n/box/api/sessions", ""); rec.Code != 200 || !strings.Contains(rec.Body.String(), "on the mac") {
+		t.Fatalf("relay to the mac: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// A wrong token makes the node re-read its config at most once a second, and
+// never accepts anything but the token in the file.
+func TestNodeTokenReloadIsBounded(t *testing.T) {
+	cfg := testConfig(t)
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	if err := saveConfig(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := openStore(cfg.DataDir)
+	defer st.Close()
+	srv := newServer(cfg, cfgPath, st, log.New(io.Discard, "", 0), nil)
+	req := func(tok string) bool {
+		r := httptest.NewRequest("GET", "/api/sessions", nil)
+		r.Header.Set("Authorization", "Bearer "+tok)
+		return srv.nodeTokenOK(r)
+	}
+	if req("") || req("guess") {
+		t.Fatal("accepted a token while none is set")
+	}
+	next := *cfg
+	next.NodeToken = "written-by-node-token"
+	if err := saveConfig(cfgPath, &next); err != nil {
+		t.Fatal(err)
+	}
+	// Read less than a second ago: the file is not read again yet.
+	if req("written-by-node-token") {
+		t.Fatal("config re-read within a second")
+	}
+	srv.tokenMu.Lock()
+	srv.tokenRead = time.Time{}
+	srv.tokenMu.Unlock()
+	if !req("written-by-node-token") || req("guess") {
+		t.Fatal("token from the config file not picked up")
+	}
+	if srv.config().NodeToken != "written-by-node-token" {
+		t.Fatal("token not published")
+	}
+}

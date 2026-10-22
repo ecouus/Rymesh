@@ -47,6 +47,8 @@
     openToken: 0,
     focusPermission: "",
     settingsReturn: "",
+    settingsCache: {},
+    settingsPainted: "",
     approvalKeys: "",
     approvalTimer: null,
     approvalStackOpen: false,
@@ -325,8 +327,9 @@
 
   // --------------------------------------------------------------------- auth
 
-  var pendingLoginPassword = "";
-
+  // There is no password login: the apps and `rymesh client open` sign in
+  // with a one-time ticket, hubs reach nodes with a token. Without a session
+  // the page can only say where to open it from.
   function showLogin() {
     closeStream();
     S.booted = false;
@@ -335,101 +338,13 @@
     $("#approval-stack").hidden = true;
     $("#app").hidden = true;
     $("#login").hidden = false;
-    $("#login-form").hidden = false;
-    $("#force-form").hidden = true;
-    $("#login-error").hidden = true;
-    $("#force-error").hidden = true;
-    // Only advertise the default password while it is still in use.
-    $("#login-default-hint").hidden = !S.defaultPassword;
-    pendingLoginPassword = "";
-    S.booted = false;
     if (S.pollTimer) { clearInterval(S.pollTimer); S.pollTimer = null; }
-    setTimeout(function () { var p = $("#login-password"); if (p) p.focus(); }, 50);
-  }
-
-  function showForceChange() {
-    closeStream();
-    S.booted = false;
-    closeSidebar(true);
-    closeSheet();
-    $("#approval-stack").hidden = true;
-    $("#app").hidden = true;
-    $("#login").hidden = false;
-    $("#login-form").hidden = true;
-    $("#force-form").hidden = false;
-    $("#force-error").hidden = true;
-    $("#force-old").value = pendingLoginPassword;
-    $("#force-new").value = "";
-    $("#force-new2").value = "";
-    S.booted = false;
-    if (S.pollTimer) { clearInterval(S.pollTimer); S.pollTimer = null; }
-    setTimeout(function () { var p = $("#force-new"); if (p) p.focus(); }, 50);
   }
 
   function showApp() {
     $("#login").hidden = true;
     $("#app").hidden = false;
   }
-
-  $("#login-form").addEventListener("submit", function (e) {
-    e.preventDefault();
-    var btn = $("#login-btn"), errEl = $("#login-error");
-    var pw = $("#login-password").value;
-    if (!pw) return;
-    btn.disabled = true; btn.textContent = "登录中…"; errEl.hidden = true;
-    fetch("/api/login", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      credentials: "same-origin", body: JSON.stringify({ password: pw })
-    }).then(function (r) {
-      return r.json().catch(function () { return {}; }).then(function (d) {
-        if (!r.ok) throw new Error(d.error || "登录失败");
-        S.csrf = d.csrf || "";
-        if (d.must_change) {
-          pendingLoginPassword = pw;
-          showForceChange();
-          return;
-        }
-        return boot();
-      });
-    }).catch(function (err) {
-      errEl.textContent = err.message;
-      errEl.hidden = false;
-    }).then(function () {
-      btn.disabled = false; btn.textContent = "登录";
-    });
-  });
-
-  $("#force-form").addEventListener("submit", function (e) {
-    e.preventDefault();
-    var btn = $("#force-btn"), errEl = $("#force-error");
-    var oldPw = $("#force-old").value;
-    var np = $("#force-new").value, np2 = $("#force-new2").value;
-    function fail(msg) { errEl.textContent = msg; errEl.hidden = false; }
-    errEl.hidden = true;
-    if (!oldPw) { fail("请输入当前密码"); return; }
-    if (!np) { fail("新密码不能为空"); return; }
-    if (np !== np2) { fail("两次输入的新密码不一致"); return; }
-    btn.disabled = true; btn.textContent = "修改中…";
-    fetch("/api/password", {
-      method: "POST", credentials: "same-origin",
-      headers: { "Content-Type": "application/json", "X-CSRF-Token": S.csrf },
-      body: JSON.stringify({ old: oldPw, new: np })
-    }).then(function (r) {
-      return r.json().catch(function () { return {}; }).then(function (d) {
-        if (!r.ok) throw new Error(d.error || "修改失败");
-        S.csrf = d.csrf || S.csrf;
-        pendingLoginPassword = "";
-        $("#login-password").value = "";
-        $("#force-old").value = "";
-        $("#force-new").value = "";
-        $("#force-new2").value = "";
-        return boot();
-      });
-    }).catch(function (err) {
-      fail(err.message || "修改失败");
-      btn.disabled = false; btn.textContent = "修改密码并进入";
-    });
-  });
 
   // --------------------------------------------------------------------- boot
 
@@ -453,6 +368,11 @@
     S.activeTasks = S.tasks.filter(isActiveTask);
     ensureDraftAgent();
     if (!S.draftCwd) S.draftCwd = S.config.default_cwd || "";
+    // Warm the settings page so it opens without a round trip.
+    if (!cached && !S.settingsCache[S.node]) {
+      var node = S.node;
+      api("/api/settings").then(function (s) { S.settingsCache[node] = s; }).catch(function () {});
+    }
   }
 
   // Connection to the current device at start-up: "connecting", "failed"
@@ -1640,6 +1560,7 @@
     $("#composer-hint").textContent = "";
     $("#stop-btn").hidden = true;
     $("#settings-btn").classList.remove("active");
+    setBackButton(false);
     setAgentPicker(true);
     if (noDevice()) {
       setTop("Rymesh", "");
@@ -2128,6 +2049,7 @@
     $("#composer-wrap").hidden = false;
     $("#conn-dot").hidden = false;
     $("#settings-btn").classList.remove("active");
+    setBackButton(false);
     document.body.classList.add("has-composer");
 
     var main = $("#main");
@@ -3601,28 +3523,78 @@
 
   // ----------------------------------------------------------------- settings
 
+  // Settings open at once from the device's last response and refresh in the
+  // background. A remote device costs a round trip over SSH (seconds on a
+  // phone that has just reconnected), and probing every device costs one per
+  // device; waiting for both used to leave the page on a spinner.
   function renderSettings() {
     S.route = "settings";
     $("#composer-wrap").hidden = true;
     document.body.classList.remove("has-composer");
     $("#conn-dot").hidden = true;
     $("#settings-btn").classList.add("active");
+    setBackButton(true);
     setAgentPicker(false);
     setTop("系统设置", "");
     renderApprovalNotifications();
-    $("#main").innerHTML = '<div class="pad"><div class="empty"><span class="spinner"></span> 加载中…</div></div>';
-    Promise.all([api("/api/settings"), loadNodes()]).then(function (res) {
+    var node = S.node;
+    var cached = S.settingsCache[node];
+    S.settingsPainted = "";
+    if (cached) paintSettings(cached);
+    else $("#main").innerHTML = '<div class="pad"><div class="empty"><span class="spinner"></span> 加载中…</div></div>';
+    Promise.all([api("/api/settings"), loadNodes(true)]).then(function (res) {
       var d = res[0];
+      S.settingsCache[node] = d;
       // The user may have navigated away while settings were loading; the
       // response must not repaint the page they are looking at now.
-      if (S.route !== "settings") return;
+      if (S.route !== "settings" || S.node !== node) return;
       S.agents = d.agents || S.agents;
       S.config = d.config || S.config;
-      renderSettingsData(d);
+      paintSettings(d);
     }).catch(function (e) {
-      if (S.route !== "settings") return;
+      if (S.route !== "settings" || S.node !== node || cached) return;
       $("#main").innerHTML = '<div class="empty">加载失败：' + esc(e.message) + "</div>";
     });
+    // Fresh online states for the device rows.
+    loadNodes().then(function () {
+      var d = S.settingsCache[S.node];
+      if (S.route === "settings" && d) paintSettings(d);
+    });
+  }
+
+  // paintSettings repaints only when something shown changed, and keeps the
+  // open sections and scroll position; it leaves the page alone while the
+  // user is typing in it.
+  function paintSettings(d) {
+    var sig = JSON.stringify([d, S.nodes, S.hubOnly, S.theme]);
+    if (sig === S.settingsPainted) return;
+    var main = $("#main");
+    var focus = document.activeElement;
+    if (S.settingsPainted && focus && main.contains(focus) && /^(INPUT|TEXTAREA)$/.test(focus.tagName)) return;
+    var open = Array.prototype.map.call(main.querySelectorAll("details"), function (x) { return x.open; });
+    var keep = S.settingsPainted !== "";
+    var y = window.scrollY, my = main.scrollTop;
+    S.settingsPainted = sig;
+    renderSettingsData(d);
+    if (!keep) return;
+    Array.prototype.forEach.call(main.querySelectorAll("details"), function (x, i) { if (open[i]) x.open = true; });
+    main.scrollTop = my;
+    window.scrollTo(0, y);
+  }
+
+  // In settings the top-left button goes back instead of opening the list.
+  function setBackButton(on) {
+    var b = $("#menu-btn");
+    if (b.classList.contains("back") === on) return;
+    b.classList.toggle("back", on);
+    b.setAttribute("aria-label", on ? "返回" : "打开对话列表");
+    b.querySelector("path").setAttribute("d", on ? "M15 5l-7 7 7 7" : "M4 8h16M4 16h10");
+  }
+
+  function leaveSettings() {
+    var back = S.settingsReturn || "#/";
+    S.settingsReturn = "";
+    go(back);
   }
 
   // "2.1.303 (Claude Code)" and "codex-cli 0.163.0" both shorten to the number.
@@ -3709,16 +3681,7 @@
       "</dl></div></details>" +
       "</div></div>" +
 
-      "") + (S.hubOnly ? "" :
-      '<div><div class="section-title">账户</div><div class="group">' +
-      '<details><summary><span class="g-label">修改密码</span></summary><div class="g-body">' +
-      '<label class="field"><span>当前密码</span><input id="pw-old" type="password" autocomplete="current-password"></label>' +
-      '<label class="field"><span>新密码</span><input id="pw-new" type="password" autocomplete="new-password"></label>' +
-      '<label class="field"><span>确认新密码</span><input id="pw-new2" type="password" autocomplete="new-password"></label>' +
-      '<button id="change-pw" class="btn primary block">修改密码</button>' +
-      '<p class="small muted" style="margin:9px 0 0">修改后会轮换会话签名密钥，其它已登录设备需要重新登录。</p></div></details>' +
-      '<button id="logout-btn" type="button" class="g-row danger">退出登录</button>' +
-      "</div></div>") +
+      "") +
 
       '<div class="about">Rymesh ' + esc(d.version || "") +
       " · Agent 在各自的服务器上运行，关闭页面或应用不会中断任务；需要审批或回答的问题会出现在对话里。</div>" +
@@ -3867,26 +3830,6 @@
       el.addEventListener("keydown", function (e) { if (e.key === "Enter") this.blur(); });
     });
     }
-
-    if (!S.hubOnly) $("#change-pw").addEventListener("click", function () {
-      var oldp = $("#pw-old").value, np = $("#pw-new").value, np2 = $("#pw-new2").value;
-      if (np !== np2) { toast("两次输入的新密码不一致", true); return; }
-      if (!np) { toast("新密码不能为空", true); return; }
-      var b = this; b.disabled = true; b.textContent = "修改中…";
-      api("/api/password", { method: "POST", body: { old: oldp, new: np }, hub: true }).then(function (r) {
-        S.csrf = r.csrf || S.csrf;
-        toast("密码已修改，其它设备需重新登录");
-        $("#pw-old").value = $("#pw-new").value = $("#pw-new2").value = "";
-        b.disabled = false; b.textContent = "修改密码";
-      }).catch(function (e) { toast(e.message, true); b.disabled = false; b.textContent = "修改密码"; });
-    });
-
-    if (!S.hubOnly) $("#logout-btn").addEventListener("click", function () {
-      api("/api/logout", { method: "POST", body: {}, hub: true }).catch(function () {}).then(function () {
-        LS.del("lastSession");
-        showLogin();
-      });
-    });
   }
 
   // A restart is detected by a new started_at; an update additionally waits for
@@ -3894,13 +3837,14 @@
   // (the old one answers for a moment before systemd stops it).
   // ------------------------------------------------------------- top actions
 
-  $("#menu-btn").addEventListener("click", openSidebar);
+  $("#menu-btn").addEventListener("click", function () {
+    if (S.route === "settings") leaveSettings();
+    else openSidebar();
+  });
 
   $("#settings-btn").addEventListener("click", function () {
     if (S.route === "settings") {
-      var back = S.settingsReturn || "#/";
-      S.settingsReturn = "";
-      go(back);
+      leaveSettings();
     } else {
       S.settingsReturn = location.hash || "#/";
       go("#/settings");
@@ -4044,10 +3988,8 @@
     .then(function (d) {
       if (d.authenticated) {
         S.csrf = d.csrf || "";
-        if (d.must_change) { showForceChange(); return; }
         return boot();
       }
-      S.defaultPassword = !!d.must_change;
       showLogin();
     })
     .catch(function () { showLogin(); });

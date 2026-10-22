@@ -24,21 +24,13 @@ type authInfo struct {
 	Exp  int64
 }
 
-type loginBucket struct {
-	fails int
-	last  time.Time
-	until time.Time
-}
-
 type authManager struct {
 	cfg     *Config
 	stateMu sync.RWMutex
-	mu      sync.Mutex
-	login   map[string]*loginBucket
 }
 
 func newAuthManager(cfg *Config) *authManager {
-	return &authManager{cfg: cfg, login: map[string]*loginBucket{}}
+	return &authManager{cfg: cfg}
 }
 
 func (a *authManager) token() string {
@@ -61,21 +53,6 @@ func (a *authManager) sign(data []byte) []byte {
 	return a.cfg.sign(data)
 }
 
-func (a *authManager) verifyPassword(pw string) bool {
-	a.stateMu.RLock()
-	defer a.stateMu.RUnlock()
-	return verifyPassword(a.cfg.PasswordHash, pw)
-}
-
-// mustChangePassword reports whether the default password still has to be
-// replaced before normal API use is allowed.
-func (a *authManager) mustChangePassword() bool {
-	a.stateMu.RLock()
-	defer a.stateMu.RUnlock()
-	return a.cfg.MustChangePassword
-}
-
-// changePassword updates the hash in memory. The caller persists the config.
 // setConfig points the manager at the config currently published by Server.
 // Settings changes use copy-on-write, so without this the manager would keep
 // validating against a stale snapshot.
@@ -83,18 +60,6 @@ func (a *authManager) setConfig(c *Config) {
 	a.stateMu.Lock()
 	a.cfg = c
 	a.stateMu.Unlock()
-}
-
-func (a *authManager) changePassword(newHash string, rotateSecret bool) {
-	a.stateMu.Lock()
-	defer a.stateMu.Unlock()
-	a.cfg.PasswordHash = newHash
-	a.cfg.MustChangePassword = false
-	if rotateSecret {
-		if b, err := randomBytes(32); err == nil {
-			a.cfg.Secret = base64.StdEncoding.EncodeToString(b)
-		}
-	}
 }
 
 func (a *authManager) verifyToken(tok string) (*authInfo, bool) {
@@ -156,57 +121,6 @@ func (a *authManager) checkCSRF(r *http.Request, info *authInfo) bool {
 	}
 	h := r.Header.Get("X-CSRF-Token")
 	return h != "" && subtle.ConstantTimeCompare([]byte(h), []byte(info.CSRF)) == 1
-}
-
-// loginAllowed implements a small per-IP lockout without external storage.
-func (a *authManager) loginAllowed(ip string) (bool, time.Duration) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	b := a.login[ip]
-	if b == nil {
-		return true, 0
-	}
-	if time.Now().Before(b.until) {
-		return false, time.Until(b.until)
-	}
-	return true, 0
-}
-
-func (a *authManager) loginFailed(ip string) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	now := time.Now()
-	b := a.login[ip]
-	if b == nil || now.Sub(b.last) > 10*time.Minute {
-		b = &loginBucket{}
-		a.login[ip] = b
-	}
-	b.fails++
-	b.last = now
-	if b.fails >= 5 {
-		b.until = now.Add(60 * time.Second)
-		b.fails = 0
-	}
-	// Bound the map.
-	if len(a.login) > 5000 {
-		a.login = map[string]*loginBucket{ip: b}
-	}
-}
-
-func (a *authManager) loginOK(ip string) {
-	a.mu.Lock()
-	delete(a.login, ip)
-	a.mu.Unlock()
-}
-
-func clientIP(r *http.Request) string {
-	// Listeners are direct (loopback + EasyTier). Do not trust X-Forwarded-For:
-	// a client could otherwise bypass the login lockout by rotating the header.
-	host := r.RemoteAddr
-	if i := strings.LastIndex(host, ":"); i > 0 {
-		host = host[:i]
-	}
-	return host
 }
 
 func securityHeaders(next http.Handler) http.Handler {

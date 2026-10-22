@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The web icon's prompt glyph (web/icon.svg), sized for the adaptive-icon safe zone. -->
+<!-- The prompt glyph (web/icon.svg) for themed (monochrome) icons; the full-colour
+     icon is drawable-nodpi/ic_launcher_art.png. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp" android:height="108dp"
     android:viewportWidth="512" android:viewportHeight="512">

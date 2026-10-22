@@ -8,7 +8,6 @@ package console
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"io"
 	"log"
@@ -28,16 +27,10 @@ type Embedded struct {
 }
 
 func embeddedConfig(dataDir string) (*Config, error) {
-	c, _, err := newConfig()
+	c, err := newConfig()
 	if err != nil {
 		return nil, err
 	}
-	pw, err := randomBytes(18)
-	if err != nil {
-		return nil, err
-	}
-	c.PasswordHash = hashPassword(base64.RawURLEncoding.EncodeToString(pw))
-	c.MustChangePassword = false
 	c.ListenAddrs = []string{"127.0.0.1:0"}
 	c.EasyTierIface = ""
 	c.DataDir = filepath.Join(dataDir, "data")

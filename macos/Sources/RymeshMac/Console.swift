@@ -118,7 +118,7 @@ final class Console {
     }
 
     /// Pending approvals and questions across every device. Logs in again
-    /// when the session cookie is gone (e.g. after a password change).
+    /// when the session cookie is gone (e.g. after it expired).
     func pending(_ done: @escaping ([Pending]) -> Void) {
         get("api/nodes") { obj, code in
             if code == 401 {

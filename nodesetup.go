@@ -7,7 +7,6 @@ package console
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -34,23 +33,17 @@ func agentHome() (string, error) {
 }
 
 // personalConfig is a fresh config for one user's machine: loopback only,
-// rooted in their home directory, with a random password (the page is reached
-// through a hub or a login ticket, never by a default password).
+// rooted in their home directory; the page is reached through a hub or a
+// login ticket.
 func personalConfig(base string, port int) (*Config, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err
 	}
-	c, _, err := newConfig()
+	c, err := newConfig()
 	if err != nil {
 		return nil, err
 	}
-	pw, err := randomBytes(18)
-	if err != nil {
-		return nil, err
-	}
-	c.PasswordHash = hashPassword(base64.RawURLEncoding.EncodeToString(pw))
-	c.MustChangePassword = false
 	c.Port = port
 	c.ListenAddrs = []string{"127.0.0.1:" + strconv.Itoa(port)}
 	c.EasyTierIface = ""

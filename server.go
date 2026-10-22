@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -45,6 +44,10 @@ type Server struct {
 	nodeSeen  map[string]nodeView // last probe of each device (nodes.go)
 	ticketMu  sync.Mutex
 	ticket    string // one-time local login (client.go)
+	// tokenRead is when config.json was last read for a node token written
+	// by `rymesh node token` while this console runs (nodes.go).
+	tokenMu   sync.Mutex
+	tokenRead time.Time
 	// streamSem bounds concurrent SSE connections. Every stream polls the store
 	// several times a second and the store has a single connection, so an
 	// unbounded number of open tabs (or a reconnect loop) would starve every
@@ -99,9 +102,9 @@ func (s *Server) routes() {
 	m := s.mux
 	m.HandleFunc("GET /api/health", s.handleHealth)
 	m.HandleFunc("GET /api/session", s.handleAuthState)
-	m.HandleFunc("POST /api/login", s.handleLogin)
+	// No password login: the apps and `rymesh client open` sign in with a
+	// one-time ticket, and a hub reaches a node with its token.
 	m.HandleFunc("GET /api/login/ticket", s.handleTicketLogin)
-	m.HandleFunc("POST /api/logout", s.authed(s.handleLogout))
 
 	m.HandleFunc("GET /api/bootstrap", s.authed(s.handleBootstrap))
 	m.HandleFunc("GET /api/agents", s.authed(s.handleAgents))
@@ -131,7 +134,6 @@ func (s *Server) routes() {
 
 	m.HandleFunc("GET /api/settings", s.authed(s.handleSettings))
 	m.HandleFunc("PATCH /api/settings", s.authed(s.handlePatchSettings))
-	m.HandleFunc("POST /api/password", s.authed(s.handleChangePassword))
 	m.HandleFunc("POST /api/cwd/check", s.authed(s.handleCwdCheck))
 
 	// Multi-device: list devices, and relay a device's API through this hub.
@@ -187,10 +189,6 @@ func (s *Server) authed(h http.HandlerFunc) http.HandlerFunc {
 		}
 		if !s.auth.checkCSRF(r, info) {
 			writeErr(w, http.StatusForbidden, "CSRF 校验失败")
-			return
-		}
-		if s.auth.mustChangePassword() && r.URL.Path != "/api/password" && r.URL.Path != "/api/logout" {
-			writeErr(w, http.StatusForbidden, "首次登录必须修改密码")
 			return
 		}
 		h(w, r)
@@ -264,48 +262,10 @@ func (s *Server) staticHandler() http.Handler {
 
 func (s *Server) handleAuthState(w http.ResponseWriter, r *http.Request) {
 	if info, ok := s.auth.authenticate(r); ok {
-		writeJSON(w, 200, map[string]any{
-			"authenticated": true, "csrf": info.CSRF, "version": version,
-			"must_change": s.auth.mustChangePassword(),
-		})
+		writeJSON(w, 200, map[string]any{"authenticated": true, "csrf": info.CSRF, "version": version})
 		return
 	}
-	// must_change tells the login page whether the default password is still
-	// active, so it only shows the default-password hint when it applies.
-	writeJSON(w, 200, map[string]any{"authenticated": false, "version": version,
-		"must_change": s.auth.mustChangePassword()})
-}
-
-func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-	var req struct {
-		Password string `json:"password"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, 400, "请求格式错误")
-		return
-	}
-	ip := clientIP(r)
-	if ok, wait := s.auth.loginAllowed(ip); !ok {
-		writeErr(w, 429, fmt.Sprintf("尝试次数过多，请 %d 秒后再试", int(wait.Seconds())+1))
-		return
-	}
-	if !s.auth.verifyPassword(req.Password) {
-		s.auth.loginFailed(ip)
-		time.Sleep(250 * time.Millisecond)
-		writeErr(w, 401, "密码错误")
-		return
-	}
-	s.auth.loginOK(ip)
-	csrf := s.auth.setCookie(w)
-	writeJSON(w, 200, map[string]any{
-		"ok": true, "csrf": csrf, "must_change": s.auth.mustChangePassword(),
-	})
-}
-
-func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	s.auth.clearCookie(w)
-	writeJSON(w, 200, map[string]any{"ok": true})
+	writeJSON(w, 200, map[string]any{"authenticated": false, "version": version})
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -614,55 +574,6 @@ func taskTerminal(status string) bool {
 		return true
 	}
 	return false
-}
-
-func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Old string `json:"old"`
-		New string `json:"new"`
-	}
-	if err := decodeJSON(w, r, &req); err != nil {
-		return
-	}
-	// The login lockout only guards /api/login; without this a stolen cookie
-	// could grind the old password at PBKDF2 speed.
-	ip := clientIP(r)
-	if ok, wait := s.auth.loginAllowed(ip); !ok {
-		writeErr(w, 429, fmt.Sprintf("尝试次数过多，请 %d 秒后再试", int(wait.Seconds())+1))
-		return
-	}
-	if !s.auth.verifyPassword(req.Old) {
-		s.auth.loginFailed(ip)
-		time.Sleep(250 * time.Millisecond)
-		writeErr(w, 401, "当前密码错误")
-		return
-	}
-	s.auth.loginOK(ip)
-	if req.New == "" {
-		writeErr(w, 400, "新密码不能为空")
-		return
-	}
-	// Build the next config, persist it, and only then publish it. Publishing
-	// first meant a failed save left the server accepting a password that would
-	// be forgotten on restart.
-	next := *s.config().clone()
-	next.PasswordHash = hashPassword(req.New)
-	next.MustChangePassword = false
-	// Rotating the secret invalidates every cookie issued under the old
-	// password. Without it a stolen cookie stayed valid for the full TTL.
-	if b, err := randomBytes(32); err == nil {
-		next.Secret = base64.StdEncoding.EncodeToString(b)
-	}
-	if err := saveConfigFile(s.cfgPath, &next); err != nil {
-		writeErr(w, 500, "保存配置失败: "+err.Error())
-		return
-	}
-	s.publishConfig(&next)
-	// password.txt only holds the initial default password. A user-chosen
-	// password must never be kept in plain text next to its hash.
-	_ = os.Remove(filepath.Join(filepath.Dir(s.cfgPath), "password.txt"))
-	csrf := s.auth.setCookie(w)
-	writeJSON(w, 200, map[string]any{"ok": true, "csrf": csrf})
 }
 
 // ---------------------------------------------------------------------------

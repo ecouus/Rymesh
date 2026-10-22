@@ -346,6 +346,11 @@ func (s *Server) deployNode(ctx context.Context, n NodeConfig, emit func(string)
 		return n, errors.New(sshErrorText(err))
 	}
 	goos, goarch := parseUname(out)
+	if goos == "darwin" {
+		if n, ok, err := s.adoptClient(ctx, n, emit); ok {
+			return n, err
+		}
+	}
 	bin, src, err := nodeBinary(goos, goarch, s.config().DataDir)
 	if err != nil {
 		return n, err
@@ -426,6 +431,47 @@ trap - EXIT`
 		time.Sleep(time.Second)
 	}
 	return n, errors.New("节点已安装，但通过 SSH 隧道访问失败")
+}
+
+// adoptClient joins the console a Mac already runs for its own user (the Mac
+// app, or `rymesh client`) instead of installing a second node next to it,
+// which would fight it for ~/.rymesh and the port. Nothing is uploaded or
+// installed: that console's own program hands out a node token, which the
+// running console picks up without a restart (nodes.go reloadNodeToken).
+// ok is false when the machine has no such console.
+func (s *Server) adoptClient(ctx context.Context, n NodeConfig, emit func(string)) (NodeConfig, bool, error) {
+	const find = `C="$HOME/.rymesh/config.json"
+B=$(cat "$HOME/.rymesh/` + clientBinFile + `" 2>/dev/null)
+[ -x "$B" ] || B=/Applications/Rymesh.app/Contents/Resources/rymesh
+[ -f "$C" ] && [ -x "$B" ] || exit 0
+"$B" node token --config "$C" 2>/dev/null || exit 1
+sed -n 's/.*"port": *\([0-9]*\).*/\1/p' "$C" | head -1`
+	out, err := s.ssh.run(ctx, n, find, nil)
+	f := strings.Fields(out)
+	if err == nil && len(f) == 0 {
+		return n, false, nil
+	}
+	if err != nil || len(f) != 2 {
+		return n, true, fmt.Errorf("读取 Mac 上 Rymesh 的节点令牌失败：%s", strings.TrimSpace(out))
+	}
+	port, _ := strconv.Atoi(f[1])
+	if port == 0 {
+		port = defaultPort
+	}
+	emit("检测到 Mac 上的 Rymesh，直接接入它（不安装任何程序）")
+	n, err = s.updateDevice(n.ID, func(d *NodeConfig) { d.Token, d.RemotePort = f[0], port })
+	if err != nil {
+		return n, true, err
+	}
+	emit("验证连接")
+	for i := 0; i < 5; i++ {
+		if v := probeNode(ctx, n, s.transportFor(n)); v.Online {
+			emit("完成：Mac 上的 Rymesh 版本 " + v.Version)
+			return n, true, nil
+		}
+		time.Sleep(time.Second)
+	}
+	return n, true, errors.New("已取得令牌，但连不上 Mac 上的 Rymesh：请确认 Mac 上的 Rymesh 应用正在运行")
 }
 
 // adoptSystemNode takes over a server-wide install (`rymesh install`:

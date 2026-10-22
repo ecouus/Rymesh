@@ -78,12 +78,43 @@ func (c *Config) findNode(id string) (NodeConfig, bool) {
 
 // nodeTokenOK reports whether r carries this node's hub token.
 func (s *Server) nodeTokenOK(r *http.Request) bool {
-	tok := s.config().NodeToken
-	if tok == "" {
+	got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok || got == "" {
 		return false
 	}
-	got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	return ok && subtle.ConstantTimeCompare([]byte(got), []byte(tok)) == 1
+	match := func(tok string) bool {
+		return tok != "" && subtle.ConstantTimeCompare([]byte(got), []byte(tok)) == 1
+	}
+	return match(s.config().NodeToken) || match(s.reloadNodeToken())
+}
+
+// reloadNodeToken picks up a token that `rymesh node token` wrote to
+// config.json while this console runs: a hub adopting a Mac app's console
+// gets the token over SSH and uses it at once, without a restart. The file is
+// read at most once a second, however many requests carry a wrong token.
+func (s *Server) reloadNodeToken() string {
+	if s.cfgPath == "" {
+		return ""
+	}
+	s.tokenMu.Lock()
+	defer s.tokenMu.Unlock()
+	if time.Since(s.tokenRead) < time.Second {
+		return ""
+	}
+	s.tokenRead = time.Now()
+	b, err := os.ReadFile(s.cfgPath)
+	if err != nil {
+		return ""
+	}
+	var f struct {
+		NodeToken string `json:"node_token"`
+	}
+	if json.Unmarshal(b, &f) != nil || f.NodeToken == "" || f.NodeToken == s.config().NodeToken {
+		return ""
+	}
+	s.updateConfig(func(c *Config) { c.NodeToken = f.NodeToken })
+	s.logger.Printf("node token reloaded from %s", s.cfgPath)
+	return f.NodeToken
 }
 
 var nodeTransport = &http.Transport{
@@ -288,11 +319,11 @@ func (s *Server) handleNodeSelf(w http.ResponseWriter, r *http.Request) {
 }
 
 // Login state belongs to the hub. These must never reach a node: the node
-// would set its own cookie on the hub's origin or change its own password.
+// would set its own cookie on the hub's origin.
 var errNodeToken = errors.New("node rejected token")
 
 var hubOnlyPaths = map[string]bool{
-	"/api/login": true, "/api/logout": true, "/api/password": true, "/api/session": true,
+	"/api/login/ticket": true, "/api/session": true,
 }
 
 func (s *Server) handleNodeProxy(w http.ResponseWriter, r *http.Request) {

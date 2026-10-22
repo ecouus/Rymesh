@@ -4,9 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,27 +21,24 @@ const (
 	defaultLogDir     = "/var/log/rymesh"
 	defaultPort       = 8899
 	configVersion     = 1
-	defaultPassword   = "admin"
 )
 
 type Config struct {
-	Version            int      `json:"version"`
-	Port               int      `json:"port"`
-	ListenAddrs        []string `json:"listen_addrs,omitempty"` // explicit addresses; empty = auto
-	EasyTierIface      string   `json:"easytier_interface"`
-	AllowPublicBind    bool     `json:"allow_public_bind"`
-	DefaultCWD         string   `json:"default_cwd"`
-	AllowedRoots       []string `json:"allowed_roots"`
-	MaxConcurrent      int      `json:"max_concurrent"`
-	DataDir            string   `json:"data_dir"`
-	LogDir             string   `json:"log_dir"`
-	PasswordHash       string   `json:"password_hash"`
-	MustChangePassword bool     `json:"must_change_password,omitempty"`
-	Secret             string   `json:"secret"`
-	SessionTTLHours    int      `json:"session_ttl_hours"`
-	PermissionTTLMin   int      `json:"permission_ttl_minutes"`
-	TaskLogMaxBytes    int64    `json:"task_log_max_bytes"`
-	ImportOnStart      bool     `json:"import_on_start"`
+	Version          int      `json:"version"`
+	Port             int      `json:"port"`
+	ListenAddrs      []string `json:"listen_addrs,omitempty"` // explicit addresses; empty = auto
+	EasyTierIface    string   `json:"easytier_interface"`
+	AllowPublicBind  bool     `json:"allow_public_bind"`
+	DefaultCWD       string   `json:"default_cwd"`
+	AllowedRoots     []string `json:"allowed_roots"`
+	MaxConcurrent    int      `json:"max_concurrent"`
+	DataDir          string   `json:"data_dir"`
+	LogDir           string   `json:"log_dir"`
+	Secret           string   `json:"secret"`
+	SessionTTLHours  int      `json:"session_ttl_hours"`
+	PermissionTTLMin int      `json:"permission_ttl_minutes"`
+	TaskLogMaxBytes  int64    `json:"task_log_max_bytes"`
+	ImportOnStart    bool     `json:"import_on_start"`
 	// ImportHistoryLimit caps how many events a native snapshot shows in the
 	// console. Native resume is unaffected. 0 = show everything.
 	ImportHistoryLimit int `json:"import_history_limit"`
@@ -122,9 +117,6 @@ func (c *Config) normalize() error {
 	// publicly known key, so anyone could mint a valid session cookie.
 	if strings.TrimSpace(c.Secret) == "" {
 		return errors.New("config secret is empty; refusing to sign sessions with a known key (run: rymesh install, or set a random secret)")
-	}
-	if c.PasswordHash == "" {
-		return errors.New("config password_hash is empty")
 	}
 	if c.MaxConcurrent < 1 {
 		c.MaxConcurrent = 1
@@ -258,16 +250,14 @@ func saveConfig(path string, c *Config) error {
 	return os.Rename(tmp, path)
 }
 
-func newConfig() (*Config, string, error) {
+func newConfig() (*Config, error) {
 	c := defaultConfig()
 	secret, err := randomBytes(32)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	c.Secret = base64.StdEncoding.EncodeToString(secret)
-	c.PasswordHash = hashPassword(defaultPassword)
-	c.MustChangePassword = true
-	return c, defaultPassword, nil
+	return c, nil
 }
 
 func (c *Config) ensureDirs() error {
@@ -290,27 +280,6 @@ func randomBytes(n int) ([]byte, error) {
 	return b, nil
 }
 
-func randomPassword() (string, error) {
-	const alphabet = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-	b := make([]byte, 24)
-	raw := make([]byte, len(b))
-	if _, err := rand.Read(raw); err != nil {
-		return "", err
-	}
-	for i := range b {
-		b[i] = alphabet[int(raw[i])%len(alphabet)]
-	}
-	// Group in fours so it is practical to type on a phone.
-	var out strings.Builder
-	for i, ch := range b {
-		if i > 0 && i%4 == 0 {
-			out.WriteByte('-')
-		}
-		out.WriteByte(ch)
-	}
-	return out.String(), nil
-}
-
 func randomID(n int) string {
 	b, err := randomBytes(n)
 	if err != nil {
@@ -327,64 +296,6 @@ func newUUID() string {
 	b[6] = (b[6] & 0x0f) | 0x40
 	b[8] = (b[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
-}
-
-// PBKDF2-HMAC-SHA256, implemented locally so the build has no crypto deps.
-func pbkdf2Key(password, salt []byte, iter, keyLen int) []byte {
-	prf := hmac.New(sha256.New, password)
-	hashLen := prf.Size()
-	numBlocks := (keyLen + hashLen - 1) / hashLen
-	var buf [4]byte
-	dk := make([]byte, 0, numBlocks*hashLen)
-	u := make([]byte, hashLen)
-	for block := 1; block <= numBlocks; block++ {
-		prf.Reset()
-		prf.Write(salt)
-		binary.BigEndian.PutUint32(buf[:], uint32(block))
-		prf.Write(buf[:])
-		dk = prf.Sum(dk)
-		t := dk[len(dk)-hashLen:]
-		copy(u, t)
-		for n := 2; n <= iter; n++ {
-			prf.Reset()
-			prf.Write(u)
-			u = prf.Sum(u[:0])
-			for x := range u {
-				t[x] ^= u[x]
-			}
-		}
-	}
-	return dk[:keyLen]
-}
-
-func hashPassword(pw string) string {
-	salt, _ := randomBytes(16)
-	const iter = 120000
-	key := pbkdf2Key([]byte(pw), salt, iter, 32)
-	return fmt.Sprintf("pbkdf2-sha256$%d$%s$%s", iter,
-		base64.RawStdEncoding.EncodeToString(salt),
-		base64.RawStdEncoding.EncodeToString(key))
-}
-
-func verifyPassword(encoded, pw string) bool {
-	parts := strings.Split(encoded, "$")
-	if len(parts) != 4 || parts[0] != "pbkdf2-sha256" {
-		return false
-	}
-	var iter int
-	if _, err := fmt.Sscanf(parts[1], "%d", &iter); err != nil || iter < 1000 {
-		return false
-	}
-	salt, err := base64.RawStdEncoding.DecodeString(parts[2])
-	if err != nil {
-		return false
-	}
-	want, err := base64.RawStdEncoding.DecodeString(parts[3])
-	if err != nil {
-		return false
-	}
-	got := pbkdf2Key([]byte(pw), salt, iter, len(want))
-	return subtle.ConstantTimeCompare(got, want) == 1
 }
 
 func (c *Config) sign(data []byte) []byte {

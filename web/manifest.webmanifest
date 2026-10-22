@@ -1,7 +1,7 @@
 {
   "name": "Rymesh",
   "short_name": "Rymesh",
-  "description": "Codex CLI 与 Claude Code 的手机端控制台（EasyTier 内网）",
+  "description": "Codex CLI 与 Claude Code 的远程控制台",
   "lang": "zh-CN",
   "start_url": "/",
   "scope": "/",

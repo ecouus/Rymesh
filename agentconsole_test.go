@@ -2,7 +2,6 @@ package console
 
 import (
 	"bufio"
-	"bytes"
 	"compress/gzip"
 	"encoding/base64"
 	"encoding/json"
@@ -27,24 +26,7 @@ func testConfig(t *testing.T) *Config {
 	cfg.AllowedRoots = []string{cfg.DataDir}
 	cfg.DefaultCWD = cfg.DataDir
 	cfg.Secret = base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
-	cfg.PasswordHash = hashPassword("correct horse battery staple")
 	return cfg
-}
-
-func TestPasswordHashing(t *testing.T) {
-	h := hashPassword("s3cret-passphrase")
-	if !verifyPassword(h, "s3cret-passphrase") {
-		t.Fatal("correct password rejected")
-	}
-	if verifyPassword(h, "wrong") {
-		t.Fatal("wrong password accepted")
-	}
-	if verifyPassword("garbage", "x") {
-		t.Fatal("malformed hash accepted")
-	}
-	if hashPassword("a") == hashPassword("a") {
-		t.Fatal("hashes must use a random salt")
-	}
 }
 
 func TestAllowedCWD(t *testing.T) {
@@ -121,52 +103,6 @@ func TestAuthTokenVerification(t *testing.T) {
 	other := newAuthManager(&Config{Secret: base64.StdEncoding.EncodeToString([]byte("another-secret-another-secret-xx")), SessionTTLHours: 1})
 	if _, ok := other.verifyToken(tok); ok {
 		t.Fatal("token signed with another secret accepted")
-	}
-}
-
-func TestLoginLockout(t *testing.T) {
-	cfg := testConfig(t)
-	a := newAuthManager(cfg)
-	ip := "192.0.2.10"
-	for i := 0; i < 5; i++ {
-		if ok, _ := a.loginAllowed(ip); !ok {
-			t.Fatalf("locked too early at attempt %d", i+1)
-		}
-		a.loginFailed(ip)
-	}
-	if ok, wait := a.loginAllowed(ip); ok || wait <= 0 {
-		t.Fatal("expected lockout after five failures")
-	}
-	if ok, _ := a.loginAllowed("192.0.2.11"); !ok {
-		t.Fatal("lockout leaked to another IP")
-	}
-	a.loginOK(ip)
-	if ok, _ := a.loginAllowed(ip); !ok {
-		t.Fatal("successful login did not clear lockout")
-	}
-}
-
-func TestDefaultPasswordRequiresChange(t *testing.T) {
-	cfg, pw, err := newConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if pw != defaultPassword || !cfg.MustChangePassword {
-		t.Fatalf("new config: pw=%q must_change=%v", pw, cfg.MustChangePassword)
-	}
-	if !verifyPassword(cfg.PasswordHash, defaultPassword) {
-		t.Fatal("default password hash does not verify")
-	}
-	a := newAuthManager(cfg)
-	if !a.mustChangePassword() {
-		t.Fatal("auth manager did not report required change")
-	}
-	a.changePassword(hashPassword("x"), false)
-	if a.mustChangePassword() {
-		t.Fatal("password change did not clear the flag")
-	}
-	if !a.verifyPassword("x") {
-		t.Fatal("changed password rejected")
 	}
 }
 
@@ -784,7 +720,6 @@ func TestNormalizeEvents(t *testing.T) {
 func TestImportExcludeRootsNormalize(t *testing.T) {
 	cfg := defaultConfig()
 	cfg.Secret = "c2VjcmV0"
-	cfg.PasswordHash = hashPassword("x")
 	cfg.ImportExcludeRoots = []string{"/tmp/ac-*", "/tmp/ac-*", "/tmp/ac-*/"}
 	if err := cfg.normalize(); err != nil {
 		t.Fatal(err)
@@ -1826,16 +1761,14 @@ func TestAppConfigSwapKeepsAuthInSync(t *testing.T) {
 	cfg := testConfig(t)
 	srv := newServer(cfg, "", st, log.New(io.Discard, "", 0), nil)
 
-	if !srv.auth.verifyPassword("correct horse battery staple") {
-		t.Fatal("initial password rejected")
+	tok := srv.auth.token()
+	if _, ok := srv.auth.verifyToken(tok); !ok {
+		t.Fatal("fresh token rejected")
 	}
-	newHash := hashPassword("new secret")
-	srv.updateConfig(func(c *Config) { c.PasswordHash = newHash; c.MaxConcurrent = 2 })
-	if srv.auth.verifyPassword("correct horse battery staple") {
-		t.Fatal("old password still accepted after config swap")
-	}
-	if !srv.auth.verifyPassword("new secret") {
-		t.Fatal("new password rejected after config swap")
+	secret := base64.StdEncoding.EncodeToString([]byte("a-brand-new-secret-0123456789"))
+	srv.updateConfig(func(c *Config) { c.Secret = secret; c.MaxConcurrent = 2 })
+	if _, ok := srv.auth.verifyToken(tok); ok {
+		t.Fatal("token signed with the old secret accepted after config swap")
 	}
 	// The rest of the config must survive the swap.
 	if got := srv.config().MaxConcurrent; got != 2 {
@@ -1885,27 +1818,13 @@ func TestDeleteSessionRemovesTaskDirs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	body, _ := json.Marshal(map[string]string{"password": "correct horse battery staple"})
-	r := httptest.NewRequest("POST", "/api/login", bytes.NewReader(body))
 	w := httptest.NewRecorder()
-	srv.mux.ServeHTTP(w, r)
-	var ck *http.Cookie
-	for _, c := range w.Result().Cookies() {
-		if c.Name == sessionCookie {
-			ck = c
-		}
-	}
-	var loginResp struct {
-		CSRF string `json:"csrf"`
-	}
-	json.Unmarshal(w.Body.Bytes(), &loginResp)
-	if loginResp.CSRF == "" {
-		t.Fatal("login did not return a CSRF token")
-	}
+	csrf := srv.auth.setCookie(w)
+	ck := w.Result().Cookies()[0]
 
-	r = httptest.NewRequest("DELETE", "/api/sessions/"+sess.ID+"?confirm="+sess.ID, nil)
+	r := httptest.NewRequest("DELETE", "/api/sessions/"+sess.ID+"?confirm="+sess.ID, nil)
 	r.AddCookie(ck)
-	r.Header.Set("X-CSRF-Token", loginResp.CSRF)
+	r.Header.Set("X-CSRF-Token", csrf)
 	w = httptest.NewRecorder()
 	srv.mux.ServeHTTP(w, r)
 	if w.Code != 200 {
@@ -1974,11 +1893,30 @@ func TestReconcileInterruptsPreviousBoot(t *testing.T) {
 	}
 }
 
+// There is no password login: only the one-time ticket signs a browser in.
+func TestNoPasswordLogin(t *testing.T) {
+	st, err := openStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	srv := newServer(testConfig(t), "", st, log.New(io.Discard, "", 0), nil)
+	for _, p := range []string{"/api/login", "/api/password", "/api/logout"} {
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, httptest.NewRequest("POST", p, strings.NewReader(`{"password":"admin"}`)))
+		if rec.Code != http.StatusNotFound && rec.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("%s = %d, want no such endpoint", p, rec.Code)
+		}
+		if len(rec.Result().Cookies()) != 0 {
+			t.Fatalf("%s set a cookie", p)
+		}
+	}
+}
+
 // Signing session cookies with an empty secret uses a publicly known HMAC key,
 // so a config without one must be rejected instead of starting insecurely.
 func TestConfigRejectsEmptySecret(t *testing.T) {
 	cfg := defaultConfig()
-	cfg.PasswordHash = hashPassword("x")
 	cfg.Secret = ""
 	if err := cfg.normalize(); err == nil {
 		t.Fatal("empty secret accepted")
@@ -1990,29 +1928,6 @@ func TestConfigRejectsEmptySecret(t *testing.T) {
 	cfg.Secret = "c2VjcmV0"
 	if err := cfg.normalize(); err != nil {
 		t.Fatalf("valid secret rejected: %v", err)
-	}
-	cfg.Secret = "c2VjcmV0"
-	cfg.PasswordHash = ""
-	if err := cfg.normalize(); err == nil {
-		t.Fatal("empty password hash accepted")
-	}
-}
-
-// Changing the password must invalidate cookies issued under the old secret.
-func TestPasswordChangeInvalidatesOldTokens(t *testing.T) {
-	cfg := testConfig(t)
-	auth := newAuthManager(cfg)
-	tok := auth.token()
-	if _, ok := auth.verifyToken(tok); !ok {
-		t.Fatal("fresh token rejected")
-	}
-	// rotate the secret the way a password change does
-	next := *cfg
-	next.Secret = base64.StdEncoding.EncodeToString([]byte("a-brand-new-secret-0123456789"))
-	next.PasswordHash = hashPassword("new")
-	auth.setConfig(&next)
-	if _, ok := auth.verifyToken(tok); ok {
-		t.Fatal("token still valid after secret rotation")
 	}
 }
 
@@ -2418,7 +2333,7 @@ func TestHubRelaysNodeAPI(t *testing.T) {
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "on the mac") {
 		t.Fatalf("relayed sessions: %d %s", rec.Code, rec.Body.String())
 	}
-	if rec := do("POST", "/n/mac/api/logout"); rec.Code != 403 {
+	if rec := do("GET", "/n/mac/api/session"); rec.Code != 403 {
 		t.Fatalf("hub-only path relayed: %d", rec.Code)
 	}
 	if rec := do("GET", "/n/bad/api/sessions"); rec.Code != http.StatusBadGateway {

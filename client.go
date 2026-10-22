@@ -25,6 +25,11 @@ import (
 
 const ticketFile = "login-ticket"
 
+// clientBinFile records the program that runs this machine's console, so a
+// hub adopting it over SSH can ask that program for a node token
+// (devices.go adoptClient); the Mac app's copy lives inside its bundle.
+const clientBinFile = "client-binary"
+
 func clientMain(args []string) int {
 	sub := ""
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
@@ -80,6 +85,7 @@ func clientMain(args []string) int {
 		exe, _ := os.Executable()
 		exe, _ = filepath.EvalSymlinks(exe)
 		base := filepath.Dir(*configPath)
+		_ = os.WriteFile(filepath.Join(base, clientBinFile), []byte(exe+"\n"), 0o600)
 		if running := runningBuild(cfg.Port); running != "" && (running != buildID() || serviceUsesOther(exe)) {
 			fmt.Println("正在运行的控制台不是当前这个程序，正在切换…")
 			stopClientService(base)

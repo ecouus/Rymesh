@@ -37,8 +37,6 @@ func Main() {
 		os.Exit(installMain(os.Args[2:]))
 	case "status":
 		os.Exit(statusMain(os.Args[2:]))
-	case "password":
-		os.Exit(passwordMain(os.Args[2:]))
 	case "import":
 		os.Exit(importMain(os.Args[2:]))
 	case "node":
@@ -77,11 +75,6 @@ func help() {
   rymesh install [选项]      在服务器上生成配置、安装 systemd、开机自启并启动
   rymesh serve               前台运行 Web 服务（systemd 使用）
   rymesh status              查看服务、Agent、任务与会话状态
-  rymesh password            查看当前密码
-  rymesh password --set NEW  修改密码并重启服务
-  rymesh password --generate 生成新密码并重启服务
-  rymesh password --force-change
-                                   设置密码后要求下次登录时修改
   rymesh import              重新导入原生 Codex / Claude 历史会话
   rymesh tasks [--all]       查看任务
   rymesh cancel <task-id>    取消任务
@@ -95,9 +88,10 @@ install 选项:
   --data DIR          数据目录（默认 /var/lib/rymesh）
   --log DIR           日志目录（默认 /var/log/rymesh）
   --no-start          只写配置和 systemd 单元，不启动
-  --reset-password    将登录密码重置为默认密码 admin，并要求首次登录修改
 
 安全说明:
+  - 没有密码登录：Mac / Android 应用和 rymesh client open 用一次性票据登录，
+    主控用节点令牌访问节点。
   - 只监听 127.0.0.1 与 EasyTier 网卡地址，不监听 0.0.0.0。
   - Agent 的权限请求与提问出现在网页上，由你选择允许一次、本会话允许、始终允许或拒绝，
     与终端里的 CLI 一致。
@@ -218,7 +212,6 @@ func installMain(args []string) int {
 	dataDir := fset.String("data", "", "data dir")
 	logDir := fset.String("log", "", "log dir")
 	noStart := fset.Bool("no-start", false, "do not start")
-	resetPW := fset.Bool("reset-password", false, "reset password")
 	unitPath := fset.String("unit", "/etc/systemd/system/rymesh.service", "systemd unit path")
 	noEnable := fset.Bool("no-enable", false, "do not enable at boot")
 	if err := fset.Parse(args); err != nil {
@@ -234,13 +227,12 @@ func installMain(args []string) int {
 		*configPath = defaultConfigPath
 	}
 	cfg, err := loadConfig(*configPath)
-	newPW := ""
 	if err != nil {
 		if !os.IsNotExist(err) {
 			fmt.Fprintln(os.Stderr, "读取配置失败:", err)
 			return 1
 		}
-		cfg, newPW, err = newConfig()
+		cfg, err = newConfig()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "生成配置失败:", err)
 			return 1
@@ -255,13 +247,6 @@ func installMain(args []string) int {
 	if *logDir != "" {
 		cfg.LogDir = *logDir
 	}
-	// password.txt is removed once the password is changed, so its absence
-	// must not be read as "no password yet": that would reset it to the default.
-	if *resetPW || newPW == "" && cfg.PasswordHash == "" {
-		cfg.PasswordHash = hashPassword(defaultPassword)
-		cfg.MustChangePassword = true
-		newPW = defaultPassword
-	}
 	if err := cfg.normalize(); err != nil {
 		fmt.Fprintln(os.Stderr, "配置无效:", err)
 		return 1
@@ -274,10 +259,8 @@ func installMain(args []string) int {
 		fmt.Fprintln(os.Stderr, "保存配置失败:", err)
 		return 1
 	}
-	if newPW != "" {
-		_ = os.WriteFile(filepath.Join(filepath.Dir(*configPath), "password.txt"),
-			[]byte(newPW+"\n"), 0o600)
-	}
+	// Left by versions that had a password login.
+	_ = os.Remove(filepath.Join(filepath.Dir(*configPath), "password.txt"))
 	exe, _ := os.Executable()
 	exe, _ = filepath.Abs(exe)
 	unit := systemdUnit(exe, *configPath)
@@ -310,11 +293,8 @@ func installMain(args []string) int {
 	for _, a := range addrs {
 		fmt.Println("  访问:   http://" + a)
 	}
-	if pw := readPasswordFile(*configPath); pw != "" {
-		fmt.Println("  密码:   " + pw + "   (rymesh password 可再次查看)")
-	}
 	fmt.Println()
-	fmt.Println("手机连接 EasyTier 后，打开上面的 EasyTier 地址即可。")
+	fmt.Println("在 Mac 或 Android 应用里通过 SSH 添加这台服务器即可使用（部署会接管本安装）。")
 	return 0
 }
 
@@ -371,14 +351,6 @@ func waitHealth(port int, timeout time.Duration) {
 func fileExists(p string) bool {
 	_, err := os.Stat(p)
 	return err == nil
-}
-
-func readPasswordFile(configPath string) string {
-	b, err := os.ReadFile(filepath.Join(filepath.Dir(configPath), "password.txt"))
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(b))
 }
 
 // pidFilePath keeps separate instances from clobbering each other's PID file
@@ -449,54 +421,6 @@ func statusMain(args []string) int {
 	return 0
 }
 
-func passwordMain(args []string) int {
-	fset := flag.NewFlagSet("password", flag.ContinueOnError)
-	configPath := fset.String("config", systemConfigPath(), "config path")
-	set := fset.String("set", "", "set a new password")
-	gen := fset.Bool("generate", false, "generate a new password")
-	forceChange := fset.Bool("force-change", false, "require a password change on next login")
-	noRestart := fset.Bool("no-restart", false, "do not restart service")
-	_ = fset.Parse(args)
-	cfg, err := loadConfig(*configPath)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "读取配置失败:", err)
-		return 1
-	}
-	if *set == "" && !*gen {
-		pw := readPasswordFile(*configPath)
-		if pw == "" {
-			fmt.Fprintln(os.Stderr, "没有保存明文密码（修改密码后不再保留）；请用 --generate 或 --set 重置。")
-			return 1
-		}
-		fmt.Println(pw)
-		return 0
-	}
-	pw := *set
-	if *gen || pw == "" {
-		pw, err = randomPassword()
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 1
-		}
-	}
-	cfg.PasswordHash = hashPassword(pw)
-	cfg.MustChangePassword = *forceChange
-	if err := saveConfig(*configPath, cfg); err != nil {
-		fmt.Fprintln(os.Stderr, "保存失败:", err)
-		return 1
-	}
-	// The new password is shown once here and not persisted in plain text.
-	_ = os.Remove(filepath.Join(filepath.Dir(*configPath), "password.txt"))
-	fmt.Println("新密码:", pw)
-	if !*noRestart {
-		if out, err := runSystemctl("restart", "rymesh"); err != nil {
-			fmt.Fprintf(os.Stderr, "重启服务失败: %v\n%s\n", err, out)
-		} else {
-			fmt.Println("服务已重启；后台 Agent 任务因 KillMode=process 不受影响。")
-		}
-	}
-	return 0
-}
 
 func importMain(args []string) int {
 	fset := flag.NewFlagSet("import", flag.ContinueOnError)

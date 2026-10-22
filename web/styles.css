@@ -623,6 +623,16 @@ textarea.input { display: block; resize: vertical; font-size: 12px; }
 .menu-section { font-size: 11px; color: var(--text-faint); padding: 8px 12px 4px; }
 .effort-row { display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 8px 6px; }
 .model-menu { max-height: min(60vh, 460px); overflow-y: auto; }
+/* Search stays at the top while the list scrolls under it. */
+.model-search {
+  position: sticky; top: -5px; z-index: 1; display: flex; align-items: center; gap: 8px;
+  margin: -5px -5px 2px; padding: 9px 12px; background: var(--bg); border-bottom: 1px solid var(--line-soft);
+  border-radius: 14px 14px 0 0; color: var(--text-faint);
+}
+.model-search input { flex: 1; min-width: 0; border: 0; outline: none; background: transparent; color: var(--text); font-size: 14px; padding: 2px 0; }
+.model-search input::-webkit-search-cancel-button { display: none; }
+.model-none { color: var(--text-faint); font-size: 13px; cursor: default; }
+.model-none:hover { background: transparent; }
 .slash-menu { max-width: 460px; max-height: min(50vh, 420px); overflow-y: auto; }
 .menu-item.hl { background: var(--hover); }
 .menu-label .muted { font-size: 12px; }

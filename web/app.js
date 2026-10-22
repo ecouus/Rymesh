@@ -3133,6 +3133,8 @@
   var modelMenuRequest = 0;
   function closeModelMenu() {
     modelMenuRequest++;
+    S.modelQuery = "";
+    S.modelQueryFocused = false;
     $("#model-menu").hidden = true;
     $("#model-btn").setAttribute("aria-expanded", "false");
   }
@@ -3165,15 +3167,26 @@
   function renderModelMenu(d, refreshing, failed) {
     var menu = $("#model-menu");
     var st = currentSettings();
+    // A refresh redraws the menu; whoever is typing in the search box keeps
+    // their text and cursor.
+    var old = menu.querySelector(".model-search input");
+    var typing = old && document.activeElement === old;
+    var caret = typing ? old.selectionStart : 0;
     var models = d.models || [];
     var cur = models.filter(function (m) { return m.id === (st.model || ""); })[0] ||
       models.filter(function (m) { return m.default; })[0];
     var efforts = (cur && cur.efforts && cur.efforts.length ? cur.efforts : d.efforts) || [];
-    menu.innerHTML = '<div class="menu-section">模型' +
+    var searchable = (d.models || []).length > 8;
+    menu.innerHTML = (searchable ? '<div class="model-search"><svg class="ico sm" viewBox="0 0 24 24" aria-hidden="true">' +
+      '<circle cx="11" cy="11" r="6"/><path d="m20 20-4.5-4.5"/></svg>' +
+      '<input type="search" placeholder="搜索模型" autocomplete="off" autocapitalize="off" spellcheck="false" value="' +
+      esc(S.modelQuery || "") + '"></div>' : "") +
+      '<div class="menu-section">模型' +
       (refreshing ? ' <span class="spinner sm"></span>' : failed ? ' <span class="menu-stale" title="' + esc(failed) + '">（未能刷新，显示上次的列表）</span>' : "") +
       "</div>" + models.map(function (m) {
       var on = (st.model || "") === m.id || (!st.model && !m.id);
-      return '<button type="button" class="menu-item' + (on ? " on" : "") + '" data-model="' + esc(m.id) + '">' +
+      return '<button type="button" class="menu-item' + (on ? " on" : "") + '" data-model="' + esc(m.id) + '" data-find="' +
+        esc((m.label + " " + m.id).toLowerCase()) + '">' +
         '<span class="menu-text"><span class="menu-label">' + esc(m.label) + (m.default && m.id ? "（默认）" : "") + "</span>" +
         (m.id ? '<span class="menu-detail mono">' + esc(m.id) + "</span>" : "") + "</span>" +
         '<svg class="ico sm menu-check" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg></button>';
@@ -3182,6 +3195,43 @@
         .concat(efforts.map(function (e) {
           return '<button type="button" class="chip' + (st.effort === e ? " active" : "") + '" data-effort="' + esc(e) + '">' + esc(e) + "</button>";
         })).join("") + "</div>" : "");
+    var input = menu.querySelector(".model-search input");
+    if (!input) return;
+    var empty = document.createElement("div");
+    empty.className = "menu-item model-none";
+    empty.textContent = "没有匹配的模型";
+    var items = $$("[data-model]", menu);
+    if (items.length) items[items.length - 1].after(empty);
+    filterModels(input.value);
+    input.addEventListener("input", function () { S.modelQuery = this.value; filterModels(this.value); });
+    input.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") { e.preventDefault(); closeModelMenu(); return; }
+      if (e.key === "Enter") {
+        e.preventDefault();
+        var first = $$("[data-model]", menu).filter(function (b) { return !b.hidden; })[0];
+        if (first) first.click();
+      }
+    });
+    // Typing straight away on a computer; on a phone the keyboard waits for a tap.
+    if (typing || (!refreshing && !failed && matchMedia("(pointer: fine)").matches && !S.modelQueryFocused)) {
+      input.focus();
+      if (typing) input.setSelectionRange(caret, caret);
+      S.modelQueryFocused = true;
+    }
+  }
+
+  // filterModels keeps the models whose name or id contains every word typed.
+  function filterModels(q) {
+    var menu = $("#model-menu");
+    var words = String(q || "").toLowerCase().split(/\s+/).filter(Boolean);
+    var shown = 0;
+    $$("[data-model]", menu).forEach(function (b) {
+      var hay = b.getAttribute("data-find") || "";
+      b.hidden = !words.every(function (w) { return hay.indexOf(w) >= 0; });
+      if (!b.hidden) shown++;
+    });
+    var none = menu.querySelector(".model-none");
+    if (none) none.hidden = shown > 0;
   }
 
   $("#model-btn").addEventListener("click", function (e) {

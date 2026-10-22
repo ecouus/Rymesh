@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -118,9 +119,10 @@ func TestSettingsReachTheCLI(t *testing.T) {
 	if !strings.Contains(args, "--model sonnet") || !strings.Contains(args, "--effort high") {
 		t.Fatalf("args = %s", args)
 	}
-	cmd, _ = buildAgentCommand(TaskSpec{Agent: "claude", Profile: "manual", IsNew: true, NativeID: "x", Effort: "bogus"}, "/tmp")
+	// Levels the CLI reports pass through; a malformed value never does.
+	cmd, _ = buildAgentCommand(TaskSpec{Agent: "claude", Profile: "manual", IsNew: true, NativeID: "x", Effort: "--debug"}, "/tmp")
 	if strings.Contains(strings.Join(cmd.Args, " "), "--effort") {
-		t.Fatal("unknown effort passed to the CLI")
+		t.Fatal("malformed effort passed to the CLI")
 	}
 }
 
@@ -192,5 +194,44 @@ func TestCodexTurnCarriesModelAndEffort(t *testing.T) {
 	settings := p["collaborationMode"].(map[string]any)["settings"].(map[string]any)
 	if p["model"] != "gpt-a" || p["effort"] != "low" || settings["reasoning_effort"] != "low" || settings["model"] != "gpt-a" {
 		t.Fatalf("turn/start params = %v", p)
+	}
+}
+
+func TestValidEffortFollowsTheCLI(t *testing.T) {
+	// Levels come from the CLI's model list; a new one passes unchanged.
+	for _, e := range []string{"low", "xhigh", "max", "ultra", "high-2"} {
+		if !validEffort(e) {
+			t.Errorf("%q rejected", e)
+		}
+	}
+	for _, e := range []string{"", "HIGH", "a b", "--model", "x;rm", strings.Repeat("a", 30)} {
+		if validEffort(e) {
+			t.Errorf("%q accepted", e)
+		}
+	}
+}
+
+func TestModelQueryTakesItsChildrenDown(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "child")
+	// A CLI that starts a helper (an MCP server, say) and keeps running.
+	_, _, cleanup, err := startModelQuery(t.Context(), "/bin/sh", "-c", "sleep 60 & echo $! > "+pidFile+"; sleep 60")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var child int
+	for i := 0; i < 50 && child == 0; i++ {
+		time.Sleep(20 * time.Millisecond)
+		b, _ := os.ReadFile(pidFile)
+		child, _ = strconv.Atoi(strings.TrimSpace(string(b)))
+	}
+	if child == 0 {
+		t.Fatal("helper did not start")
+	}
+	cleanup()
+	for i := 0; i < 50 && processAlive(child); i++ {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if processAlive(child) {
+		t.Fatalf("helper %d outlived the query", child)
 	}
 }

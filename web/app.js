@@ -3137,35 +3137,51 @@
     $("#model-btn").setAttribute("aria-expanded", "false");
   }
 
-  function openModelMenu() {
+  // The list always comes from the selected device's CLI, but the last one is
+  // shown at once while the fresh one loads (Codex takes seconds to answer).
+  // refresh=false redraws from that copy only (after a choice).
+  function openModelMenu(refresh) {
     var agent = currentAgentName(), menu = $("#model-menu");
     var key = cacheKey(agent), request = ++modelMenuRequest;
-    menu.innerHTML = '<div class="menu-item"><span class="spinner"></span> 读取模型列表…</div>';
+    var cached = S.models[key];
     menu.hidden = false;
     $("#model-btn").setAttribute("aria-expanded", "true");
+    if (cached) renderModelMenu(cached, refresh !== false);
+    else menu.innerHTML = '<div class="menu-item"><span class="spinner"></span> 正在向 ' + esc(nodeLabel(S.node)) + " 查询模型列表…</div>";
+    if (refresh === false && cached) return;
     loadModels(agent).then(function (d) {
       if (request !== modelMenuRequest || key !== cacheKey(currentAgentName())) return;
       S.models[key] = d; // Retain only the accepted result for button labels.
-      var st = currentSettings();
-      var models = d.models || [];
-      var cur = models.filter(function (m) { return m.id === (st.model || ""); })[0] ||
-        models.filter(function (m) { return m.default; })[0];
-      var efforts = (cur && cur.efforts && cur.efforts.length ? cur.efforts : d.efforts) || [];
-      menu.innerHTML = '<div class="menu-section">模型</div>' + models.map(function (m) {
-        var on = (st.model || "") === m.id || (!st.model && !m.id);
-        return '<button type="button" class="menu-item' + (on ? " on" : "") + '" data-model="' + esc(m.id) + '">' +
-          '<span class="menu-text"><span class="menu-label">' + esc(m.label) + (m.default && m.id ? "（默认）" : "") + "</span>" +
-          (m.id ? '<span class="menu-detail mono">' + esc(m.id) + "</span>" : "") + "</span>" +
-          '<svg class="ico sm menu-check" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg></button>';
-      }).join("") + (efforts.length ? '<div class="menu-section">推理强度</div><div class="effort-row">' +
-        ['<button type="button" class="chip' + (!st.effort ? " active" : "") + '" data-effort="">默认</button>']
-          .concat(efforts.map(function (e) {
-            return '<button type="button" class="chip' + (st.effort === e ? " active" : "") + '" data-effort="' + esc(e) + '">' + esc(e) + "</button>";
-          })).join("") + "</div>" : "");
+      renderModelMenu(d, false);
+      syncModelBtn();
     }).catch(function (e) {
       if (request !== modelMenuRequest || key !== cacheKey(currentAgentName())) return;
-      menu.innerHTML = '<div class="menu-item">' + esc(e.message) + "</div>";
+      if (cached) { renderModelMenu(cached, false, e.message); return; }
+      menu.innerHTML = '<div class="menu-item menu-error">' + esc(e.message) +
+        '<div class="menu-detail">仍可直接输入 <code>/model 模型名</code> 切换。</div></div>';
     });
+  }
+
+  function renderModelMenu(d, refreshing, failed) {
+    var menu = $("#model-menu");
+    var st = currentSettings();
+    var models = d.models || [];
+    var cur = models.filter(function (m) { return m.id === (st.model || ""); })[0] ||
+      models.filter(function (m) { return m.default; })[0];
+    var efforts = (cur && cur.efforts && cur.efforts.length ? cur.efforts : d.efforts) || [];
+    menu.innerHTML = '<div class="menu-section">模型' +
+      (refreshing ? ' <span class="spinner sm"></span>' : failed ? ' <span class="menu-stale" title="' + esc(failed) + '">（未能刷新，显示上次的列表）</span>' : "") +
+      "</div>" + models.map(function (m) {
+      var on = (st.model || "") === m.id || (!st.model && !m.id);
+      return '<button type="button" class="menu-item' + (on ? " on" : "") + '" data-model="' + esc(m.id) + '">' +
+        '<span class="menu-text"><span class="menu-label">' + esc(m.label) + (m.default && m.id ? "（默认）" : "") + "</span>" +
+        (m.id ? '<span class="menu-detail mono">' + esc(m.id) + "</span>" : "") + "</span>" +
+        '<svg class="ico sm menu-check" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg></button>';
+    }).join("") + (efforts.length ? '<div class="menu-section">推理强度</div><div class="effort-row">' +
+      ['<button type="button" class="chip' + (!st.effort ? " active" : "") + '" data-effort="">默认</button>']
+        .concat(efforts.map(function (e) {
+          return '<button type="button" class="chip' + (st.effort === e ? " active" : "") + '" data-effort="' + esc(e) + '">' + esc(e) + "</button>";
+        })).join("") + "</div>" : "");
   }
 
   $("#model-btn").addEventListener("click", function (e) {
@@ -3179,7 +3195,7 @@
     var m = e.target.closest("[data-model]");
     if (m) {
       var next = { model: m.getAttribute("data-model"), effort: st.effort || "" };
-      saveSettings(next).then(function () { toast("模型：" + $("#model-label").textContent); openModelMenu(); })
+      saveSettings(next).then(function () { toast("模型：" + $("#model-label").textContent); openModelMenu(false); })
         .catch(function (err) { toast(err.message, true); });
       return;
     }

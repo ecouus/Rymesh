@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -144,15 +145,30 @@ type modelChoice struct {
 	Description string   `json:"description,omitempty"`
 }
 
-var claudeEfforts = []string{"low", "medium", "high", "xhigh", "max"}
+// validEffort accepts a reasoning-effort name as the CLI reports it (the
+// levels come from its model list, so new ones need no change here).
+func validEffort(e string) bool {
+	if e == "" || len(e) > 24 || e[0] < 'a' || e[0] > 'z' { // never read as a flag
+		return false
+	}
+	for _, r := range e {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' && r != '_' {
+			return false
+		}
+	}
+	return true
+}
 
 // Every picker request starts a CLI on this node. Only local CLI protocol
 // messages travel through the console; the CLI owns authentication and discovery.
+// The CLI runs in its own process group so anything it spawned goes with it.
 func startModelQuery(ctx context.Context, bin string, args ...string) (io.WriteCloser, io.ReadCloser, func(), error) {
 	if bin == "" {
 		return nil, nil, nil, errors.New("Agent 不可用")
 	}
 	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	in, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, nil, nil, err
@@ -169,7 +185,7 @@ func startModelQuery(ctx context.Context, bin string, args ...string) (io.WriteC
 	}
 	return in, out, func() {
 		_ = in.Close()
-		_ = cmd.Process.Kill()
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		_ = cmd.Wait()
 	}, nil
 }
@@ -254,8 +270,11 @@ func codexModelList(ctx context.Context, bin string) ([]modelChoice, error) {
 func claudeModelList(ctx context.Context, bin string) ([]modelChoice, error) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
+	// Only the model list is read: no MCP servers start and no hooks run, so
+	// opening the picker has no side effects on the server.
 	in, out, cleanup, err := startModelQuery(ctx, bin, "-p", "--input-format", "stream-json",
-		"--output-format", "stream-json", "--verbose", "--no-session-persistence")
+		"--output-format", "stream-json", "--verbose", "--no-session-persistence",
+		"--strict-mcp-config", "--settings", `{"disableAllHooks":true}`)
 	if err != nil {
 		return nil, err
 	}

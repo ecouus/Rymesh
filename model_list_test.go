@@ -90,7 +90,8 @@ func TestModelCLIHelper(t *testing.T) {
 			}
 		}
 	} else {
-		want := []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--no-session-persistence"}
+		want := []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--no-session-persistence",
+			"--strict-mcp-config", "--settings", `{"disableAllHooks":true}`}
 		if !reflect.DeepEqual(args[2:], want) {
 			t.Fatalf("args: %v", args)
 		}

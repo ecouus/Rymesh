@@ -747,6 +747,10 @@ textarea.input { display: block; resize: vertical; font-size: 12px; }
 }
 .toast.err { background: var(--red); color: #fff; }
 .has-composer .toast { bottom: calc(var(--safe-b) + 118px); }
+.spinner.sm { width: 10px; height: 10px; border-width: 1.5px; vertical-align: -1px; margin-left: 4px; }
+.menu-stale { font-weight: 400; color: var(--amber); }
+.menu-error { display: block; white-space: normal; color: var(--text-dim); }
+.menu-error .menu-detail { margin-top: 4px; }
 .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--line); border-top-color: var(--text-dim); border-radius: 50%; animation: spin .7s linear infinite; vertical-align: -2px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }

@@ -514,10 +514,8 @@ func buildAgentCommand(spec TaskSpec, controlDir string) (*exec.Cmd, error) {
 		if spec.Model != "" {
 			args = append(args, "--model", spec.Model)
 		}
-		for _, e := range claudeEfforts {
-			if spec.Effort == e {
-				args = append(args, "--effort", e)
-			}
+		if validEffort(spec.Effort) {
+			args = append(args, "--effort", spec.Effort)
 		}
 		if profile == "bypassPermissions" {
 			args = append(args, "--dangerously-skip-permissions")

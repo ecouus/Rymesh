@@ -438,6 +438,8 @@ make macos       # → macos/dist/AgentConsole.app（Swift 外壳 + 通用二进
 App 提供独立窗口、菜单栏图标（待处理数量）、Dock 角标、审批/提问的系统通知（点击直达卡片）和“登录时打开”。
 控制台本身作为 launchd 服务运行（`com.agentconsole.node`），退出 App 不影响正在运行的 Agent；
 App 启动时若发现服务是旧版本或别处的程序，会自动切换到 App 内置的这一份。
+若在“系统设置 → 通用 → 登录项与扩展”里关闭了它的“允许在后台”，launchd 会拒绝注册服务；
+App 会提示并临时以普通后台进程运行（不会开机自启、崩溃后不自动恢复），打开开关后重新打开 App 即可。
 
 不想用 App 也可以只用命令行：`agentconsole client`（首次自动配置并注册 launchd，免密打开浏览器）、
 `agentconsole client open`。

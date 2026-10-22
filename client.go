@@ -70,13 +70,15 @@ func clientMain(args []string) int {
 		exe, _ = filepath.EvalSymlinks(exe)
 		if running := runningBuild(cfg.Port); running != "" && (running != buildID() || serviceUsesOther(exe)) {
 			fmt.Println("后台服务不是当前这个程序，正在切换…")
-			startNodeService(exe, *configPath, filepath.Dir(*configPath))
+			if _, warning := startNodeService(exe, *configPath, filepath.Dir(*configPath)); warning != "" {
+				fmt.Println("注意：" + warning)
+			}
 			time.Sleep(time.Second)
 		}
 		if !waitHealthy(cfg.Port, 500*time.Millisecond) {
 			service, warning := startNodeService(exe, *configPath, filepath.Dir(*configPath))
 			if warning != "" {
-				fmt.Fprintln(os.Stderr, "注意：", warning)
+				fmt.Println("注意：" + warning)
 			}
 			if !waitHealthy(cfg.Port, 15*time.Second) {
 				fmt.Fprintf(os.Stderr, "控制台没有在 127.0.0.1:%d 启动，日志在 %s\n", cfg.Port, cfg.LogDir)

@@ -45,11 +45,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             // The poller logs in first; the window then takes the next ticket.
             c.login { _ in
                 DispatchQueue.main.async {
+                    if !c.warning.isEmpty { self.showServiceWarning(c.warning) }
                     self.showWindow()
                     self.poll()
                     self.timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { _ in self.poll() }
                 }
             }
+        }
+    }
+
+    private func showServiceWarning(_ text: String) {
+        let a = NSAlert()
+        a.messageText = "后台服务未能注册为系统服务"
+        a.informativeText = text
+        if text.contains("登录项") {
+            a.addButton(withTitle: "打开登录项设置")
+            a.addButton(withTitle: "稍后")
+            if a.runModal() == .alertFirstButtonReturn,
+               let url = URL(string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension") {
+                NSWorkspace.shared.open(url)
+            }
+        } else {
+            a.runModal()
         }
     }
 

@@ -36,6 +36,10 @@ final class Console {
     }
 
     /// Starts the background service, or moves it onto this app's build.
+    /// A warning from the last start, e.g. the service being switched off in
+    /// Login Items; shown to the user once.
+    private(set) var warning = ""
+
     func ensureRunning() throws {
         let p = Process()
         p.executableURL = binary
@@ -46,6 +50,19 @@ final class Console {
         try p.run()
         p.waitUntilExit()
         let text = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        // Kept for diagnosis: warnings (e.g. a service-manager fallback) are
+        // printed even when the start succeeds.
+        let log = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".agentconsole/log/app.log")
+        if let h = try? FileHandle(forWritingTo: log) ?? nil {
+            h.seekToEndOfFile()
+            h.write(Data("\(Date()) client: \(text)\n".utf8))
+            try? h.close()
+        } else {
+            try? Data("\(Date()) client: \(text)\n".utf8).write(to: log)
+        }
+        warning = text.split(separator: "\n").first(where: { $0.hasPrefix("注意：") }).map {
+            String($0.dropFirst(3))
+        } ?? ""
         if p.terminationStatus != 0 {
             throw NSError(domain: "AgentConsole", code: Int(p.terminationStatus),
                           userInfo: [NSLocalizedDescriptionKey: text.isEmpty ? "后台服务启动失败" : text])

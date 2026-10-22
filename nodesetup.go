@@ -6,6 +6,7 @@ package console
 // node listens on loopback only: SSH is the only way in.
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -160,7 +161,7 @@ func waitHealthy(port int, timeout time.Duration) bool {
 // explains a fallback.
 func startNodeService(exe, cfgPath, base string) (service, warning string) {
 	home, _ := os.UserHomeDir()
-	path := os.Getenv("PATH") // the login shell's PATH: where codex and claude live
+	path := servicePath() // where codex and claude live
 	// A detached instance from an earlier fallback would hold the port and
 	// make the managed service fail to bind.
 	stopDetached(base)
@@ -193,6 +194,8 @@ func startNodeService(exe, cfgPath, base string) (service, warning string) {
 	case "darwin":
 		if err := launchdInstall(exe, cfgPath, home, path, base); err == nil {
 			return "launchd", ""
+		} else if errors.Is(err, errLaunchdDisabled) {
+			warning = err.Error() + "。现在先以普通后台进程运行"
 		} else {
 			warning = "launchd 注册失败（" + err.Error() + "），已改为后台进程"
 		}
@@ -201,6 +204,41 @@ func startNodeService(exe, cfgPath, base string) (service, warning string) {
 		return "none", "无法启动节点：" + err.Error()
 	}
 	return "nohup", warning
+}
+
+// servicePath is the PATH the service runs agents with. A process started by
+// Finder or launchd has only the system directories, so the user's shell is
+// asked for the PATH it sets up (nvm, Homebrew, ~/.local/bin...).
+func servicePath() string {
+	cur := os.Getenv("PATH")
+	sh := os.Getenv("SHELL")
+	if sh == "" {
+		sh = "/bin/sh"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	// -i as well as -l: many setups (nvm) extend PATH only for interactive shells.
+	out, err := exec.CommandContext(ctx, sh, "-ilc", `printf '\n__ACPATH__%s\n' "$PATH"`).Output()
+	if err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			if p, ok := strings.CutPrefix(line, "__ACPATH__"); ok && p != "" {
+				return mergePath(p, cur)
+			}
+		}
+	}
+	return cur
+}
+
+func mergePath(first, second string) string {
+	seen := map[string]bool{}
+	var out []string
+	for _, d := range strings.Split(first+":"+second, ":") {
+		if d != "" && !seen[d] {
+			seen[d] = true
+			out = append(out, d)
+		}
+	}
+	return strings.Join(out, ":")
 }
 
 // nodeUnit mirrors the main service unit: KillMode=process lets running agent
@@ -240,6 +278,9 @@ func systemctl(user bool, args ...string) error {
 
 const launchdLabel = "com.agentconsole.node"
 
+var errLaunchdDisabled = errors.New("后台服务已在“系统设置 → 通用 → 登录项与扩展”中被关闭（允许在后台：agentconsole）。" +
+	"打开它之后，控制台会随系统启动、崩溃后自动恢复")
+
 // launchdInstall registers a LaunchAgent. AbandonProcessGroup keeps detached
 // runners alive when launchd restarts the node, like KillMode=process.
 func launchdInstall(exe, cfgPath, home, path, base string) error {
@@ -271,6 +312,13 @@ func launchdInstall(exe, cfgPath, home, path, base string) error {
 		return err
 	}
 	uid := strconv.Itoa(os.Getuid())
+	// Turning the app off under System Settings → General → Login Items
+	// disables the label in launchd; every bootstrap then fails with an I/O
+	// error. That is the user's choice, so say so instead of overriding it.
+	if out, err := exec.Command("launchctl", "print-disabled", "gui/"+uid).Output(); err == nil &&
+		strings.Contains(string(out), `"`+launchdLabel+`" => disabled`) {
+		return errLaunchdDisabled
+	}
 	// gui/<uid> exists while the user is logged in at the console; over SSH
 	// only user/<uid> may. Try both.
 	var lastErr error
@@ -278,8 +326,9 @@ func launchdInstall(exe, cfgPath, home, path, base string) error {
 		target := domain + "/" + launchdLabel
 		_ = exec.Command("launchctl", "bootout", target).Run()
 		// bootout returns before the old job is gone; bootstrapping too early
-		// fails with "Input/output error". Wait for it to disappear.
-		for i := 0; i < 50 && exec.Command("launchctl", "print", target).Run() == nil; i++ {
+		// fails with "Input/output error". Wait for it to disappear (up to
+		// launchd's own 20 s exit timeout).
+		for i := 0; i < 200 && exec.Command("launchctl", "print", target).Run() == nil; i++ {
 			time.Sleep(100 * time.Millisecond)
 		}
 		for attempt := 0; attempt < 3; attempt++ {

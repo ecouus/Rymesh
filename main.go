@@ -157,11 +157,17 @@ func serveMain(args []string) int {
 	srv.ing.Reconcile()
 	srv.schedule()
 
+	// Every request's context derives from baseCtx. Shutdown alone waits for
+	// SSE streams, which never finish on their own, so a stop took the full
+	// timeout — long enough for launchd to refuse re-registering the service.
+	baseCtx, cancelBase := context.WithCancel(context.Background())
+	defer cancelBase()
 	httpSrv := &http.Server{
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 15 * time.Second,
 		IdleTimeout:       180 * time.Second,
 		// WriteTimeout intentionally unset: SSE connections are long-lived.
+		BaseContext: func(net.Listener) context.Context { return baseCtx },
 	}
 	var listeners []net.Listener
 	for _, addr := range addrs {
@@ -191,6 +197,7 @@ func serveMain(args []string) int {
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 	sig := <-sigCh
 	logger.Printf("收到 %s，正在停止 Web 服务（后台 Agent 任务继续运行）", sig)
+	cancelBase() // end live streams and relays now
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	_ = httpSrv.Shutdown(ctx)

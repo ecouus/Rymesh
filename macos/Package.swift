@@ -4,10 +4,10 @@
 import PackageDescription
 
 let package = Package(
-    name: "AgentConsoleMac",
+    name: "RymeshMac",
     platforms: [.macOS(.v13)],
     targets: [
         // tools-version 5.9 builds in the Swift 5 language mode.
-        .executableTarget(name: "AgentConsoleMac", path: "Sources/AgentConsoleMac")
+        .executableTarget(name: "RymeshMac", path: "Sources/RymeshMac")
     ]
 )

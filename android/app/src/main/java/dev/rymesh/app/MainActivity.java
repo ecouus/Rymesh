@@ -1,4 +1,4 @@
-package dev.agentconsole.app;
+package dev.rymesh.app;
 
 import android.app.Activity;
 import android.content.Intent;
@@ -29,13 +29,13 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 
-import dev.agentconsole.mobile.Mobile;
+import dev.rymesh.mobile.Mobile;
 
 /**
  * One WebView over the embedded Go console (package mobile). The console is a
  * hub: it reaches the user's servers over SSH and runs no agents itself.
  *
- * The page asks this shell, through AgentConsoleNative, for what a web page
+ * The page asks this shell, through RymeshNative, for what a web page
  * cannot do well on a phone: the share sheet, saving a file, and matching the
  * system bars to its theme.
  */
@@ -58,7 +58,7 @@ public class MainActivity extends Activity {
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
-        web.addJavascriptInterface(new Bridge(), "AgentConsoleNative");
+        web.addJavascriptInterface(new Bridge(), "RymeshNative");
         web.setWebViewClient(new WebViewClient() {
             // Links out of the console (docs, URLs in answers) open in the browser.
             @Override
@@ -123,7 +123,7 @@ public class MainActivity extends Activity {
                 installNodeBinaries(new File(files, "data/dist"));
                 String url = Mobile.start(files.getAbsolutePath());
                 // The port only, never the ticket: logcat is readable over adb.
-                android.util.Log.i("AgentConsole", "console on " + Uri.parse(url).getPort());
+                android.util.Log.i("Rymesh", "console on " + Uri.parse(url).getPort());
                 runOnUiThread(() -> web.loadUrl(url));
             } catch (Exception e) {
                 String html = "<p style='font:16px sans-serif;padding:24px'>启动失败：" + e.getMessage() + "</p>";
@@ -158,7 +158,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** Methods the page calls as window.AgentConsoleNative.*; they run on a binder thread. */
+    /** Methods the page calls as window.RymeshNative.*; they run on a binder thread. */
     private class Bridge {
         @JavascriptInterface
         public void share(String text, String title) {

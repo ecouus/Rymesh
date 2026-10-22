@@ -30,7 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
 
         guard let c = Console() else {
-            fail("应用包里缺少 agentconsole 程序，请重新下载。")
+            fail("应用包里缺少 rymesh 程序，请重新下载。")
             return
         }
         console = c
@@ -109,7 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             w.contentView = wv
             w.isReleasedWhenClosed = false
             w.center()
-            w.setFrameAutosaveName("AgentConsoleMain")
+            w.setFrameAutosaveName("RymeshMain")
             window = w
             web = wv
             load()

@@ -90,7 +90,7 @@ func TestVaultMigratesConfigDevicesAndKeyFiles(t *testing.T) {
 	if _, err := os.Stat(keyDir); !os.IsNotExist(err) {
 		t.Fatal("key files left in place")
 	}
-	if fi, _ := os.Stat(filepath.Join(cfg.DataDir, "agentconsole.db")); fi.Mode().Perm() != 0o600 {
+	if fi, _ := os.Stat(filepath.Join(cfg.DataDir, "rymesh.db")); fi.Mode().Perm() != 0o600 {
 		t.Fatalf("database mode = %v", fi.Mode().Perm())
 	}
 	// A second start reads the same list from the database alone.
@@ -127,7 +127,7 @@ func TestVaultKeyLifecycle(t *testing.T) {
 	}
 	list := decode[struct{ Keys []vaultKey }](t, h.do("GET", "/api/keys", ""))
 	if len(list.Keys) != 2 || list.Keys[0].Name != "工作 Mac" || len(list.Keys[0].UsedBy) != 1 ||
-		!strings.HasSuffix(list.Keys[0].Public, " agentconsole-工作-Mac") {
+		!strings.HasSuffix(list.Keys[0].Public, " rymesh-工作-Mac") {
 		t.Fatalf("keys = %+v", list.Keys)
 	}
 	if rec := h.do("DELETE", "/api/keys/"+a.ID, ""); rec.Code != 409 {
@@ -205,7 +205,7 @@ func TestVaultBundleRoundTrip(t *testing.T) {
 		Code, Bundle, Filename string
 		Warnings               []string
 	}](t, rec)
-	if len(normalizeCode(ex.Code)) != 16 || len(ex.Warnings) != 1 || !strings.HasSuffix(ex.Filename, ".acbundle") {
+	if len(normalizeCode(ex.Code)) != 16 || len(ex.Warnings) != 1 || !strings.HasSuffix(ex.Filename, ".rymesh") {
 		t.Fatalf("export = %+v", ex)
 	}
 	// Nothing sensitive in the clear.

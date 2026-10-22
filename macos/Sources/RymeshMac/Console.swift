@@ -19,7 +19,7 @@ struct Pending: Equatable {
     }
 }
 
-/// The Go console bundled in the app (Contents/Resources/agentconsole) and a
+/// The Go console bundled in the app (Contents/Resources/rymesh) and a
 /// small client for its API. The console itself runs as a launchd service, so
 /// agents keep working when the app quits.
 final class Console {
@@ -31,7 +31,7 @@ final class Console {
     private let http = URLSession(configuration: .ephemeral)
 
     init?() {
-        guard let b = Bundle.main.url(forResource: "agentconsole", withExtension: nil) else { return nil }
+        guard let b = Bundle.main.url(forResource: "rymesh", withExtension: nil) else { return nil }
         binary = b
     }
 
@@ -64,7 +64,7 @@ final class Console {
         let text = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         // Kept for diagnosis: warnings (e.g. a service-manager fallback) are
         // printed even when the start succeeds.
-        let log = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".agentconsole/log/app.log")
+        let log = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".rymesh/log/app.log")
         if let h = try? FileHandle(forWritingTo: log) ?? nil {
             h.seekToEndOfFile()
             h.write(Data("\(Date()) client: \(text)\n".utf8))
@@ -76,14 +76,14 @@ final class Console {
             String($0.dropFirst(3))
         } ?? ""
         if p.terminationStatus != 0 {
-            throw NSError(domain: "AgentConsole", code: Int(p.terminationStatus),
+            throw NSError(domain: "Rymesh", code: Int(p.terminationStatus),
                           userInfo: [NSLocalizedDescriptionKey: text.isEmpty ? "后台服务启动失败" : text])
         }
         loadConfig()
     }
 
     private func loadConfig() {
-        let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".agentconsole/config.json")
+        let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".rymesh/config.json")
         guard let data = try? Data(contentsOf: url),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
         if let p = obj["port"] as? Int { port = p }

@@ -3,10 +3,10 @@ plugins {
 }
 
 android {
-    namespace = "dev.agentconsole.app"
+    namespace = "dev.rymesh.app"
     compileSdk = 36
     defaultConfig {
-        applicationId = "dev.agentconsole.app"
+        applicationId = "dev.rymesh.app"
         minSdk = 26
         targetSdk = 36
         versionCode = 1
@@ -20,5 +20,5 @@ android {
 
 dependencies {
     // Built by `make android`: gomobile bind of ./mobile (the Go console).
-    implementation(files("libs/agentconsole.aar"))
+    implementation(files("libs/rymesh.aar"))
 }

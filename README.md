@@ -4,8 +4,8 @@
 Agent 任务由服务器独立托管：关闭浏览器、锁屏、断网或重启 Web 服务都不会终止正在执行的 Agent。
 
 - 实际访问地址：**http://10.0.0.6:8899**
-- 服务：`agentconsole.service`（systemd，已 enable，开机自启）
-- 登录密码：默认 `admin`，首次登录强制修改（`agentconsole password` 可查看）
+- 服务：`rymesh.service`（systemd，已 enable，开机自启）
+- 登录密码：默认 `admin`，首次登录强制修改（`rymesh password` 可查看）
 
 > **原则：本项目只是远程控制台。** 所有模型请求都由所选机器上的官方 CLI（`claude` / `codex`）
 > 用那台机器自己的登录发出；本程序不调用任何模型 API、不转发模型流量、不读取或传输凭据。
@@ -45,11 +45,11 @@ Agent 任务由服务器独立托管：关闭浏览器、锁屏、断网或重�
 手机浏览器 (EasyTier)
       │ HTTP + SSE
       ▼
-agentconsole serve  (systemd, 127.0.0.1 + 10.0.0.6:8899)
+rymesh serve  (systemd, 127.0.0.1 + 10.0.0.6:8899)
       │  SQLite (会话/任务/事件/审批)
       │  文件 IPC (events.jsonl, state.json, control/*.json)
       ▼
-agentconsole run-task  (setsid，独立于 Web 服务)
+rymesh run-task  (setsid，独立于 Web 服务)
       │
       ├── codex app-server             (JSON-RPC：审批与提问是服务端请求)
       └── claude -p --input-format stream-json --permission-prompt-tool stdio
@@ -77,7 +77,7 @@ agentconsole run-task  (setsid，独立于 Web 服务)
    - 用户改过的标题不会被同步覆盖，只有自动生成的标题才会升级。
    这保证 CLI 里继续的对话、甚至刚结束的回答，打开页面即可看到，无需重启服务。
 6. **权限桥。** Claude 以
-   `--permission-prompt-tool mcp__agentconsole__approve` 启动一个 stdio MCP 服务；
+   `--permission-prompt-tool mcp__rymesh__approve` 启动一个 stdio MCP 服务；
    该服务把审批请求写成文件，Web 写回 `resp-*.json`，因此等待状态可跨浏览器断线与服务重启。
 7. **故障分类。**
    - 浏览器/网络断开：无影响，SSE 重连补齐。
@@ -109,7 +109,7 @@ agentconsole run-task  (setsid，独立于 Web 服务)
 │   ├── markdown.js   Markdown + 轻量语法高亮
 │   ├── styles.css
 │   ├── manifest.webmanifest, sw.js, icon*
-└── agentconsole_test.go
+└── rymesh_test.go
 ```
 
 ---
@@ -140,15 +140,15 @@ agentconsole run-task  (setsid，独立于 Web 服务)
 当前部署信息：
 
 ```text
-服务名      agentconsole.service
-二进制      /usr/local/bin/agentconsole
-配置        /etc/agentconsole/config.json
-密码文件    /etc/agentconsole/password.txt (0600，仅存初始默认密码；改密后自动删除)
-数据        /var/lib/agentconsole
-数据库      /var/lib/agentconsole/agentconsole.db (WAL)
-任务日志    /var/lib/agentconsole/tasks/<task-id>/events.jsonl
-应用日志    /var/log/agentconsole/agentconsole.log
-unit        /etc/systemd/system/agentconsole.service
+服务名      rymesh.service
+二进制      /usr/local/bin/rymesh
+配置        /etc/rymesh/config.json
+密码文件    /etc/rymesh/password.txt (0600，仅存初始默认密码；改密后自动删除)
+数据        /var/lib/rymesh
+数据库      /var/lib/rymesh/rymesh.db (WAL)
+任务日志    /var/lib/rymesh/tasks/<task-id>/events.jsonl
+应用日志    /var/log/rymesh/rymesh.log
+unit        /etc/systemd/system/rymesh.service
 监听        127.0.0.1:8899, 10.0.0.6:8899
 ```
 
@@ -156,16 +156,16 @@ unit        /etc/systemd/system/agentconsole.service
 
 ```bash
 cd /srv/rymesh
-go build -o agentconsole ./cmd/agentconsole
-install -m 0755 agentconsole /usr/local/bin/agentconsole
-agentconsole install          # 生成配置/密码、写 unit、enable、启动
-agentconsole status
-agentconsole doctor
+go build -o rymesh ./cmd/rymesh
+install -m 0755 rymesh /usr/local/bin/rymesh
+rymesh install          # 生成配置/密码、写 unit、enable、启动
+rymesh status
+rymesh doctor
 ```
 
-`agentconsole install` 的关键行为：
+`rymesh install` 的关键行为：
 
-- 若 `/etc/agentconsole/config.json` 不存在，生成随机 32 字节 Cookie 签名密钥，
+- 若 `/etc/rymesh/config.json` 不存在，生成随机 32 字节 Cookie 签名密钥，
   并将登录密码设为默认 `admin`（`must_change_password=true`，首次登录必须修改）。
   `--reset-password` 会把密码重置回 `admin` 并要求下次登录修改。
 - 自动探测 `tun0` 的 IPv4 并只监听 `127.0.0.1` 与该地址；拒绝在未开启
@@ -251,38 +251,38 @@ agentconsole doctor
 
 ```bash
 # 状态 / 自检
-systemctl status agentconsole
-systemctl is-enabled agentconsole
-agentconsole status
-agentconsole doctor
+systemctl status rymesh
+systemctl is-enabled rymesh
+rymesh status
+rymesh doctor
 
 # 启动 / 停止 / 重启 Web 服务
-systemctl start agentconsole
-systemctl stop agentconsole
-systemctl restart agentconsole
+systemctl start rymesh
+systemctl stop rymesh
+systemctl restart rymesh
 
 # 注意：KillMode=process，stop/restart 不会杀死正在运行的 Agent runner。
 # 如需强制终止所有 runner（会影响正在执行的任务）：
-systemctl kill -s SIGKILL --kill-whom=all agentconsole
+systemctl kill -s SIGKILL --kill-whom=all rymesh
 
 # 日志
-journalctl -u agentconsole -f
-tail -f /var/log/agentconsole/agentconsole.log
+journalctl -u rymesh -f
+tail -f /var/log/rymesh/rymesh.log
 
 # 密码
-agentconsole password                       # 查看当前密码
-agentconsole password --set NEW             # 直接设置，并要求下次登录修改
-agentconsole password --set NEW --force-change
-agentconsole password --generate            # 生成随机密码
-agentconsole password --set admin --force-change   # 恢复默认密码并要求首次登录修改
+rymesh password                       # 查看当前密码
+rymesh password --set NEW             # 直接设置，并要求下次登录修改
+rymesh password --set NEW --force-change
+rymesh password --generate            # 生成随机密码
+rymesh password --set admin --force-change   # 恢复默认密码并要求首次登录修改
 
 # 手动导入原生历史（服务运行时也可；会跳过 import_exclude_roots）
 # 一般不需要：import_on_start=true 时服务每 30 秒自动同步一次，只解析有变化的文件
-agentconsole import
+rymesh import
 
 # 列出/取消任务
-agentconsole tasks
-agentconsole cancel <task-id>
+rymesh tasks
+rymesh cancel <task-id>
 ```
 
 ### 更新
@@ -290,37 +290,37 @@ agentconsole cancel <task-id>
 ```bash
 cd /srv/rymesh
 go test ./...
-go build -o agentconsole ./cmd/agentconsole
-install -m 0755 agentconsole /usr/local/bin/agentconsole
-systemctl restart agentconsole        # runner 不受影响
+go build -o rymesh ./cmd/rymesh
+install -m 0755 rymesh /usr/local/bin/rymesh
+systemctl restart rymesh        # runner 不受影响
 ```
 
 ### 备份
 
 ```bash
-systemctl stop agentconsole
-tar czf /root/agentconsole-backup-$(date +%F-%H%M).tgz \
-  /etc/agentconsole /var/lib/agentconsole /var/log/agentconsole
-systemctl start agentconsole
-chmod 600 /root/agentconsole-backup-*.tgz
+systemctl stop rymesh
+tar czf /root/rymesh-backup-$(date +%F-%H%M).tgz \
+  /etc/rymesh /var/lib/rymesh /var/log/rymesh
+systemctl start rymesh
+chmod 600 /root/rymesh-backup-*.tgz
 ```
 
 备份包含密码哈希与 Cookie 签名密钥，请按敏感文件保管。恢复时解包到对应路径，
-确保 `/etc/agentconsole` 为 `0700`、`config.json`/`password.txt` 为 `0600`，然后
-`systemctl start agentconsole`。
+确保 `/etc/rymesh` 为 `0700`、`config.json`/`password.txt` 为 `0600`，然后
+`systemctl start rymesh`。
 
 ### 故障排查
 
 | 现象 | 检查 |
 |---|---|
 | 手机打不开 | `ip -4 addr show tun0`；`ss -ltnp \| grep 8899` 应只有 127.0.0.1 与 10.0.0.6；EasyTier peer 是否在线 |
-| 502/连接被拒 | `systemctl status agentconsole`；`curl http://127.0.0.1:8899/api/health` |
+| 502/连接被拒 | `systemctl status rymesh`；`curl http://127.0.0.1:8899/api/health` |
 | 登录 429 | 连续失败 5 次锁定 60 秒；重启服务可立即清除内存中的锁定 |
 | Agent 不可用 | 以 root 执行 `codex --version`、`claude --version`；unit 的 `HOME=/root` 与 PATH 是否正确 |
 | 审批不出现 | 任务是否 `waiting_input`；查看任务事件中的 `permission` 记录；Claude 版本是否支持 `--permission-prompt-tool` |
 | 任务显示 interrupted | 查看错误信息：runner 丢失或服务器重启；用「重新运行」或发送新消息继续会话 |
-| 端口占用 | `ss -ltnp \| grep 8899`；修改 `/etc/agentconsole/config.json` 的 `port` 后重启 |
-| 数据库异常 | 备份后检查 `/var/lib/agentconsole/agentconsole.db`；服务使用单连接 WAL，不要同时启动多个实例 |
+| 端口占用 | `ss -ltnp \| grep 8899`；修改 `/etc/rymesh/config.json` 的 `port` 后重启 |
+| 数据库异常 | 备份后检查 `/var/lib/rymesh/rymesh.db`；服务使用单连接 WAL，不要同时启动多个实例 |
 | 会话打开慢 | 文本响应默认 gzip；首屏只取最近 200 条，工具输出折叠且按需渲染；可「加载更早」（每页 500 条） |
 
 ---
@@ -343,7 +343,7 @@ chmod 600 /root/agentconsole-backup-*.tgz
   `危险：完全访问` / `危险：绕过所有权限` 是用户逐次显式选择的模式，会跳过限制；
   切换时前端提示，任务记录保留当时的实际模式，便于审计。
 - **高危操作**：删除对话需要两次界面确认（不要求输入会话 ID）；原生会话文件仅移动到
-  `/var/lib/agentconsole/trash/`，不会直接删除。运行中或排队中的任务会阻止删除。
+  `/var/lib/rymesh/trash/`，不会直接删除。运行中或排队中的任务会阻止删除。
 - **HTTP**：控制台本身是 HTTP，依赖 EasyTier 隧道加密传输；如需额外 TLS，
   可在前面加反向代理并只监听 loopback。
 
@@ -351,7 +351,7 @@ chmod 600 /root/agentconsole-backup-*.tgz
 
 ## 9. 配置
 
-`/etc/agentconsole/config.json`（0600）：
+`/etc/rymesh/config.json`（0600）：
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
@@ -362,8 +362,8 @@ chmod 600 /root/agentconsole-backup-*.tgz
 | `default_cwd` | `/srv/project` | 新会话默认目录 |
 | `allowed_roots` | `/srv/project`,`/home`,`/root`,`/tmp` | 允许的工作目录根 |
 | `max_concurrent` | 4 | 并发任务上限（1–32） |
-| `data_dir` | `/var/lib/agentconsole` | SQLite、任务日志、回收站 |
-| `log_dir` | `/var/log/agentconsole` | 应用日志 |
+| `data_dir` | `/var/lib/rymesh` | SQLite、任务日志、回收站 |
+| `log_dir` | `/var/log/rymesh` | 应用日志 |
 | `password_hash` | 默认 `admin` 的哈希 | PBKDF2-HMAC-SHA256（120k 次） |
 | `must_change_password` | true（新装） | 为 true 时除改密/登出外所有 API 返回 403 |
 | `session_ttl_hours` | 720 | 登录 Cookie 有效期 |
@@ -372,7 +372,7 @@ chmod 600 /root/agentconsole-backup-*.tgz
 | `import_on_start` | true | 启动时只读导入原生历史，并每 30 秒自动同步新增/变化的会话 |
 | `import_history_limit` | 0 | 控制台保存的历史事件上限；0 = 全部保存（原生恢复不受影响） |
 | `import_exclude_roots` | `[]` | 导入时跳过的目录；支持 `*` 通配符。当前部署为 `["/tmp/ac-*", "/tmp/cc-probe-main", "/tmp/agenttest-*"]`，防止测试会话进入生产库 |
-修改配置后 `systemctl restart agentconsole`。
+修改配置后 `systemctl restart rymesh`。
 `max_concurrent` 与 `default_cwd` 也可在设置页修改。
 
 ### 设置页：Agent 的更新与重启
@@ -397,20 +397,20 @@ chmod 600 /root/agentconsole-backup-*.tgz
 
 ## 10. 多设备（主控 + 节点）
 
-每台机器都安装一份 agentconsole，作为**节点**运行自己的 Agent、数据库与原生历史同步。
+每台机器都安装一份 rymesh，作为**节点**运行自己的 Agent、数据库与原生历史同步。
 其中一台在配置里列出其它节点，即成为**主控**：手机只访问主控，页面通过
 `/n/<设备>/api/...` 由主控经 EasyTier 转发到对应节点（含 SSE 实时流）。Agent 始终在
 所属机器上运行，主控、网络或浏览器断开都不影响它。
 
 ```bash
 # 在新设备（节点）上：取得令牌（首次自动生成），可选设置显示名
-agentconsole node token --config <节点配置>
-agentconsole node name Mac --config <节点配置>
+rymesh node token --config <节点配置>
+rymesh node name Mac --config <节点配置>
 
 # 在主控上：添加设备并重启
-agentconsole node add mac --name Mac --url http://10.0.0.2:8899 --token <令牌>
-systemctl restart agentconsole
-agentconsole node list        # 在线状态与令牌校验
+rymesh node add mac --name Mac --url http://10.0.0.2:8899 --token <令牌>
+systemctl restart rymesh
+rymesh node list        # 在线状态与令牌校验
 ```
 
 - 节点只接受主控的 `Authorization: Bearer <node_token>`，或节点自己的登录 Cookie；
@@ -418,7 +418,7 @@ agentconsole node list        # 在线状态与令牌校验
 - 登录、改密、退出始终作用于主控，不会转发给节点。节点令牌错误显示为 502，不会把用户登出。
 - 侧边栏顶部切换设备；设置页的 Agent / 通用 / 服务分组属于当前设备。
 - 其它设备上的待审批请求会汇总到通知里，点击直接切到该设备的会话。
-- macOS 节点：`go build` 后用 `agentconsole serve --config ~/.agentconsole/config.json` 运行
+- macOS 节点：`go build` 后用 `rymesh serve --config ~/.rymesh/config.json` 运行
   （无 systemd，开机标识取 `kern.boottime`）。
 
 ## 11. 客户端即主控：Mac 与 Android（SSH 直连，免组网）
@@ -427,9 +427,9 @@ agentconsole node list        # 在线状态与令牌校验
 除 SSH 外不暴露任何端口，也不需要 EasyTier 之类的组网。
 
 ```text
-Mac：agentconsole client（127.0.0.1）   Android：App 内嵌 Go 核心 + WebView（127.0.0.1 随机端口）
+Mac：rymesh client（127.0.0.1）   Android：App 内嵌 Go 核心 + WebView（127.0.0.1 随机端口）
    ├─ 本机节点（Mac 上可直接跑 Agent）       └─ 只做主控（hub_only）
-   └─ /n/<设备>/api/… ──SSH direct-tcpip──▶ 服务器 127.0.0.1:8899（agentconsole node）
+   └─ /n/<设备>/api/… ──SSH direct-tcpip──▶ 服务器 127.0.0.1:8899（rymesh node）
 ```
 
 **Mac App**
@@ -444,24 +444,24 @@ App 提供独立窗口、菜单栏图标（待处理数量）、Dock 角标、�
 控制台只在 App 运行时运行（普通进程，不开机自启、不常驻）；退出 App 会停止控制台，
 但正在运行的 Agent 任务是独立进程，继续执行，下次打开 App 时补上它们的输出。
 App 内置 Linux amd64/arm64 节点程序，可直接部署服务器；若服务器上已有系统级安装
-（`agentconsole install`：`/etc/agentconsole` + systemd），部署会接管并原地升级它（旧程序保存为 `.prev`），
+（`rymesh install`：`/etc/rymesh` + systemd），部署会接管并原地升级它（旧程序保存为 `.prev`），
 而不是另起一个节点。
 
-不想用 App 也可以只用命令行：`agentconsole client`（首次自动配置，免密打开浏览器）、
-`agentconsole client open`、`agentconsole client stop`。
+不想用 App 也可以只用命令行：`rymesh client`（首次自动配置，免密打开浏览器）、
+`rymesh client open`、`rymesh client stop`。
 
 设置 → 设备 → 添加服务器：可从 `~/.ssh/config` 一键填入，密钥可选密钥库里的、`~/.ssh` 里的、ssh-agent，
 或当场生成。首次连接核对并固定主机指纹（若 `known_hosts` 已有记录则自动采用），指纹变化一律拒绝。
 服务器还不认识这把密钥时，可以输入一次服务器密码自动把公钥写入 `~/.ssh/authorized_keys`
 （同 `ssh-copy-id`；只在主机指纹已固定后发送，密码不保存），或复制命令手动添加。随后一键部署：客户端上传对应平台
-的程序（`make dist` 产物），在服务器上以 SSH 用户身份执行 `agentconsole node setup`
-（安装到 `~/.agentconsole`，root 用 systemd、普通用户用 `systemctl --user`、macOS 用 launchd），
+的程序（`make dist` 产物），在服务器上以 SSH 用户身份执行 `rymesh node setup`
+（安装到 `~/.rymesh`，root 用 systemd、普通用户用 `systemctl --user`、macOS 用 launchd），
 已有节点则沿用其令牌原地升级，因此 Mac 与手机可以共用同一台服务器。
 
 **密钥库与迁移。** 客户端的设备列表（地址、固定的主机指纹、节点令牌）和 SSH 私钥保存在自己的
-SQLite 数据库里（`data/agentconsole.db`，权限 0600），不依赖 `~/.ssh`。设置 → 密钥 可生成、重命名、
+SQLite 数据库里（`data/rymesh.db`，权限 0600），不依赖 `~/.ssh`。设置 → 密钥 可生成、重命名、
 删除密钥，也可以把 `~/.ssh` 里的密钥导入（有密码短语的输入一次，之后不再需要）。
-设置 → 导出设备 把选中的服务器连同密钥打包成 `.acbundle` 文件，用随机生成的 16 位解密码
+设置 → 导出设备 把选中的服务器连同密钥打包成 `.rymesh` 文件，用随机生成的 16 位解密码
 （scrypt + AES-256-GCM）加密；在另一台客户端（例如手机）上 设置 → 导入设备，选文件、输入解密码即可直接使用。
 解密码只显示一次，请和文件分开传递。旧版本 `config.json` 里的设备和 `data/keys/` 里的密钥会在首次启动时
 自动迁入数据库（原配置备份为 `config.json.pre-vault`）。密钥库只保存 SSH 与节点凭据，不读取、不保存任何

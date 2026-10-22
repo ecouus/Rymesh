@@ -111,7 +111,10 @@ func openStore(dataDir string) (*Store, error) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return nil, err
 	}
-	path := filepath.Join(dataDir, "agentconsole.db")
+	path := filepath.Join(dataDir, "rymesh.db")
+	if old := filepath.Join(dataDir, legacyName+".db"); !fileExists(path) && fileExists(old) {
+		path = old // renamed by the service at its next start (legacy.go)
+	}
 	dsn := "file:" + path +
 		"?_pragma=busy_timeout(8000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)"
 	db, err := sql.Open("sqlite", dsn)

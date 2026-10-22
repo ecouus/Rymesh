@@ -6,7 +6,7 @@ package mobile
 import (
 	"sync"
 
-	console "agentconsole"
+	console "rymesh"
 )
 
 var (

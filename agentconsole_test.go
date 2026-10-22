@@ -919,10 +919,10 @@ func TestPIDFilePathSeparatesInstances(t *testing.T) {
 	if a == b {
 		t.Fatalf("instances share pid path: %s", a)
 	}
-	if !strings.HasSuffix(a, "agentconsole-8899.pid") || !strings.HasSuffix(b, "agentconsole-8901.pid") {
+	if !strings.HasSuffix(a, "rymesh-8899.pid") || !strings.HasSuffix(b, "rymesh-8901.pid") {
 		t.Fatalf("unexpected pid paths: %s %s", a, b)
 	}
-	if got := pidFilePath(nil); !strings.HasSuffix(got, "agentconsole-default.pid") {
+	if got := pidFilePath(nil); !strings.HasSuffix(got, "rymesh-default.pid") {
 		t.Fatalf("fallback pid path = %s", got)
 	}
 }
@@ -1017,9 +1017,9 @@ func TestCompressibleType(t *testing.T) {
 }
 
 func TestSystemdUnitUsesInstalledPaths(t *testing.T) {
-	unit := systemdUnit("/usr/local/bin/agentconsole", "/etc/agentconsole/config.json")
+	unit := systemdUnit("/usr/local/bin/rymesh", "/etc/rymesh/config.json")
 	for _, want := range []string{
-		"ExecStart=/usr/local/bin/agentconsole serve --config /etc/agentconsole/config.json",
+		"ExecStart=/usr/local/bin/rymesh serve --config /etc/rymesh/config.json",
 		"WorkingDirectory=/usr/local/bin",
 		"KillMode=process", // detached tasks must survive service restarts
 	} {

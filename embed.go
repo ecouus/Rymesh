@@ -65,11 +65,23 @@ func StartEmbedded(dataDir string) (*Embedded, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
+	// App storage belongs to the current package. A restored Android backup
+	// must not keep absolute paths into the previous package's private files.
+	cfg.DataDir = filepath.Join(dataDir, "data")
+	cfg.LogDir = filepath.Join(dataDir, "log")
+	cfg.DefaultCWD = dataDir
+	cfg.AllowedRoots = []string{dataDir}
 	cfg.HubOnly, cfg.ImportOnStart = true, false
 	if err := cfg.ensureDirs(); err != nil {
 		return nil, err
 	}
-	logf, err := os.OpenFile(filepath.Join(cfg.LogDir, "agentconsole.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err := saveConfig(cfgPath, cfg); err != nil {
+		return nil, err
+	}
+	if err := migrateLegacyFiles(cfg.DataDir, cfg.LogDir); err != nil {
+		return nil, err
+	}
+	logf, err := os.OpenFile(filepath.Join(cfg.LogDir, "rymesh.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	var w io.Writer = io.Discard
 	if err == nil {
 		w = logf

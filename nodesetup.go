@@ -1,8 +1,8 @@
 package console
 
-// `agentconsole node setup` installs (or upgrades) a node for the current
+// `rymesh node setup` installs (or upgrades) a node for the current
 // user. The client runs it over SSH after uploading the binary (deploy.go),
-// but it works the same by hand. Everything lives in ~/.agentconsole and the
+// but it works the same by hand. Everything lives in ~/.rymesh and the
 // node listens on loopback only: SSH is the only way in.
 
 import (
@@ -23,14 +23,14 @@ import (
 	"time"
 )
 
-const nodeServiceName = "agentconsole-node"
+const nodeServiceName = "rymesh-node"
 
 func agentHome() (string, error) {
 	h, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(h, ".agentconsole"), nil
+	return filepath.Join(h, ".rymesh"), nil
 }
 
 // personalConfig is a fresh config for one user's machine: loopback only,
@@ -96,6 +96,9 @@ func nodeSetup(token string, port int, name string) (*setupResult, error) {
 	if len(token) < 16 {
 		return nil, errors.New("需要 --token（至少 16 个字符）")
 	}
+	if err := migrateLegacyHome(); err != nil {
+		return nil, err
+	}
 	base, err := agentHome()
 	if err != nil {
 		return nil, err
@@ -137,7 +140,7 @@ func nodeSetup(token string, port int, name string) (*setupResult, error) {
 	res.Service, res.Warning = startNodeService(exe, cfgPath, base)
 	if !waitHealthy(cfg.Port, 15*time.Second) {
 		return nil, fmt.Errorf("节点已安装（%s），但 15 秒内没有在 127.0.0.1:%d 响应；日志在 %s",
-			res.Service, cfg.Port, filepath.Join(cfg.LogDir, "agentconsole.log"))
+			res.Service, cfg.Port, filepath.Join(cfg.LogDir, "rymesh.log"))
 	}
 	return res, nil
 }
@@ -276,9 +279,9 @@ func systemctl(user bool, args ...string) error {
 	return nil
 }
 
-const launchdLabel = "com.agentconsole.node"
+const launchdLabel = "com.rymesh.node"
 
-var errLaunchdDisabled = errors.New("后台服务已在“系统设置 → 通用 → 登录项与扩展”中被关闭（允许在后台：agentconsole）。" +
+var errLaunchdDisabled = errors.New("后台服务已在“系统设置 → 通用 → 登录项与扩展”中被关闭（允许在后台：rymesh）。" +
 	"打开它之后，控制台会随系统启动、崩溃后自动恢复")
 
 // launchdInstall registers a LaunchAgent. AbandonProcessGroup keeps detached
@@ -343,9 +346,9 @@ func launchdInstall(exe, cfgPath, home, path, base string) error {
 	return lastErr
 }
 
-func isAgentConsole(pid int) bool {
+func isRymesh(pid int) bool {
 	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
-	return err == nil && strings.Contains(string(out), "agentconsole")
+	return err == nil && (strings.Contains(string(out), "rymesh") || strings.Contains(string(out), legacyName))
 }
 
 func xmlEsc(s string) string {
@@ -362,8 +365,8 @@ func stopDetached(base string) {
 		return
 	}
 	// A stale pid file can name an unrelated process that reused the number;
-	// only stop it if it is really agentconsole.
-	if pid, _ := strconv.Atoi(strings.TrimSpace(string(b))); pid > 1 && processAlive(pid) && isAgentConsole(pid) {
+	// only stop it if it is really rymesh.
+	if pid, _ := strconv.Atoi(strings.TrimSpace(string(b))); pid > 1 && processAlive(pid) && isRymesh(pid) {
 		_ = syscall.Kill(pid, syscall.SIGTERM)
 		for i := 0; i < 50 && processAlive(pid); i++ {
 			time.Sleep(100 * time.Millisecond)

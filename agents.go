@@ -142,7 +142,7 @@ func (a *AgentSet) detectClaude() AgentInfo {
 		SupportsResume:      true,
 		SupportsStream:      true,
 		SupportsPermissions: true,
-		PermissionDetail:    "通过 MCP permission-prompt-tool 提供网页人工批准/拒绝，等待状态可跨浏览器断线与服务重启保留。",
+		PermissionDetail:    "通过 stdio 控制协议在网页上审批与回答提问，等待状态可跨浏览器断线与服务重启保留。",
 	}
 	bin, err := exec.LookPath("claude")
 	if err != nil {

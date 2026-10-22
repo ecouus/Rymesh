@@ -1,4 +1,4 @@
-module agentconsole
+module rymesh
 
 go 1.26.0
 

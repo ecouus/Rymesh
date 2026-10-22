@@ -23,7 +23,7 @@ const version = "1.1.1"
 
 var agents *AgentSet
 
-// Main is the agentconsole command line (cmd/agentconsole).
+// Main is the rymesh command line (cmd/rymesh).
 func Main() {
 	agents = newAgentSet()
 	if len(os.Args) < 2 {
@@ -55,10 +55,8 @@ func Main() {
 		os.Exit(doctorMain(os.Args[2:]))
 	case "run-task":
 		os.Exit(runTaskCLI(os.Args[2:]))
-	case "mcp-permission":
-		os.Exit(mcpPermissionCLI(os.Args[2:]))
 	case "version", "--version", "-v":
-		fmt.Println("agentconsole " + version)
+		fmt.Println("rymesh " + version)
 	case "help", "--help", "-h":
 		help()
 	default:
@@ -69,41 +67,40 @@ func Main() {
 }
 
 func help() {
-	fmt.Print(`agentconsole — 多 Agent Web 控制台（Codex CLI / Claude Code）
+	fmt.Print(`rymesh — 多 Agent Web 控制台（Codex CLI / Claude Code）
 
 用法:
-  agentconsole client              在本机启动控制台（首次自动配置、注册后台服务）并免密打开浏览器
-  agentconsole client open         在浏览器中打开本机控制台
-  agentconsole node setup ...      在本机安装/升级节点（通常由客户端通过 SSH 自动执行）
-  agentconsole node token|add|list 管理节点令牌与远程设备
-  agentconsole install [选项]      在服务器上生成配置、安装 systemd、开机自启并启动
-  agentconsole serve               前台运行 Web 服务（systemd 使用）
-  agentconsole status              查看服务、Agent、任务与会话状态
-  agentconsole password            查看当前密码
-  agentconsole password --set NEW  修改密码并重启服务
-  agentconsole password --generate 生成新密码并重启服务
-  agentconsole password --force-change
+  rymesh client              在本机启动控制台（首次自动配置、注册后台服务）并免密打开浏览器
+  rymesh client open         在浏览器中打开本机控制台
+  rymesh node setup ...      在本机安装/升级节点（通常由客户端通过 SSH 自动执行）
+  rymesh node token|add|list 管理节点令牌与远程设备
+  rymesh install [选项]      在服务器上生成配置、安装 systemd、开机自启并启动
+  rymesh serve               前台运行 Web 服务（systemd 使用）
+  rymesh status              查看服务、Agent、任务与会话状态
+  rymesh password            查看当前密码
+  rymesh password --set NEW  修改密码并重启服务
+  rymesh password --generate 生成新密码并重启服务
+  rymesh password --force-change
                                    设置密码后要求下次登录时修改
-  agentconsole import              重新导入原生 Codex / Claude 历史会话
-  agentconsole tasks [--all]       查看任务
-  agentconsole cancel <task-id>    取消任务
-  agentconsole logs [-n 100]       查看服务日志
-  agentconsole doctor              环境自检
-  agentconsole version             版本
+  rymesh import              重新导入原生 Codex / Claude 历史会话
+  rymesh tasks [--all]       查看任务
+  rymesh cancel <task-id>    取消任务
+  rymesh logs [-n 100]       查看服务日志
+  rymesh doctor              环境自检
+  rymesh version             版本
 
 install 选项:
-  --config PATH       配置文件（默认 /etc/agentconsole/config.json）
+  --config PATH       配置文件（默认 /etc/rymesh/config.json）
   --port PORT         监听端口（默认 8899）
-  --data DIR          数据目录（默认 /var/lib/agentconsole）
-  --log DIR           日志目录（默认 /var/log/agentconsole）
+  --data DIR          数据目录（默认 /var/lib/rymesh）
+  --log DIR           日志目录（默认 /var/log/rymesh）
   --no-start          只写配置和 systemd 单元，不启动
   --reset-password    将登录密码重置为默认密码 admin，并要求首次登录修改
 
 安全说明:
   - 只监听 127.0.0.1 与 EasyTier 网卡地址，不监听 0.0.0.0。
-  - Codex 非交互模式无人工审批通道，默认使用 read-only 沙箱；可选择
-    workspace-write（仍受沙箱限制），绝不使用 danger-full-access。
-  - Claude Code 通过 MCP permission-prompt-tool 提供逐次人工批准/拒绝。
+  - Agent 的权限请求与提问出现在网页上，由你选择允许一次、本会话允许、始终允许或拒绝，
+    与终端里的 CLI 一致。
 `)
 }
 
@@ -113,21 +110,25 @@ install 选项:
 
 func serveMain(args []string) int {
 	fset := flag.NewFlagSet("serve", flag.ContinueOnError)
-	configPath := fset.String("config", defaultConfigPath, "config path")
+	configPath := fset.String("config", systemConfigPath(), "config path")
 	if err := fset.Parse(args); err != nil {
 		return 2
 	}
 	cfg, err := loadConfig(*configPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "读取配置失败:", err)
-		fmt.Fprintln(os.Stderr, "请先运行: agentconsole install")
+		fmt.Fprintln(os.Stderr, "请先运行: rymesh install")
 		return 1
 	}
 	if err := cfg.ensureDirs(); err != nil {
 		fmt.Fprintln(os.Stderr, "创建目录失败:", err)
 		return 1
 	}
-	logPath := filepath.Join(cfg.LogDir, "agentconsole.log")
+	if err := migrateLegacyFiles(cfg.DataDir, cfg.LogDir); err != nil {
+		fmt.Fprintln(os.Stderr, "迁移旧版数据库失败:", err)
+		return 1
+	}
+	logPath := filepath.Join(cfg.LogDir, "rymesh.log")
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "打开日志失败:", err)
@@ -189,7 +190,7 @@ func serveMain(args []string) int {
 		logger.Printf("没有任何监听地址可用")
 		return 1
 	}
-	_ = os.MkdirAll("/run/agentconsole", 0o755)
+	_ = os.MkdirAll("/run/rymesh", 0o755)
 	pidPath := pidFilePath(addrs)
 	_ = os.WriteFile(pidPath, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o644)
 	defer os.Remove(pidPath)
@@ -212,16 +213,25 @@ func serveMain(args []string) int {
 
 func installMain(args []string) int {
 	fset := flag.NewFlagSet("install", flag.ContinueOnError)
-	configPath := fset.String("config", defaultConfigPath, "config path")
+	configPath := fset.String("config", systemConfigPath(), "config path")
 	port := fset.Int("port", 0, "listen port")
 	dataDir := fset.String("data", "", "data dir")
 	logDir := fset.String("log", "", "log dir")
 	noStart := fset.Bool("no-start", false, "do not start")
 	resetPW := fset.Bool("reset-password", false, "reset password")
-	unitPath := fset.String("unit", "/etc/systemd/system/agentconsole.service", "systemd unit path")
+	unitPath := fset.String("unit", "/etc/systemd/system/rymesh.service", "systemd unit path")
 	noEnable := fset.Bool("no-enable", false, "do not enable at boot")
 	if err := fset.Parse(args); err != nil {
 		return 2
+	}
+	if *configPath == legacyConfigPath || *configPath == defaultConfigPath {
+		exe, _ := os.Executable()
+		exe, _ = filepath.EvalSymlinks(exe)
+		if err := migrateLegacySystem(exe); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		*configPath = defaultConfigPath
 	}
 	cfg, err := loadConfig(*configPath)
 	newPW := ""
@@ -279,12 +289,12 @@ func installMain(args []string) int {
 		fmt.Fprintf(os.Stderr, "systemctl daemon-reload 失败: %v\n%s\n", err, out)
 	}
 	if !*noEnable {
-		if out, err := runSystemctl("enable", "agentconsole"); err != nil {
+		if out, err := runSystemctl("enable", "rymesh"); err != nil {
 			fmt.Fprintf(os.Stderr, "systemctl enable 失败: %v\n%s\n", err, out)
 		}
 	}
 	if !*noStart {
-		if out, err := runSystemctl("restart", "agentconsole"); err != nil {
+		if out, err := runSystemctl("restart", "rymesh"); err != nil {
 			fmt.Fprintf(os.Stderr, "systemctl restart 失败: %v\n%s\n", err, out)
 			return 1
 		}
@@ -295,13 +305,13 @@ func installMain(args []string) int {
 	fmt.Println("Rymesh 已安装")
 	fmt.Println("  配置:   " + *configPath)
 	fmt.Println("  数据:   " + cfg.DataDir)
-	fmt.Println("  日志:   " + filepath.Join(cfg.LogDir, "agentconsole.log"))
+	fmt.Println("  日志:   " + filepath.Join(cfg.LogDir, "rymesh.log"))
 	fmt.Println("  单元:   " + *unitPath)
 	for _, a := range addrs {
 		fmt.Println("  访问:   http://" + a)
 	}
 	if pw := readPasswordFile(*configPath); pw != "" {
-		fmt.Println("  密码:   " + pw + "   (agentconsole password 可再次查看)")
+		fmt.Println("  密码:   " + pw + "   (rymesh password 可再次查看)")
 	}
 	fmt.Println()
 	fmt.Println("手机连接 EasyTier 后，打开上面的 EasyTier 地址即可。")
@@ -380,7 +390,7 @@ func pidFilePath(addrs []string) string {
 			tag = port
 		}
 	}
-	return filepath.Join("/run/agentconsole", "agentconsole-"+tag+".pid")
+	return filepath.Join("/run/rymesh", "rymesh-"+tag+".pid")
 }
 
 // ---------------------------------------------------------------------------
@@ -389,17 +399,17 @@ func pidFilePath(addrs []string) string {
 
 func statusMain(args []string) int {
 	fset := flag.NewFlagSet("status", flag.ContinueOnError)
-	configPath := fset.String("config", defaultConfigPath, "config path")
+	configPath := fset.String("config", systemConfigPath(), "config path")
 	_ = fset.Parse(args)
 	cfg, err := loadConfig(*configPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "读取配置失败:", err)
 		return 1
 	}
-	fmt.Println("agentconsole", version)
+	fmt.Println("rymesh", version)
 	fmt.Println("配置:", *configPath)
 	fmt.Println("数据:", cfg.DataDir)
-	fmt.Println("日志:", filepath.Join(cfg.LogDir, "agentconsole.log"))
+	fmt.Println("日志:", filepath.Join(cfg.LogDir, "rymesh.log"))
 	addrs, _ := listenAddresses(cfg)
 	for _, a := range addrs {
 		fmt.Println("监听: http://" + a)
@@ -409,7 +419,7 @@ func statusMain(args []string) int {
 	} else {
 		fmt.Println("Web 服务: not running (或非 systemd 启动)")
 	}
-	if out, err := runSystemctl("is-active", "agentconsole"); err == nil {
+	if out, err := runSystemctl("is-active", "rymesh"); err == nil {
 		fmt.Println("systemd:", out)
 	} else {
 		fmt.Println("systemd:", out)
@@ -441,7 +451,7 @@ func statusMain(args []string) int {
 
 func passwordMain(args []string) int {
 	fset := flag.NewFlagSet("password", flag.ContinueOnError)
-	configPath := fset.String("config", defaultConfigPath, "config path")
+	configPath := fset.String("config", systemConfigPath(), "config path")
 	set := fset.String("set", "", "set a new password")
 	gen := fset.Bool("generate", false, "generate a new password")
 	forceChange := fset.Bool("force-change", false, "require a password change on next login")
@@ -479,7 +489,7 @@ func passwordMain(args []string) int {
 	_ = os.Remove(filepath.Join(filepath.Dir(*configPath), "password.txt"))
 	fmt.Println("新密码:", pw)
 	if !*noRestart {
-		if out, err := runSystemctl("restart", "agentconsole"); err != nil {
+		if out, err := runSystemctl("restart", "rymesh"); err != nil {
 			fmt.Fprintf(os.Stderr, "重启服务失败: %v\n%s\n", err, out)
 		} else {
 			fmt.Println("服务已重启；后台 Agent 任务因 KillMode=process 不受影响。")
@@ -490,7 +500,7 @@ func passwordMain(args []string) int {
 
 func importMain(args []string) int {
 	fset := flag.NewFlagSet("import", flag.ContinueOnError)
-	configPath := fset.String("config", defaultConfigPath, "config path")
+	configPath := fset.String("config", systemConfigPath(), "config path")
 	_ = fset.Parse(args)
 	cfg, err := loadConfig(*configPath)
 	if err != nil {
@@ -519,7 +529,7 @@ func importMain(args []string) int {
 
 func tasksMain(args []string) int {
 	fset := flag.NewFlagSet("tasks", flag.ContinueOnError)
-	configPath := fset.String("config", defaultConfigPath, "config path")
+	configPath := fset.String("config", systemConfigPath(), "config path")
 	all := fset.Bool("all", false, "include finished tasks")
 	_ = fset.Parse(args)
 	cfg, err := loadConfig(*configPath)
@@ -552,11 +562,11 @@ func tasksMain(args []string) int {
 
 func cancelMain(args []string) int {
 	fset := flag.NewFlagSet("cancel", flag.ContinueOnError)
-	configPath := fset.String("config", defaultConfigPath, "config path")
+	configPath := fset.String("config", systemConfigPath(), "config path")
 	_ = fset.Parse(args)
 	rest := fset.Args()
 	if len(rest) != 1 {
-		fmt.Fprintln(os.Stderr, "用法: agentconsole cancel <task-id>")
+		fmt.Fprintln(os.Stderr, "用法: rymesh cancel <task-id>")
 		return 2
 	}
 	cfg, err := loadConfig(*configPath)
@@ -592,7 +602,7 @@ func cancelMain(args []string) int {
 
 func logsMain(args []string) int {
 	fset := flag.NewFlagSet("logs", flag.ContinueOnError)
-	configPath := fset.String("config", defaultConfigPath, "config path")
+	configPath := fset.String("config", systemConfigPath(), "config path")
 	n := fset.Int("n", 100, "number of lines")
 	_ = fset.Parse(args)
 	cfg, err := loadConfig(*configPath)
@@ -600,7 +610,7 @@ func logsMain(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	path := filepath.Join(cfg.LogDir, "agentconsole.log")
+	path := filepath.Join(cfg.LogDir, "rymesh.log")
 	f, err := os.Open(path)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -632,7 +642,7 @@ func tailLines(f *os.File, n int) []string {
 
 func doctorMain(args []string) int {
 	fset := flag.NewFlagSet("doctor", flag.ContinueOnError)
-	configPath := fset.String("config", defaultConfigPath, "config path")
+	configPath := fset.String("config", systemConfigPath(), "config path")
 	_ = fset.Parse(args)
 	ok := true
 	fmt.Println("== 配置 ==")
@@ -681,7 +691,7 @@ func doctorMain(args []string) int {
 		fmt.Printf("%s %-7s %s %s\n", mark, a.Name, a.Version, a.AuthDetail)
 	}
 	fmt.Println("== systemd ==")
-	if out, err := runSystemctl("is-active", "agentconsole"); err == nil {
+	if out, err := runSystemctl("is-active", "rymesh"); err == nil {
 		fmt.Println("✓", out)
 	} else {
 		fmt.Println("!", out)
@@ -689,7 +699,7 @@ func doctorMain(args []string) int {
 	fmt.Println("== 数据库 ==")
 	if st, err := openStore(cfg.DataDir); err == nil {
 		st.Close()
-		fmt.Println("✓", filepath.Join(cfg.DataDir, "agentconsole.db"))
+		fmt.Println("✓", filepath.Join(cfg.DataDir, "rymesh.db"))
 	} else {
 		fmt.Println("✗", err)
 		ok = false
@@ -722,18 +732,4 @@ func runTaskCLI(args []string) int {
 		return 2
 	}
 	return runTaskMain(*dir)
-}
-
-func mcpPermissionCLI(args []string) int {
-	fset := flag.NewFlagSet("mcp-permission", flag.ContinueOnError)
-	dir := fset.String("dir", "", "control dir")
-	timeout := fset.Int("timeout", 3600, "timeout seconds")
-	if err := fset.Parse(args); err != nil {
-		return 2
-	}
-	if *dir == "" {
-		fmt.Fprintln(os.Stderr, "mcp-permission: --dir required")
-		return 2
-	}
-	return mcpPermissionMain(*dir, *timeout)
 }

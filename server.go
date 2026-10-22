@@ -362,7 +362,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 			"bind_addrs":             s.bindAddrs,
 			"easytier_iface":         cfg.EasyTierIface,
 			"easytier_ip":            easytierIP(s.bindAddrs),
-			"db_path":                filepath.Join(cfg.DataDir, "agentconsole.db"),
+			"db_path":                filepath.Join(cfg.DataDir, "rymesh.db"),
 			"permission_ttl_minutes": cfg.PermissionTTLMin,
 			"session_ttl_hours":      cfg.SessionTTLHours,
 			"import_on_start":        cfg.ImportOnStart,
@@ -426,7 +426,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			"max_concurrent": cfg.MaxConcurrent, "data_dir": cfg.DataDir,
 			"log_dir": cfg.LogDir, "port": cfg.Port, "bind_addrs": s.bindAddrs,
 			"easytier_iface": cfg.EasyTierIface, "easytier_ip": easytierIP(s.bindAddrs),
-			"db_path":                filepath.Join(cfg.DataDir, "agentconsole.db"),
+			"db_path":                filepath.Join(cfg.DataDir, "rymesh.db"),
 			"permission_ttl_minutes": cfg.PermissionTTLMin,
 			"session_ttl_hours":      cfg.SessionTTLHours,
 			"import_on_start":        cfg.ImportOnStart,
@@ -442,8 +442,8 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 func serviceStatus() map[string]any {
 	pid := os.Getpid()
 	boot := currentBootID()
-	return map[string]any{"pid": pid, "boot_id": boot, "service": "agentconsole",
-		"unit": "/etc/systemd/system/agentconsole.service"}
+	return map[string]any{"pid": pid, "boot_id": boot, "service": "rymesh",
+		"unit": "/etc/systemd/system/rymesh.service"}
 }
 
 func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {

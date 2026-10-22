@@ -242,7 +242,7 @@ func (s *Server) handleDeviceTest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.ssh.retry(n) // an explicit test always tries again
-	out, err := s.ssh.run(ctx, n, `uname -s -m; B="$HOME/.agentconsole/bin/agentconsole"; [ -x "$B" ] && "$B" version`, nil)
+	out, err := s.ssh.run(ctx, n, `uname -s -m; B="$HOME/.rymesh/bin/rymesh"; [ -x "$B" ] || B="$HOME/.agentconsole/bin/agentconsole"; [ -x "$B" ] && "$B" version`, nil)
 	if err != nil && out == "" {
 		if strings.Contains(err.Error(), "unable to authenticate") {
 			res := map[string]any{"stage": "auth", "error": "服务器还不认识这把密钥"}
@@ -351,16 +351,37 @@ func (s *Server) deployNode(ctx context.Context, n NodeConfig, emit func(string)
 		return n, err
 	}
 	emit(fmt.Sprintf("上传程序：%s/%s，%.1f MB（%s）", goos, goarch, float64(len(bin))/(1<<20), src))
-	const up = `set -e; D="$HOME/.agentconsole/bin"; mkdir -p "$D"; cat > "$D/agentconsole.new"; ` +
-		`chmod 755 "$D/agentconsole.new"; mv -f "$D/agentconsole.new" "$D/agentconsole"; "$D/agentconsole" version`
+	const up = `set -e; D="$HOME/.rymesh/bin"; mkdir -p "$D"; cat > "$D/rymesh.new"; ` +
+		`chmod 755 "$D/rymesh.new"; mv -f "$D/rymesh.new" "$D/rymesh"; "$D/rymesh" version`
 	if out, err := s.ssh.run(ctx, n, up, bin); err != nil {
 		return n, fmt.Errorf("上传失败：%s", strings.TrimSpace(out+" "+err.Error()))
 	}
-	if out, _ := s.ssh.run(ctx, n, `[ -f /etc/agentconsole/config.json ] && echo system`, nil); strings.TrimSpace(out) == "system" {
+	if out, _ := s.ssh.run(ctx, n, `[ -f /etc/rymesh/config.json ] && echo system`, nil); strings.TrimSpace(out) == "system" {
+		return s.adoptSystemNode(ctx, n, emit)
+	}
+	if out, _ := s.ssh.run(ctx, n, `[ -f /etc/agentconsole/config.json ] && echo legacy`, nil); strings.TrimSpace(out) == "legacy" {
+		emit("检测到旧版系统安装，备份并迁移服务及数据")
+		const migrate = `set -e
+[ "$(id -u)" = 0 ] || { echo '迁移系统级安装需要 root'; exit 1; }
+BACKUP="/var/backups/rymesh-migration-$(date +%Y%m%d-%H%M%S)"
+mkdir -m 700 "$BACKUP"
+systemctl stop agentconsole
+trap 'systemctl start agentconsole >/dev/null 2>&1 || true' EXIT
+set --
+for P in /etc/agentconsole /var/lib/agentconsole /var/log/agentconsole /etc/systemd/system/agentconsole.service; do
+  [ ! -e "$P" ] || set -- "$@" "$P"
+done
+tar -czf "$BACKUP/legacy.tar.gz" "$@"
+install -m 0755 "$HOME/.rymesh/bin/rymesh" /usr/local/bin/rymesh
+/usr/local/bin/rymesh install
+trap - EXIT`
+		if out, err := s.ssh.run(ctx, n, migrate, nil); err != nil {
+			return n, fmt.Errorf("迁移旧版系统安装失败：%s", strings.TrimSpace(out))
+		}
 		return s.adoptSystemNode(ctx, n, emit)
 	}
 	token := ""
-	if out, err := s.ssh.run(ctx, n, `C="$HOME/.agentconsole/config.json"; [ -f "$C" ] && "$HOME/.agentconsole/bin/agentconsole" node token --config "$C" 2>/dev/null`, nil); err == nil {
+	if out, err := s.ssh.run(ctx, n, `C="$HOME/.rymesh/config.json"; [ -f "$C" ] || C="$HOME/.agentconsole/config.json"; [ -f "$C" ] && "$HOME/.rymesh/bin/rymesh" node token --config "$C" 2>/dev/null`, nil); err == nil {
 		token = strings.TrimSpace(out)
 	}
 	if token != "" {
@@ -373,7 +394,7 @@ func (s *Server) deployNode(ctx context.Context, n NodeConfig, emit func(string)
 		port = defaultPort
 	}
 	emit("安装并启动节点服务")
-	cmd := fmt.Sprintf(`"$HOME/.agentconsole/bin/agentconsole" node setup --token %s --port %d --name %s`,
+	cmd := fmt.Sprintf(`"$HOME/.rymesh/bin/rymesh" node setup --token %s --port %d --name %s`,
 		shellQuote(token), port, shellQuote(n.Name))
 	out, err = s.ssh.run(ctx, n, loginShell(cmd), nil)
 	if err != nil {
@@ -407,15 +428,15 @@ func (s *Server) deployNode(ctx context.Context, n NodeConfig, emit func(string)
 	return n, errors.New("节点已安装，但通过 SSH 隧道访问失败")
 }
 
-// adoptSystemNode takes over a server-wide install (`agentconsole install`:
-// /etc/agentconsole, a systemd unit) instead of starting a second node next to
+// adoptSystemNode takes over a server-wide install (`rymesh install`:
+// /etc/rymesh, a systemd unit) instead of starting a second node next to
 // it, which would fight it for the port. It keeps that install's config and
 // port, adds a node token, and upgrades its binary in place (the previous one
 // is kept as <binary>.prev). Running agent tasks survive the restart.
 func (s *Server) adoptSystemNode(ctx context.Context, n NodeConfig, emit func(string)) (NodeConfig, error) {
-	const cfg = "/etc/agentconsole/config.json"
+	const cfg = "/etc/rymesh/config.json"
 	emit("检测到服务器上的系统级安装（" + cfg + "），接管并升级它")
-	out, err := s.ssh.run(ctx, n, `"$HOME/.agentconsole/bin/agentconsole" node token --config `+cfg+` 2>/dev/null`, nil)
+	out, err := s.ssh.run(ctx, n, `"$HOME/.rymesh/bin/rymesh" node token --config `+cfg+` 2>/dev/null`, nil)
 	token := strings.TrimSpace(out)
 	if err != nil || token == "" {
 		return n, fmt.Errorf("读取节点令牌失败（需要能写 %s）：%s", cfg, strings.TrimSpace(out))
@@ -427,11 +448,11 @@ func (s *Server) adoptSystemNode(ctx context.Context, n NodeConfig, emit func(st
 	}
 	emit("升级系统服务的程序并重启（运行中的任务不受影响）")
 	const swap = `set -e
-BIN=$(systemctl show -p ExecStart --value agentconsole | sed -n 's/.*path=\([^ ;]*\).*/\1/p')
-[ -n "$BIN" ] || BIN=/usr/local/bin/agentconsole
+BIN=$(systemctl show -p ExecStart --value rymesh | sed -n 's/.*path=\([^ ;]*\).*/\1/p')
+[ -n "$BIN" ] || BIN=/usr/local/bin/rymesh
 cp -p "$BIN" "$BIN.prev" 2>/dev/null || true
-install -m 0755 "$HOME/.agentconsole/bin/agentconsole" "$BIN"
-systemctl restart agentconsole
+install -m 0755 "$HOME/.rymesh/bin/rymesh" "$BIN"
+systemctl restart rymesh
 echo "$BIN"`
 	if out, err := s.ssh.run(ctx, n, swap, nil); err != nil {
 		return n, fmt.Errorf("升级系统服务失败（需要 root）：%s", strings.TrimSpace(out))
@@ -473,7 +494,7 @@ func nodeBinary(goos, goarch, dataDir string) ([]byte, string, error) {
 		b, err := os.ReadFile(exe)
 		return b, "本程序", err
 	}
-	name := "agentconsole_" + goos + "_" + goarch
+	name := "rymesh_" + goos + "_" + goarch
 	wd, _ := os.Getwd()
 	for _, dir := range []string{filepath.Join(filepath.Dir(exe), "dist"), filepath.Join(filepath.Dir(exe), "..", "dist"),
 		filepath.Join(wd, "dist"), filepath.Join(dataDir, "dist")} {

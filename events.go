@@ -798,9 +798,9 @@ func normalizeCodexRPC(method string, params map[string]any) []normEvent {
 				return []normEvent{{Kind: "assistant", Payload: map[string]any{"text": txt}}}
 			}
 		}
-	case "agentconsole/reply":
+	case "rymesh/reply", legacyName + "/reply":
 		return []normEvent{{Kind: "assistant", Payload: map[string]any{"text": str(params["text"])}}}
-	case "agentconsole/usage":
+	case "rymesh/usage", legacyName + "/usage":
 		u, _ := params["usage"].(map[string]any)
 		return []normEvent{{Kind: "usage", Payload: map[string]any{"agent": "codex", "usage": map[string]any{
 			"input_tokens": u["inputTokens"], "cached_input_tokens": u["cachedInputTokens"],

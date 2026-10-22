@@ -211,7 +211,7 @@ func (s *Store) saveDevices(nodes []NodeConfig) error {
 // authorizedLine is the authorized_keys line for a key, with a comment that
 // tells the server's owner which client it belongs to.
 func authorizedLine(k ssh.PublicKey, name string) string {
-	comment := "agentconsole"
+	comment := "rymesh"
 	name = strings.TrimPrefix(strings.TrimPrefix(name, comment), "-")
 	if c := strings.Map(func(r rune) rune {
 		if r <= ' ' || r == 0x7f {
@@ -401,7 +401,7 @@ func (s *Server) handleGenerateKey(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	priv, err := newKeyPair("agentconsole " + req.Name)
+	priv, err := newKeyPair("rymesh " + req.Name)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -651,7 +651,7 @@ func installAuthorizedKey(ctx context.Context, n NodeConfig, password, pub strin
 // one client to another, e.g. from a Mac to a phone.
 // ---------------------------------------------------------------------------
 
-const bundleFormat = "agentconsole-bundle"
+const bundleFormat = "rymesh-bundle"
 
 // bundleFile is what is written to disk; everything sensitive is in Data,
 // sealed with AES-256-GCM under a key derived from the code by scrypt.
@@ -748,7 +748,7 @@ func sealBundle(p bundlePayload, code, from string) ([]byte, error) {
 
 func openBundle(data []byte, code string) (*bundlePayload, error) {
 	var f bundleFile
-	if err := json.Unmarshal(data, &f); err != nil || f.Format != bundleFormat {
+	if err := json.Unmarshal(data, &f); err != nil || (f.Format != bundleFormat && f.Format != legacyName+"-bundle") {
 		return nil, errors.New("不是 Rymesh 导出的文件")
 	}
 	if f.Version != 1 {
@@ -864,7 +864,7 @@ func (s *Server) handleVaultExport(w http.ResponseWriter, r *http.Request) {
 		warnings = []string{}
 	}
 	writeJSON(w, 200, map[string]any{"code": code, "bundle": string(data),
-		"filename": "agentconsole-" + time.Now().Format("20060102-1504") + ".acbundle", "warnings": warnings})
+		"filename": "rymesh-" + time.Now().Format("20060102-1504") + ".rymesh", "warnings": warnings})
 }
 
 // handleVaultImport opens a bundle and merges it: keys already present are

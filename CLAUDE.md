@@ -1,4 +1,4 @@
-# agent-console — project rules
+# Rymesh — project rules
 
 ## Core principle (non-negotiable)
 

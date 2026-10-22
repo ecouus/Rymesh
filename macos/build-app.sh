@@ -13,8 +13,8 @@ ROOT=..
 VERSION=${VERSION:-$(git -C "$ROOT" describe --tags --always 2>/dev/null || echo dev)}
 APP=dist.noindex/Rymesh.app
 
-for f in "$ROOT/dist/agentconsole_darwin_arm64" "$ROOT/dist/agentconsole_darwin_amd64" \
-	"$ROOT/dist/agentconsole_linux_amd64" "$ROOT/dist/agentconsole_linux_arm64"; do
+for f in "$ROOT/dist/rymesh_darwin_arm64" "$ROOT/dist/rymesh_darwin_amd64" \
+	"$ROOT/dist/rymesh_linux_amd64" "$ROOT/dist/rymesh_linux_arm64"; do
 	[ -f "$f" ] || { echo "missing $f: run make dist first" >&2; exit 1; }
 done
 
@@ -25,14 +25,14 @@ done
 rm -rf "${APP:?}"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 sed "s/__VERSION__/$VERSION/g" Resources/Info.plist > "$APP/Contents/Info.plist"
-lipo -create .build/arm64/release/AgentConsoleMac .build/x86_64/release/AgentConsoleMac \
+lipo -create .build/arm64/release/RymeshMac .build/x86_64/release/RymeshMac \
 	-output "$APP/Contents/MacOS/Rymesh"
-lipo -create "$ROOT/dist/agentconsole_darwin_arm64" "$ROOT/dist/agentconsole_darwin_amd64" \
-	-output "$APP/Contents/Resources/agentconsole"
+lipo -create "$ROOT/dist/rymesh_darwin_arm64" "$ROOT/dist/rymesh_darwin_amd64" \
+	-output "$APP/Contents/Resources/rymesh"
 # Node programs the app uploads when it deploys to a Linux server
 # (nodeBinary looks in dist/ next to the console binary).
 mkdir -p "$APP/Contents/Resources/dist"
-cp "$ROOT/dist/agentconsole_linux_amd64" "$ROOT/dist/agentconsole_linux_arm64" "$APP/Contents/Resources/dist/"
+cp "$ROOT/dist/rymesh_linux_amd64" "$ROOT/dist/rymesh_linux_arm64" "$APP/Contents/Resources/dist/"
 
 # App icon from the web icon.
 ICONSET=.build/AppIcon.iconset
@@ -47,7 +47,7 @@ cp "$ROOT/web/icon-512.png" "$ICONSET/icon_256x256@2x.png"
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 
 # Ad-hoc signature (inner program first): enough to run on Apple silicon.
-codesign --force --sign - "$APP/Contents/Resources/agentconsole"
+codesign --force --sign - "$APP/Contents/Resources/rymesh"
 codesign --force --sign - "$APP"
 codesign --verify --deep --strict "$APP"
 echo "built $APP ($VERSION)"

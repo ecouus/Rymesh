@@ -19,10 +19,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"os/exec"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -143,69 +144,181 @@ type modelChoice struct {
 	Description string   `json:"description,omitempty"`
 }
 
-// claudeModels mirrors the aliases `claude /model` lists.
-var claudeModels = []modelChoice{
-	{ID: "", Label: "默认", Default: true},
-	{ID: "best", Label: "best（最强可用）"},
-	{ID: "opus", Label: "Opus"}, {ID: "sonnet", Label: "Sonnet"}, {ID: "haiku", Label: "Haiku"},
-	{ID: "fable", Label: "Fable"}, {ID: "opusplan", Label: "Opus 规划 + Sonnet 执行"},
-	{ID: "opus[1m]", Label: "Opus（1M 上下文）"}, {ID: "sonnet[1m]", Label: "Sonnet（1M 上下文）"},
-	{ID: "fable[1m]", Label: "Fable（1M 上下文）"},
-}
-
 var claudeEfforts = []string{"low", "medium", "high", "xhigh", "max"}
 
-var (
-	codexModelsMu  sync.Mutex
-	codexModelsAt  time.Time
-	codexModelsVal []modelChoice
-)
+// Every picker request starts a CLI on this node. Only local CLI protocol
+// messages travel through the console; the CLI owns authentication and discovery.
+func startModelQuery(ctx context.Context, bin string, args ...string) (io.WriteCloser, io.ReadCloser, func(), error) {
+	if bin == "" {
+		return nil, nil, nil, errors.New("Agent 不可用")
+	}
+	cmd := exec.CommandContext(ctx, bin, args...)
+	in, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		_ = in.Close()
+		return nil, nil, nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		_ = in.Close()
+		_ = out.Close()
+		return nil, nil, nil, err
+	}
+	return in, out, func() {
+		_ = in.Close()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}, nil
+}
 
 // codexModelList asks app-server for the models this Codex account can use.
 func codexModelList(ctx context.Context, bin string) ([]modelChoice, error) {
-	codexModelsMu.Lock()
-	defer codexModelsMu.Unlock()
-	if codexModelsVal != nil && time.Since(codexModelsAt) < 10*time.Minute {
-		return codexModelsVal, nil
-	}
-	if bin == "" {
-		return nil, errors.New("Codex 不可用")
-	}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, bin, "app-server")
-	in, _ := cmd.StdinPipe()
-	out, _ := cmd.StdoutPipe()
-	if err := cmd.Start(); err != nil {
+	in, out, cleanup, err := startModelQuery(ctx, bin, "app-server")
+	if err != nil {
 		return nil, err
 	}
-	defer func() { in.Close(); _ = cmd.Wait() }()
-	send := func(v any) { b, _ := json.Marshal(v); _, _ = in.Write(append(b, '\n')) }
-	send(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize",
-		"params": map[string]any{"clientInfo": map[string]any{"name": "agentconsole", "version": version}}})
+	defer cleanup()
+	send := json.NewEncoder(in).Encode
+	if err := send(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize",
+		"params": map[string]any{"clientInfo": map[string]any{"name": "rymesh", "version": version}}}); err != nil {
+		return nil, err
+	}
+	var models []modelChoice
+	seenCursors := map[string]bool{}
 	sc := bufio.NewScanner(out)
 	sc.Buffer(make([]byte, 1<<20), 8<<20)
 	for sc.Scan() {
 		var m struct {
 			ID     int             `json:"id"`
 			Result json.RawMessage `json:"result"`
+			Error  *struct {
+				Message string `json:"message"`
+			} `json:"error"`
 		}
 		if json.Unmarshal(sc.Bytes(), &m) != nil {
 			continue
 		}
+		if (m.ID == 1 || m.ID == 2) && m.Error != nil {
+			return nil, fmt.Errorf("Codex 模型查询失败：%s", m.Error.Message)
+		}
 		switch m.ID {
 		case 1:
-			send(map[string]any{"jsonrpc": "2.0", "method": "initialized"})
-			send(map[string]any{"jsonrpc": "2.0", "id": 2, "method": "model/list", "params": map[string]any{}})
+			if err := send(map[string]any{"jsonrpc": "2.0", "method": "initialized"}); err != nil {
+				return nil, err
+			}
+			if err := send(map[string]any{"jsonrpc": "2.0", "id": 2, "method": "model/list", "params": map[string]any{}}); err != nil {
+				return nil, err
+			}
 		case 2:
 			list, err := parseCodexModels(m.Result)
-			if err == nil {
-				codexModelsVal, codexModelsAt = list, time.Now()
+			if err != nil {
+				return nil, err
 			}
-			return list, err
+			models = append(models, list...)
+			var page struct {
+				NextCursor string `json:"nextCursor"`
+			}
+			_ = json.Unmarshal(m.Result, &page)
+			if page.NextCursor == "" {
+				if len(models) == 0 {
+					return nil, errors.New("Codex 没有返回可用模型")
+				}
+				return models, nil
+			}
+			if seenCursors[page.NextCursor] {
+				return nil, errors.New("Codex 返回了重复的模型分页游标")
+			}
+			seenCursors[page.NextCursor] = true
+			if err := send(map[string]any{"jsonrpc": "2.0", "id": 2, "method": "model/list", "params": map[string]any{"cursor": page.NextCursor}}); err != nil {
+				return nil, err
+			}
 		}
 	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if sc.Err() != nil {
+		return nil, sc.Err()
+	}
 	return nil, errors.New("Codex 没有返回模型列表")
+}
+
+// Claude's SDK initialize control response contains the CLI's model picker,
+// including account-specific options and per-model effort capabilities. No user
+// prompt is sent, and the query is not saved as a conversation.
+func claudeModelList(ctx context.Context, bin string) ([]modelChoice, error) {
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	in, out, cleanup, err := startModelQuery(ctx, bin, "-p", "--input-format", "stream-json",
+		"--output-format", "stream-json", "--verbose", "--no-session-persistence")
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	const requestID = "models-init"
+	if err := json.NewEncoder(in).Encode(map[string]any{"type": "control_request", "request_id": requestID,
+		"request": map[string]any{"subtype": "initialize"}}); err != nil {
+		return nil, err
+	}
+	sc := bufio.NewScanner(out)
+	sc.Buffer(make([]byte, 1<<20), 8<<20)
+	for sc.Scan() {
+		var m struct {
+			Type     string `json:"type"`
+			Response struct {
+				Subtype   string          `json:"subtype"`
+				RequestID string          `json:"request_id"`
+				Error     string          `json:"error"`
+				Response  json.RawMessage `json:"response"`
+			} `json:"response"`
+		}
+		if json.Unmarshal(sc.Bytes(), &m) != nil || m.Type != "control_response" || m.Response.RequestID != requestID {
+			continue
+		}
+		if m.Response.Subtype != "success" {
+			return nil, fmt.Errorf("Claude 模型查询失败：%s", orDefault(m.Response.Error, "CLI 不支持模型查询"))
+		}
+		return parseClaudeModels(m.Response.Response)
+	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if sc.Err() != nil {
+		return nil, sc.Err()
+	}
+	return nil, errors.New("Claude 没有返回模型列表，请检查 CLI 版本与登录状态")
+}
+
+func parseClaudeModels(result json.RawMessage) ([]modelChoice, error) {
+	var r struct {
+		Models []struct {
+			Value                 string   `json:"value"`
+			DisplayName           string   `json:"displayName"`
+			Description           string   `json:"description"`
+			SupportedEffortLevels []string `json:"supportedEffortLevels"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(result, &r); err != nil {
+		return nil, err
+	}
+	if len(r.Models) == 0 {
+		return nil, errors.New("Claude 没有返回可用模型，请检查 CLI 版本与登录状态")
+	}
+	out := make([]modelChoice, 0, len(r.Models))
+	for _, m := range r.Models {
+		id := m.Value
+		if id == "default" {
+			id = ""
+		} // Empty settings restore the CLI's default.
+		out = append(out, modelChoice{ID: id, Label: orDefault(m.DisplayName, m.Value), Default: m.Value == "default",
+			Description: m.Description, Efforts: m.SupportedEffortLevels})
+	}
+	return out, nil
 }
 
 func parseCodexModels(result json.RawMessage) ([]modelChoice, error) {
@@ -240,20 +353,26 @@ func parseCodexModels(result json.RawMessage) ([]modelChoice, error) {
 
 // handleAgentModels feeds the composer's model picker.
 func (s *Server) handleAgentModels(w http.ResponseWriter, r *http.Request) {
-	switch r.PathValue("name") {
-	case "claude":
-		writeJSON(w, 200, map[string]any{"models": claudeModels, "efforts": claudeEfforts})
-	case "codex":
-		a, _ := s.agents.Get("codex")
-		list, err := codexModelList(r.Context(), a.Binary)
-		if err != nil {
-			writeErr(w, 502, err.Error())
-			return
-		}
-		writeJSON(w, 200, map[string]any{"models": list})
-	default:
+	w.Header().Set("Cache-Control", "no-store")
+	name := r.PathValue("name")
+	if name != "claude" && name != "codex" {
 		writeErr(w, 404, "未知 Agent")
+		return
 	}
+	a, _ := s.agents.Get(name)
+	var list []modelChoice
+	var err error
+	switch name {
+	case "claude":
+		list, err = claudeModelList(r.Context(), a.Binary)
+	case "codex":
+		list, err = codexModelList(r.Context(), a.Binary)
+	}
+	if err != nil {
+		writeErr(w, 502, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"models": list})
 }
 
 // handleLocalCommand answers the commands the console handles without

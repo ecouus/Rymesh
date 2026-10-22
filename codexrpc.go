@@ -111,7 +111,7 @@ func (c *codexSession) outcome() (string, string, bool) {
 
 func (c *codexSession) start() {
 	c.call("initialize", map[string]any{
-		"clientInfo":   map[string]any{"name": "agentconsole", "version": version},
+		"clientInfo":   map[string]any{"name": "rymesh", "version": version},
 		"capabilities": map[string]any{"experimentalApi": true}, // collaborationMode (plan)
 	})
 }
@@ -228,7 +228,7 @@ func (c *codexSession) openThread() {
 
 // reply prints a command's answer in the transcript, as the CLI prints it.
 func (c *codexSession) reply(text string) {
-	c.w.append(map[string]any{"method": "agentconsole/reply", "params": map[string]any{"text": text}})
+	c.w.append(map[string]any{"method": "rymesh/reply", "params": map[string]any{"text": text}})
 }
 
 // command runs one of Codex's slash commands (codexCommands in slash.go).
@@ -388,7 +388,7 @@ func (c *codexSession) handleNotification(method string, params json.RawMessage,
 		usage := c.usage
 		c.state.Unlock()
 		if len(usage) > 0 {
-			c.w.append(map[string]any{"method": "agentconsole/usage", "params": map[string]any{"usage": usage}})
+			c.w.append(map[string]any{"method": "rymesh/usage", "params": map[string]any{"usage": usage}})
 		}
 	}
 	if !codexLogged[method] {
@@ -506,7 +506,7 @@ func (c *codexSession) handleServerRequest(id json.RawMessage, method string, pa
 		return
 	default:
 		c.send(map[string]any{"jsonrpc": "2.0", "id": id,
-			"error": map[string]any{"code": -32601, "message": "agentconsole does not support " + method}})
+			"error": map[string]any{"code": -32601, "message": "rymesh does not support " + method}})
 		return
 	}
 	resp, ok := awaitUser(c.control, req, c.timeout, c.stop)

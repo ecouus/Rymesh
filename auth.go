@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const sessionCookie = "ac_session"
+const sessionCookie = "rymesh_session"
 
 type authPayload struct {
 	Exp  int64  `json:"exp"`

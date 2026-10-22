@@ -4,7 +4,7 @@
 <dict>
   <key>CFBundleName</key><string>Rymesh</string>
   <key>CFBundleDisplayName</key><string>Rymesh</string>
-  <key>CFBundleIdentifier</key><string>dev.agentconsole.mac</string>
+  <key>CFBundleIdentifier</key><string>dev.rymesh.mac</string>
   <key>CFBundleExecutable</key><string>Rymesh</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>

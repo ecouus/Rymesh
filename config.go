@@ -18,9 +18,9 @@ import (
 )
 
 const (
-	defaultConfigPath = "/etc/agentconsole/config.json"
-	defaultDataDir    = "/var/lib/agentconsole"
-	defaultLogDir     = "/var/log/agentconsole"
+	defaultConfigPath = "/etc/rymesh/config.json"
+	defaultDataDir    = "/var/lib/rymesh"
+	defaultLogDir     = "/var/log/rymesh"
 	defaultPort       = 8899
 	configVersion     = 1
 	defaultPassword   = "admin"
@@ -121,7 +121,7 @@ func (c *Config) normalize() error {
 	// The cookie HMAC key comes from Secret. An empty value signs with a
 	// publicly known key, so anyone could mint a valid session cookie.
 	if strings.TrimSpace(c.Secret) == "" {
-		return errors.New("config secret is empty; refusing to sign sessions with a known key (run: agentconsole install, or set a random secret)")
+		return errors.New("config secret is empty; refusing to sign sessions with a known key (run: rymesh install, or set a random secret)")
 	}
 	if c.PasswordHash == "" {
 		return errors.New("config password_hash is empty")

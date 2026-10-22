@@ -1,6 +1,6 @@
 package console
 
-// `agentconsole client` is the entry point on a personal machine: the console
+// `rymesh client` is the entry point on a personal machine: the console
 // runs locally (loopback only), is both this machine's node and the hub for
 // the user's servers, and opens in the browser without a password through a
 // one-time login ticket.
@@ -29,6 +29,12 @@ func clientMain(args []string) int {
 	sub := ""
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		sub, args = args[0], args[1:]
+	}
+	if sub != "open" {
+		if err := migrateLegacyHome(); err != nil {
+			fmt.Fprintln(os.Stderr, "迁移旧版数据失败:", err)
+			return 1
+		}
 	}
 	base, err := agentHome()
 	if err != nil {
@@ -88,7 +94,7 @@ func clientMain(args []string) int {
 				fmt.Fprintf(os.Stderr, "控制台没有在 127.0.0.1:%d 启动，日志在 %s\n", cfg.Port, cfg.LogDir)
 				return 1
 			}
-			fmt.Println("控制台已在后台运行（不会开机自启；agentconsole client stop 停止）。")
+			fmt.Println("控制台已在后台运行（不会开机自启；rymesh client stop 停止）。")
 		}
 		if *noOpen {
 			fmt.Printf("http://127.0.0.1:%d\n", cfg.Port)
@@ -97,10 +103,10 @@ func clientMain(args []string) int {
 		return openConsole(cfg)
 	}
 	fmt.Fprintln(os.Stderr, `用法:
-  agentconsole client          启动（首次自动配置）并在浏览器中打开
-  agentconsole client open     在浏览器中打开（免密）
-  agentconsole client stop     停止控制台（运行中的 Agent 任务不受影响）
-  agentconsole client serve    前台运行（供服务管理器调用）`)
+  rymesh client          启动（首次自动配置）并在浏览器中打开
+  rymesh client open     在浏览器中打开（免密）
+  rymesh client stop     停止控制台（运行中的 Agent 任务不受影响）
+  rymesh client serve    前台运行（供服务管理器调用）`)
 	return 2
 }
 
@@ -208,7 +214,7 @@ func runningBuild(port int) string {
 func openConsole(cfg *Config) int {
 	b, err := os.ReadFile(filepath.Join(cfg.DataDir, ticketFile))
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "控制台未运行（没有登录凭证），请先运行 agentconsole client")
+		fmt.Fprintln(os.Stderr, "控制台未运行（没有登录凭证），请先运行 rymesh client")
 		return 1
 	}
 	url := fmt.Sprintf("http://127.0.0.1:%d/api/login/ticket?t=%s", cfg.Port, strings.TrimSpace(string(b)))

@@ -12,9 +12,9 @@ package console
 //
 // Setup, per remote machine:
 //
-//	node$ agentconsole node token          # prints (and creates) its token
-//	hub$  agentconsole node add mac --name Mac --url http://10.0.0.2:8899 --token <token>
-//	hub$  systemctl restart agentconsole
+//	node$ rymesh node token          # prints (and creates) its token
+//	hub$  rymesh node add mac --name Mac --url http://10.0.0.2:8899 --token <token>
+//	hub$  systemctl restart rymesh
 
 import (
 	"context"
@@ -391,18 +391,18 @@ func cliTransport(n NodeConfig, keys keySource) http.RoundTripper {
 }
 
 // ---------------------------------------------------------------------------
-// CLI: agentconsole node token|add|remove|list|name
+// CLI: rymesh node token|add|remove|list|name
 // ---------------------------------------------------------------------------
 
 func nodeMain(args []string) int {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, `用法:
-  agentconsole node setup --token 令牌 [--port 8899] [--name 名称]  在本机安装/升级节点（~/.agentconsole，仅监听 127.0.0.1）
-  agentconsole node token [--rotate]                       显示本机节点令牌（首次自动生成）
-  agentconsole node name <名称>                             设置本机在设备列表中的名称
-  agentconsole node add <id> --name 名称 --url 地址 --token 令牌  添加远程设备（在主控台上执行）
-  agentconsole node remove <id>                            移除远程设备
-  agentconsole node list                                   列出远程设备
+  rymesh node setup --token 令牌 [--port 8899] [--name 名称]  在本机安装/升级节点（~/.rymesh，仅监听 127.0.0.1）
+  rymesh node token [--rotate]                       显示本机节点令牌（首次自动生成）
+  rymesh node name <名称>                             设置本机在设备列表中的名称
+  rymesh node add <id> --name 名称 --url 地址 --token 令牌  添加远程设备（在主控台上执行）
+  rymesh node remove <id>                            移除远程设备
+  rymesh node list                                   列出远程设备
 所有子命令都接受 --config；修改后需重启服务生效。`)
 		return 2
 	}
@@ -411,7 +411,7 @@ func nodeMain(args []string) int {
 		return nodeSetupMain(rest) // runs on the node itself; no hub config
 	}
 	fset := flag.NewFlagSet("node "+sub, flag.ContinueOnError)
-	configPath := fset.String("config", defaultConfigPath, "config path")
+	configPath := fset.String("config", systemConfigPath(), "config path")
 	rotate := fset.Bool("rotate", false, "generate a new token")
 	name := fset.String("name", "", "display name")
 	nodeURL := fset.String("url", "", "node base URL, e.g. http://10.0.0.2:8899")
@@ -431,19 +431,28 @@ func nodeMain(args []string) int {
 		fmt.Fprintln(os.Stderr, "读取配置失败:", err)
 		return 1
 	}
-	st, err := openStore(cfg.DataDir)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "打开数据库失败:", err)
-		return 1
-	}
-	defer st.Close()
-	if err := initVault(st, cfg, *configPath); err != nil {
-		fmt.Fprintln(os.Stderr, "读取设备失败:", err)
-		return 1
+	// Devices live in the database (vault.go); token and name only touch
+	// config.json, so they work while the service has the database open.
+	var st *Store
+	if sub == "add" || sub == "remove" || sub == "list" {
+		if st, err = openStore(cfg.DataDir); err != nil {
+			fmt.Fprintln(os.Stderr, "打开数据库失败:", err)
+			return 1
+		}
+		defer st.Close()
+		if err := initVault(st, cfg, *configPath); err != nil {
+			fmt.Fprintln(os.Stderr, "读取设备失败:", err)
+			return 1
+		}
 	}
 	save := func() int {
-		if err := st.saveDevices(cfg.Nodes); err == nil {
-			err = saveConfigFile(*configPath, cfg)
+		var err error
+		if st != nil {
+			if err = st.saveDevices(cfg.Nodes); err == nil {
+				err = saveConfigFile(*configPath, cfg)
+			}
+		} else {
+			err = saveConfig(*configPath, cfg)
 		}
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "保存配置失败:", err)
@@ -469,14 +478,14 @@ func nodeMain(args []string) int {
 		return 0
 	case "name":
 		if len(pos) != 1 {
-			fmt.Fprintln(os.Stderr, "用法: agentconsole node name <名称>")
+			fmt.Fprintln(os.Stderr, "用法: rymesh node name <名称>")
 			return 2
 		}
 		cfg.NodeName = pos[0]
 		return save()
 	case "add":
 		if len(pos) != 1 || *nodeURL == "" || *token == "" {
-			fmt.Fprintln(os.Stderr, "用法: agentconsole node add <id> --name 名称 --url 地址 --token 令牌")
+			fmt.Fprintln(os.Stderr, "用法: rymesh node add <id> --name 名称 --url 地址 --token 令牌")
 			return 2
 		}
 		id := pos[0]
@@ -511,7 +520,7 @@ func nodeMain(args []string) int {
 		return save()
 	case "remove":
 		if len(pos) != 1 {
-			fmt.Fprintln(os.Stderr, "用法: agentconsole node remove <id>")
+			fmt.Fprintln(os.Stderr, "用法: rymesh node remove <id>")
 			return 2
 		}
 		kept := cfg.Nodes[:0]

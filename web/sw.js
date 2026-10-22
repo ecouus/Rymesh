@@ -2,7 +2,7 @@
  * Caches the app shell only. Never caches /api: task state and events must
  * always come from the server. Registered only in a secure context.
  */
-var CACHE = "agentconsole-shell-v20";
+var CACHE = "rymesh-shell-v21";
 // Code and markup must match the server that is running, so they are fetched
 // first and only fall back to the cache offline. Icons are immutable enough to
 // serve from cache.
@@ -34,7 +34,7 @@ self.addEventListener("fetch", function (event) {
   if (req.method !== "GET") return;
   var url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
-  if (url.pathname.indexOf("/api/") === 0) return;
+  if (url.pathname.indexOf("/api/") === 0 || /^\/n\/[^/]+\/api\//.test(url.pathname)) return;
 
   if (req.mode === "navigate") {
     event.respondWith(

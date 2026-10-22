@@ -8,9 +8,9 @@
   var md = window.MD.render;
 
   var LS = {
-    get: function (k, d) { try { var v = localStorage.getItem("ac." + k); return v === null ? d : v; } catch (e) { return d; } },
-    set: function (k, v) { try { localStorage.setItem("ac." + k, v); } catch (e) { /* private mode */ } },
-    del: function (k) { try { localStorage.removeItem("ac." + k); } catch (e) {} }
+    get: function (k, d) { try { var v = localStorage.getItem("rymesh." + k); return v === null ? d : v; } catch (e) { return d; } },
+    set: function (k, v) { try { localStorage.setItem("rymesh." + k, v); } catch (e) { /* private mode */ } },
+    del: function (k) { try { localStorage.removeItem("rymesh." + k); } catch (e) {} }
   };
 
   var S = {
@@ -645,10 +645,10 @@
 
   // ------------------------------------------------------------ native bridge
 
-  // The Android app injects AgentConsoleNative; the Mac app listens on the
+  // The Android app injects RymeshNative; the Mac app listens on the
   // "ac" message handler. In a plain browser both are absent and the web
   // fallbacks apply.
-  var androidNative = window.AgentConsoleNative || null;
+  var androidNative = window.RymeshNative || null;
   var macNative = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ac || null;
 
   function copyText(text, msg) {
@@ -1210,8 +1210,8 @@
   function importSheet() {
     var body = openSheet("导入设备",
       '<form class="stack" data-import-form="1">' +
-      '<p class="small muted" style="margin:0">选择从另一台设备导出的 <code>.acbundle</code> 文件，并输入导出时显示的解密码。</p>' +
-      '<label class="file-pick"><input type="file" name="file" accept=".acbundle,application/json,application/octet-stream,*/*">' +
+      '<p class="small muted" style="margin:0">选择从另一台设备导出的 <code>.rymesh</code> 文件，并输入导出时显示的解密码。</p>' +
+      '<label class="file-pick"><input type="file" name="file" accept=".rymesh,.acbundle,application/json,application/octet-stream,*/*">' +
       '<span class="file-pick-label">选择文件…</span></label>' +
       '<details class="fold"><summary>或粘贴文件内容</summary><textarea name="text" class="input mono" rows="4" style="margin-top:8px"></textarea></details>' +
       '<label class="field"><span>解密码</span><input name="code" class="mono" placeholder="XXXX-XXXX-XXXX-XXXX" autocomplete="off" autocapitalize="characters" spellcheck="false"></label>' +
@@ -1346,7 +1346,7 @@
     if (!meta) return;
     var light = S.theme === "light" || (S.theme === "auto" && matchMedia("(prefers-color-scheme: light)").matches);
     meta.setAttribute("content", light ? "#ffffff" : "#0f0f10");
-    if (window.AgentConsoleNative) window.AgentConsoleNative.setTheme(!light);
+    if (window.RymeshNative) window.RymeshNative.setTheme(!light);
   }
   matchMedia("(prefers-color-scheme: light)").addEventListener?.("change", updateThemeColor);
 
@@ -3095,12 +3095,8 @@
   }
 
   function loadModels(agent) {
-    var k = cacheKey(agent);
-    if (S.models[k]) return Promise.resolve(S.models[k]);
-    return api("/api/agents/" + encodeURIComponent(agent) + "/models").then(function (d) {
-      S.models[k] = d;
-      return d;
-    });
+    // Always query the selected node, even if the picker has been opened before.
+    return api("/api/agents/" + encodeURIComponent(agent) + "/models");
   }
 
   function currentSettings() { return (S.session ? S.sessionSettings : S.draftSettings) || {}; }
@@ -3122,8 +3118,8 @@
     }).catch(function () {});
   }
 
-  // Picking in the menu sets the conversation's settings directly, like the
-  // CLI's /model picker; typing /model goes through the agent as in the CLI.
+  // Picking in the menu sets the conversation's settings directly. A bare
+  // /model opens this picker; a command with arguments goes through the agent.
   function saveSettings(next) {
     if (!S.session) {
       S.draftSettings = next;
@@ -3134,17 +3130,22 @@
       .then(function (r) { S.sessionSettings = r.settings || next; syncModelBtn(); });
   }
 
+  var modelMenuRequest = 0;
   function closeModelMenu() {
+    modelMenuRequest++;
     $("#model-menu").hidden = true;
     $("#model-btn").setAttribute("aria-expanded", "false");
   }
 
   function openModelMenu() {
     var agent = currentAgentName(), menu = $("#model-menu");
+    var key = cacheKey(agent), request = ++modelMenuRequest;
     menu.innerHTML = '<div class="menu-item"><span class="spinner"></span> 读取模型列表…</div>';
     menu.hidden = false;
     $("#model-btn").setAttribute("aria-expanded", "true");
     loadModels(agent).then(function (d) {
+      if (request !== modelMenuRequest || key !== cacheKey(currentAgentName())) return;
+      S.models[key] = d; // Retain only the accepted result for button labels.
       var st = currentSettings();
       var models = d.models || [];
       var cur = models.filter(function (m) { return m.id === (st.model || ""); })[0] ||
@@ -3162,6 +3163,7 @@
             return '<button type="button" class="chip' + (st.effort === e ? " active" : "") + '" data-effort="' + esc(e) + '">' + esc(e) + "</button>";
           })).join("") + "</div>" : "");
     }).catch(function (e) {
+      if (request !== modelMenuRequest || key !== cacheKey(currentAgentName())) return;
       menu.innerHTML = '<div class="menu-item">' + esc(e.message) + "</div>";
     });
   }

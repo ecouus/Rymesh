@@ -67,12 +67,16 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	taskTick := time.Now()
 	idle := 0
 	ctx := r.Context()
+	woken := false
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		default:
 		}
+		// Taken before the query, so a write landing in between still wakes
+		// the wait below.
+		wake := s.store.Changed()
 		evs, err := s.store.EventsAfter(id, cursor, 400)
 		if err != nil {
 			// A transient store error must not silently end the live link: the
@@ -94,7 +98,9 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		if len(evs) > 0 {
 			fl.Flush()
 		}
-		if time.Since(taskTick) > 1200*time.Millisecond {
+		// A write (a permission request, a task finishing) refreshes the task
+		// line right away; otherwise it is checked every 1.2s.
+		if since := time.Since(taskTick); since > 1200*time.Millisecond || (woken && since > 150*time.Millisecond) {
 			taskTick = time.Now()
 			tasks, _ := s.store.TasksForSession(id, 50)
 			var active []*Task
@@ -126,9 +132,10 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 			fl.Flush()
 			lastBeat = time.Now()
 		}
-		// Poll quickly while events are flowing and back off when idle. Every
-		// open stream shares the single DB connection, so a page left open on a
-		// finished conversation should not cost four queries a second forever.
+		// Writes wake the stream at once; the poll is only a fallback. It backs
+		// off when idle: every open stream shares the single DB connection, so
+		// a page left open on a finished conversation should not cost four
+		// queries a second forever.
 		if len(evs) > 0 {
 			idle = 0
 		} else if idle < 6 {
@@ -145,7 +152,20 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		case 6:
 			delay = 3 * time.Second
 		}
-		time.Sleep(delay)
+		woken = false
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-wake:
+			timer.Stop()
+			woken = true
+			// Let the rest of a burst (the ingestor writes a batch of lines)
+			// land, so it goes out as one flush instead of one per row.
+			time.Sleep(30 * time.Millisecond)
+		case <-timer.C:
+		}
 	}
 }
 

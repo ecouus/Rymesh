@@ -105,6 +105,40 @@ type Store struct {
 	db   *sql.DB
 	path string
 	mu   sync.Mutex
+
+	// changed is closed (and replaced) whenever something a live stream
+	// shows is written: an event, a permission, a task's status. Streams wait
+	// on it instead of finding the change at their next poll.
+	changeMu sync.Mutex
+	changed  chan struct{}
+}
+
+// Changed returns a channel that is closed at the next change.
+func (s *Store) Changed() <-chan struct{} {
+	s.changeMu.Lock()
+	defer s.changeMu.Unlock()
+	if s.changed == nil {
+		s.changed = make(chan struct{})
+	}
+	return s.changed
+}
+
+func (s *Store) notifyChange() {
+	s.changeMu.Lock()
+	if s.changed != nil {
+		close(s.changed)
+		s.changed = nil
+	}
+	s.changeMu.Unlock()
+}
+
+// execNotify is db.Exec for writes that live streams must see at once.
+func (s *Store) execNotify(query string, args ...any) (sql.Result, error) {
+	res, err := s.db.Exec(query, args...)
+	if err == nil {
+		s.notifyChange()
+	}
+	return res, err
 }
 
 func openStore(dataDir string) (*Store, error) {
@@ -422,7 +456,7 @@ func (s *Store) CreateTask(t *Task) error {
 	if t.Profile == "" {
 		t.Profile = "read-only"
 	}
-	_, err := s.db.Exec(`INSERT INTO tasks
+	_, err := s.execNotify(`INSERT INTO tasks
 		(id,session_id,agent,native_id,cwd,prompt,status,profile,created_at,started_at,ended_at,
 		 pid,pgid,exit_code,error,cancel_requested,boot_id,log_size,ingest_offset,last_seq,request_id,meta)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
@@ -560,7 +594,7 @@ func (s *Store) CountActiveTasks() (int, error) {
 func (s *Store) MarkTaskRunning(id string, pid, pgid int, bootID string) error {
 	// Only a task that is still live may become running: a state line buffered
 	// before a cancel must not revive a task that is already terminal.
-	_, err := s.db.Exec(`UPDATE tasks SET status=?, started_at=?, pid=?, pgid=?, boot_id=?, error=''
+	_, err := s.execNotify(`UPDATE tasks SET status=?, started_at=?, pid=?, pgid=?, boot_id=?, error=''
 		WHERE id=? AND status IN (?,?)`,
 		StatusRunning, nowRFC3339(), pid, pgid, bootID, id, StatusPending, StatusRunning)
 	return err
@@ -579,7 +613,7 @@ func (s *Store) SetTaskProcess(id string, pid, pgid int, bootID string) error {
 // a service restart), and without this claim both would start a runner for the
 // same task, giving two agents the same prompt and two writers the same log.
 func (s *Store) ClaimPendingTask(id, bootID string) (bool, error) {
-	res, err := s.db.Exec(`UPDATE tasks SET status=?, started_at=?, boot_id=?, error=''
+	res, err := s.execNotify(`UPDATE tasks SET status=?, started_at=?, boot_id=?, error=''
 		WHERE id=? AND status=?`, StatusRunning, nowRFC3339(), bootID, id, StatusPending)
 	if err != nil {
 		return false, err
@@ -592,7 +626,7 @@ func (s *Store) ClaimPendingTask(id, bootID string) (bool, error) {
 // live. A stale state line arriving after a cancel or exit is ignored instead of
 // flipping a terminal task back to running.
 func (s *Store) SetTaskLiveStatus(id, status string) error {
-	_, err := s.db.Exec(`UPDATE tasks SET status=? WHERE id=? AND status IN (?,?)`,
+	_, err := s.execNotify(`UPDATE tasks SET status=? WHERE id=? AND status IN (?,?)`,
 		status, id, StatusRunning, StatusWaitingInput)
 	return err
 }
@@ -601,7 +635,7 @@ func (s *Store) SetTaskLiveStatus(id, status string) error {
 // that is already terminal. It is used for agent-reported errors, which can be
 // ingested after the task has finished.
 func (s *Store) SetTaskStatus(id, status, errMsg string) error {
-	_, err := s.db.Exec(`UPDATE tasks SET status=?, error=?
+	_, err := s.execNotify(`UPDATE tasks SET status=?, error=?
 		WHERE id=? AND status NOT IN (?,?,?,?)`, status, errMsg, id,
 		StatusCompleted, StatusFailed, StatusCancelled, StatusInterrupted)
 	return err
@@ -609,11 +643,11 @@ func (s *Store) SetTaskStatus(id, status, errMsg string) error {
 
 func (s *Store) SetTaskWaiting(id string, waiting bool) error {
 	if waiting {
-		_, err := s.db.Exec(`UPDATE tasks SET status=? WHERE id=? AND status=?`,
+		_, err := s.execNotify(`UPDATE tasks SET status=? WHERE id=? AND status=?`,
 			StatusWaitingInput, id, StatusRunning)
 		return err
 	}
-	_, err := s.db.Exec(`UPDATE tasks SET status=? WHERE id=? AND status=?`,
+	_, err := s.execNotify(`UPDATE tasks SET status=? WHERE id=? AND status=?`,
 		StatusRunning, id, StatusWaitingInput)
 	return err
 }
@@ -622,7 +656,7 @@ func (s *Store) SetTaskWaiting(id string, waiting bool) error {
 // scheduler may launch it concurrently, so an unconditional write could mark a
 // live agent cancelled while its process keeps running.
 func (s *Store) FinishTaskIfPending(id, status, errMsg string) (bool, error) {
-	res, err := s.db.Exec(`UPDATE tasks SET status=?, error=?, ended_at=? WHERE id=? AND status=?`,
+	res, err := s.execNotify(`UPDATE tasks SET status=?, error=?, ended_at=? WHERE id=? AND status=?`,
 		status, errMsg, nowRFC3339(), id, StatusPending)
 	if err != nil {
 		return false, err
@@ -638,7 +672,7 @@ func (s *Store) FinishTask(id, status string, exitCode *int, errMsg, endedAt str
 	// A terminal task stays terminal. A late exit record from an escalated
 	// cancel (or a duplicate line after a restart) used to overwrite the
 	// recorded outcome with a different one.
-	_, err := s.db.Exec(`UPDATE tasks SET status=?, exit_code=?, error=?, ended_at=?
+	_, err := s.execNotify(`UPDATE tasks SET status=?, exit_code=?, error=?, ended_at=?
 		WHERE id=? AND status NOT IN (?,?,?,?)`,
 		status, exitCode, errMsg, endedAt, id,
 		StatusCompleted, StatusFailed, StatusCancelled, StatusInterrupted)
@@ -679,7 +713,7 @@ func (s *Store) InsertEvent(e *Event) (bool, error) {
 	if e.TS == "" {
 		e.TS = nowRFC3339()
 	}
-	res, err := s.db.Exec(`INSERT OR IGNORE INTO events
+	res, err := s.execNotify(`INSERT OR IGNORE INTO events
 		(session_id,task_id,task_seq,sub,ts,kind,payload) VALUES (?,?,?,?,?,?,?)`,
 		e.SessionID, e.TaskID, e.TaskSeq, e.Sub, e.TS, e.Kind, string(e.Payload))
 	if err != nil {
@@ -776,7 +810,7 @@ func (s *Store) CreatePermission(p *Permission) error {
 	if p.Kind == "" {
 		p.Kind = kindPermission
 	}
-	_, err := s.db.Exec(`INSERT OR IGNORE INTO permissions
+	_, err := s.execNotify(`INSERT OR IGNORE INTO permissions
 		(id,task_id,session_id,tool_name,input,status,created_at,kind,detail) VALUES (?,?,?,?,?,?,?,?,?)`,
 		p.ID, p.TaskID, p.SessionID, p.ToolName, string(p.Input), p.Status, p.CreatedAt, p.Kind, string(p.Detail))
 	return err
@@ -835,7 +869,7 @@ func (s *Store) ResolvePermission(id, status, response string) (ok bool, err err
 	if status != "allowed" && status != "denied" && status != "expired" && status != "answered" {
 		return false, fmt.Errorf("invalid permission status %q", status)
 	}
-	res, err := s.db.Exec(`UPDATE permissions SET status=?, resolved_at=?, response=? WHERE id=? AND status='pending'`,
+	res, err := s.execNotify(`UPDATE permissions SET status=?, resolved_at=?, response=? WHERE id=? AND status='pending'`,
 		status, nowRFC3339(), response, id)
 	if err != nil {
 		return false, err
@@ -847,12 +881,12 @@ func (s *Store) ResolvePermission(id, status, response string) (ok bool, err err
 // ReopenPermission undoes a ResolvePermission whose answer could not be
 // delivered to the agent.
 func (s *Store) ReopenPermission(id string) error {
-	_, err := s.db.Exec(`UPDATE permissions SET status='pending', resolved_at='', response='' WHERE id=?`, id)
+	_, err := s.execNotify(`UPDATE permissions SET status='pending', resolved_at='', response='' WHERE id=?`, id)
 	return err
 }
 
 func (s *Store) ExpirePermissionsForTask(taskID string) error {
-	_, err := s.db.Exec(`UPDATE permissions SET status='expired', resolved_at=? WHERE task_id=? AND status='pending'`,
+	_, err := s.execNotify(`UPDATE permissions SET status='expired', resolved_at=? WHERE task_id=? AND status='pending'`,
 		nowRFC3339(), taskID)
 	return err
 }

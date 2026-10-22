@@ -274,7 +274,10 @@
         i++; // closing fence (or EOF)
         var code = buf.join("\n");
         html.push('<div class="code-block"><div class="code-head"><span>' + esc(lang || "text") +
-          '</span><button class="code-copy" type="button">复制</button></div><pre><code>' +
+          '</span><button class="code-copy" type="button" aria-label="复制代码" title="复制">' +
+          '<svg class="ico i-copy" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5"/><path d="M5 15V6.5A2.5 2.5 0 0 1 7.5 4H15"/></svg>' +
+          '<svg class="ico i-done" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>' +
+          '</button></div><pre><code>' +
           highlight(code, lang) + "</code></pre></div>");
         continue;
       }

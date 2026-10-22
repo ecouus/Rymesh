@@ -57,6 +57,7 @@ type Server struct {
 	// unbounded number of open tabs (or a reconnect loop) would starve every
 	// other request. The client falls back to polling on 503.
 	streamSem chan struct{}
+	terms     *termManager // shells for the terminal view (terminal.go)
 }
 
 func newServer(cfg *Config, cfgPath string, st *Store, logger *log.Logger, bindAddrs []string) *Server {
@@ -69,6 +70,7 @@ func newServer(cfg *Config, cfgPath string, st *Store, logger *log.Logger, bindA
 		auth: newAuthManager(cfg), mux: http.NewServeMux(), logger: logger,
 		started: time.Now(), bindAddrs: bindAddrs, launching: map[string]bool{},
 		streamSem: make(chan struct{}, 32), ssh: newSSHPool(st),
+		terms: newTermManager(),
 	}
 	s.ing = newIngestor(st, cfg.DataDir, logger)
 	s.ing.onDone = func() { s.schedule() }
@@ -165,6 +167,14 @@ func (s *Server) routes() {
 	m.HandleFunc("DELETE /api/keys/{id}", s.authed(s.handleDeleteKey))
 	m.HandleFunc("POST /api/vault/export", s.authed(s.handleVaultExport))
 	m.HandleFunc("POST /api/vault/import", s.authed(s.handleVaultImport))
+	m.HandleFunc("GET /api/files", s.authed(s.handleFilesList))
+	m.HandleFunc("GET /api/files/download", s.authed(s.handleFilesDownload))
+	m.HandleFunc("POST /api/files/upload", s.authed(s.handleFilesUpload))
+	m.HandleFunc("POST /api/terminals", s.authed(s.handleTermCreate))
+	m.HandleFunc("GET /api/terminals/{id}/stream", s.authed(s.handleTermStream))
+	m.HandleFunc("POST /api/terminals/{id}/input", s.authed(s.handleTermInput))
+	m.HandleFunc("POST /api/terminals/{id}/resize", s.authed(s.handleTermResize))
+	m.HandleFunc("DELETE /api/terminals/{id}", s.authed(s.handleTermClose))
 	m.HandleFunc("/n/{node}/api/{rest...}", s.authed(s.handleNodeProxy))
 
 	// Updates act on the Codex/Claude CLIs, not on this console. "Restart"

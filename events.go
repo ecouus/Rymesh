@@ -108,7 +108,13 @@ func (ing *Ingestor) tail(taskID string) {
 				}
 			}
 		}
-		time.Sleep(250 * time.Millisecond)
+		// Read again soon while output is flowing; the agent tends to write
+		// in bursts.
+		if advanced {
+			time.Sleep(100 * time.Millisecond)
+		} else {
+			time.Sleep(250 * time.Millisecond)
+		}
 	}
 }
 

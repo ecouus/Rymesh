@@ -118,8 +118,11 @@ func gzipMiddleware(next http.Handler) http.Handler {
 		// Advertise the negotiation even when this client did not ask for gzip:
 		// a shared cache must not reuse an identity body for a gzip client.
 		w.Header().Add("Vary", "Accept-Encoding")
+		// File downloads keep their length (progress, resuming) and are
+		// mostly already compressed.
 		if r.Method == http.MethodHead || !acceptsGzip(r) ||
-			r.Header.Get("Range") != "" || strings.HasSuffix(r.URL.Path, "/stream") {
+			r.Header.Get("Range") != "" || strings.HasSuffix(r.URL.Path, "/stream") ||
+			strings.HasSuffix(r.URL.Path, "/files/download") {
 			next.ServeHTTP(w, r)
 			return
 		}

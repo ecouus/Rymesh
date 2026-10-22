@@ -16,7 +16,11 @@ It must never become a model-API reverse proxy. Concretely, no change may:
   requests through another machine's credentials;
 - read, copy or transmit CLI credentials (`~/.claude`, `~/.codex/auth.json`,
   API-key environment variables) — checking only whether a login exists, on
-  the node itself, is the limit;
+  the node itself, is the limit. This binds the program, not the user: what
+  the user opens by hand in the terminal or the file browser is theirs to
+  see and download, as over plain SSH, so those features do not single out
+  credential files. The program itself still never reads, uploads or uses
+  them;
 - add features meant for letting other people use someone's account
   (multi-user sharing of one node's CLI login is account sharing).
 
@@ -38,3 +42,15 @@ provider API hosts or credential variables appear in the source.
 - Real-CLI end-to-end checks run against an isolated instance (own config,
   data dir and port); clean up the sessions they create in `~/.claude` and
   `~/.codex` afterwards.
+- After every change, once `make test` passes, update every client so none
+  runs a stale build: `make macos` and replace `/Applications/Rymesh.app`
+  with `macos/dist.noindex/Rymesh.app` (quit and reopen the app), and
+  `make android` then `adb install -r
+  android/app/build/outputs/apk/debug/app-debug.apk` on the connected phone
+  (relaunch `dev.rymesh.app`). Then upgrade the remote server nodes too, the
+  same way the app does it: the Mac console's `POST /api/devices/{id}/deploy`
+  uploads the new Linux build over SSH and runs `rymesh node setup`, which
+  upgrades in place and keeps the node's token. Confirm it took: the node's
+  `/api/health` `build` must equal the first 12 hex digits of the SHA-256 of
+  the matching `dist/rymesh_linux_<arch>` (the `version` string alone does not
+  change between uncommitted builds).

@@ -1,6 +1,8 @@
 package dev.rymesh.app;
 
 import android.app.Activity;
+import android.content.ContentResolver;
+import android.content.ContentValues;
 import android.content.Intent;
 import android.content.res.AssetManager;
 import android.content.res.Configuration;
@@ -8,10 +10,13 @@ import android.graphics.Insets;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
+import android.provider.MediaStore;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
+import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -27,7 +32,13 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
+import org.json.JSONObject;
 
 import dev.rymesh.mobile.Mobile;
 
@@ -36,8 +47,8 @@ import dev.rymesh.mobile.Mobile;
  * hub: it reaches the user's servers over SSH and runs no agents itself.
  *
  * The page asks this shell, through RymeshNative, for what a web page
- * cannot do well on a phone: the share sheet, saving a file, and matching the
- * system bars to its theme.
+ * cannot do well on a phone: the share sheet, saving a file, downloading one
+ * into Downloads, and matching the system bars to its theme.
  */
 public class MainActivity extends Activity {
     private static final int REQ_SAVE = 1, REQ_OPEN = 2;
@@ -48,6 +59,7 @@ public class MainActivity extends Activity {
     private String pendingSave;                  // file text waiting for a destination
     private ValueCallback<Uri[]> pendingChooser; // <input type=file> waiting for a pick
     private volatile Uri console;                // the embedded console's origin
+    private final Map<String, Uri> downloads = new ConcurrentHashMap<>(); // finished, by page id
 
     @Override
     protected void onCreate(Bundle state) {
@@ -171,7 +183,7 @@ public class MainActivity extends Activity {
 
     /** Colours the area behind the system bars and picks light or dark bar icons. */
     private void applyBars(boolean dark) {
-        int bg = dark ? 0xFF0F0F10 : 0xFFFFFFFF; // --bg in web/styles.css
+        int bg = dark ? 0xFF0B0B0A : 0xFFFCFCFB; // --bg in web/styles.css
         root.setBackgroundColor(bg);
         web.setBackgroundColor(bg);
         getWindow().getDecorView().setBackgroundColor(bg);
@@ -210,9 +222,135 @@ public class MainActivity extends Activity {
             });
         }
 
+        /**
+         * Downloads a file from the console (a path such as
+         * /n/server/api/files/download?path=…) into Download/Rymesh, reporting
+         * progress to the page's window.acDownload(id, done, total, state, info).
+         */
+        @JavascriptInterface
+        public void download(String id, String path, String name) {
+            new Thread(() -> runDownload(id, path, name), "download").start();
+        }
+
+        /** Opens a finished download with whatever app handles its type. */
+        @JavascriptInterface
+        public void openDownload(String id) {
+            Uri uri = downloads.get(id);
+            if (uri == null) return;
+            runOnUiThread(() -> {
+                Intent i = new Intent(Intent.ACTION_VIEW).setDataAndType(uri, getContentResolver().getType(uri))
+                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                try {
+                    startActivity(Intent.createChooser(i, "打开"));
+                } catch (android.content.ActivityNotFoundException e) {
+                    Toast.makeText(MainActivity.this, "没有可以打开此文件的应用", Toast.LENGTH_SHORT).show();
+                }
+            });
+        }
+
         @JavascriptInterface
         public void setTheme(boolean dark) {
             runOnUiThread(() -> applyBars(dark));
+        }
+    }
+
+    private void reportDownload(String id, long done, long total, String state, String info) {
+        String js = "window.acDownload&&acDownload(" + JSONObject.quote(id) + "," + done + "," + total + ","
+                + (state == null ? "null" : JSONObject.quote(state)) + ","
+                + (info == null ? "null" : JSONObject.quote(info)) + ")";
+        runOnUiThread(() -> web.evaluateJavascript(js, null));
+    }
+
+    // The console is on loopback in this process; the request carries the
+    // page's login cookie, so it sees exactly what the page may see.
+    private void runDownload(String id, String path, String name) {
+        Uri c = console;
+        if (c == null || path == null || !path.startsWith("/")) {
+            reportDownload(id, 0, 0, "error", "地址无效");
+            return;
+        }
+        ContentResolver cr = getContentResolver();
+        Uri item = null;
+        File file = null;
+        HttpURLConnection conn = null;
+        try {
+            String url = c.getScheme() + "://" + c.getHost() + ":" + c.getPort() + path;
+            conn = (HttpURLConnection) new URL(url).openConnection();
+            String cookie = CookieManager.getInstance().getCookie(url);
+            if (cookie != null) conn.setRequestProperty("Cookie", cookie);
+            conn.setRequestProperty("Accept-Encoding", "identity");
+            conn.setConnectTimeout(15000);
+            conn.setReadTimeout(120000);
+            int code = conn.getResponseCode();
+            if (code != 200) {
+                String msg = "HTTP " + code;
+                try (InputStream es = conn.getErrorStream()) {
+                    if (es != null) {
+                        java.io.ByteArrayOutputStream body = new java.io.ByteArrayOutputStream();
+                        byte[] b = new byte[4096];
+                        for (int n; (n = es.read(b)) > 0 && body.size() < 64 * 1024; ) body.write(b, 0, n);
+                        msg = new JSONObject(body.toString("UTF-8")).optString("error", msg);
+                    }
+                } catch (Exception ignored) {
+                }
+                reportDownload(id, 0, 0, "error", msg);
+                return;
+            }
+            long total = conn.getContentLengthLong();
+            String type = conn.getContentType();
+            OutputStream os;
+            String where;
+            if (Build.VERSION.SDK_INT >= 29) {
+                // Downloads needs no storage permission from Android 10 on; a
+                // taken name gets " (1)" from the media store itself.
+                ContentValues v = new ContentValues();
+                v.put(MediaStore.Downloads.DISPLAY_NAME, name);
+                v.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Rymesh");
+                if (type != null) v.put(MediaStore.Downloads.MIME_TYPE, type.split(";")[0].trim());
+                v.put(MediaStore.Downloads.IS_PENDING, 1);
+                item = cr.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
+                if (item == null) throw new java.io.IOException("无法在“下载”中创建文件");
+                os = cr.openOutputStream(item);
+                where = "下载/Rymesh";
+            } else {
+                // Older Android: the app's own download folder, no permission.
+                File dir = new File(getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "Rymesh");
+                dir.mkdirs();
+                file = new File(dir, name);
+                for (int i = 1; file.exists(); i++) {
+                    int dot = name.lastIndexOf('.');
+                    file = new File(dir, dot > 0 ? name.substring(0, dot) + " (" + i + ")" + name.substring(dot) : name + " (" + i + ")");
+                }
+                os = new FileOutputStream(file);
+                where = dir.getAbsolutePath();
+            }
+            long done = 0, last = 0;
+            try (InputStream in = conn.getInputStream(); OutputStream out = os) {
+                byte[] buf = new byte[64 * 1024];
+                for (int n; (n = in.read(buf)) > 0; ) {
+                    out.write(buf, 0, n);
+                    done += n;
+                    long now = System.currentTimeMillis();
+                    if (now - last > 250) {
+                        last = now;
+                        reportDownload(id, done, total, null, null);
+                    }
+                }
+            }
+            if (total >= 0 && done != total) throw new java.io.IOException("连接中断");
+            if (item != null) {
+                ContentValues v = new ContentValues();
+                v.put(MediaStore.Downloads.IS_PENDING, 0);
+                cr.update(item, v, null, null);
+                downloads.put(id, item);
+            }
+            reportDownload(id, done, total, "done", where);
+        } catch (Exception e) {
+            if (item != null) cr.delete(item, null, null);
+            if (file != null) file.delete();
+            reportDownload(id, 0, 0, "error", e.getMessage() == null ? e.toString() : e.getMessage());
+        } finally {
+            if (conn != null) conn.disconnect();
         }
     }
 

@@ -15,6 +15,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     private var pending: [Pending] = []
     private var notified = Set<String>()
     private var timer: Timer?
+    private lazy var downloader = Downloader { [weak self] id, done, total, state, info in
+        let js = "window.acDownload && acDownload(\(self?.jsString(id) ?? "\"\""), \(done), \(total), "
+            + "\(state.map { self?.jsString($0) ?? "null" } ?? "null"), \(info.map { self?.jsString($0) ?? "null" } ?? "null"))"
+        self?.web?.evaluateJavaScript(js)
+    }
 
     // MARK: Launch
 
@@ -156,11 +161,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         return nil
     }
 
-    // MARK: Page requests (the web UI's saveTextFile and <input type=file>)
+    // MARK: Page requests (saveTextFile, file downloads and <input type=file>)
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard let body = message.body as? [String: Any], body["op"] as? String == "save",
-              let name = body["name"] as? String, let text = body["text"] as? String else { return }
+        guard let body = message.body as? [String: Any] else { return }
+        switch body["op"] as? String {
+        case "download":
+            guard let id = body["id"] as? String, let path = body["path"] as? String,
+                  let name = body["name"] as? String, let wv = web else { return }
+            downloader.start(id: id, path: path, name: name, base: console.baseURL,
+                             cookies: wv.configuration.websiteDataStore.httpCookieStore)
+            return
+        case "openDownload":
+            if let id = body["id"] as? String { downloader.reveal(id: id) }
+            return
+        case "save":
+            break
+        default:
+            return
+        }
+        guard let name = body["name"] as? String, let text = body["text"] as? String else { return }
         let panel = NSSavePanel()
         panel.nameFieldStringValue = name
         panel.canCreateDirectories = true

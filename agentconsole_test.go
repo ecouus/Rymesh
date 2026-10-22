@@ -2443,3 +2443,53 @@ func TestDefaultCWDIsHomeAndSurvivesMissingDir(t *testing.T) {
 		t.Fatalf("allowedCWD(\"\") = %q, %v", got, err)
 	}
 }
+
+// A live stream waits on Store.Changed; a new event or a status change must
+// wake it instead of leaving it to the next poll.
+func TestStoreChangedWakesOnWrite(t *testing.T) {
+	st, err := openStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	sess := &Session{Agent: "claude", Cwd: "/tmp", Title: "wake", Source: "web"}
+	if err := st.CreateSession(sess); err != nil {
+		t.Fatal(err)
+	}
+	task := &Task{SessionID: sess.ID, Agent: "claude", Cwd: "/tmp", Prompt: "p", Status: StatusRunning}
+	if err := st.CreateTask(task); err != nil {
+		t.Fatal(err)
+	}
+	woke := func(ch <-chan struct{}) bool {
+		select {
+		case <-ch:
+			return true
+		default:
+			return false
+		}
+	}
+
+	ch := st.Changed()
+	if woke(ch) {
+		t.Fatal("woken before any write")
+	}
+	if _, err := st.InsertEvent(&Event{SessionID: sess.ID, TaskID: task.ID, TaskSeq: 1,
+		TS: nowRFC3339(), Kind: "assistant", Payload: json.RawMessage(`{"text":"hi"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if !woke(ch) {
+		t.Fatal("event insert did not wake the waiter")
+	}
+
+	ch = st.Changed()
+	if woke(ch) {
+		t.Fatal("a fresh channel is already closed")
+	}
+	if err := st.SetTaskWaiting(task.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if !woke(ch) {
+		t.Fatal("status change did not wake the waiter")
+	}
+}

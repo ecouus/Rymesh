@@ -32,6 +32,7 @@
     eventSeqs: Object.create(null),
     toolNodes: Object.create(null),
     lastSeq: 0,
+    lastEv: null, // the newest event seen, for the activity line
     oldestSeq: 0,
     hasOlder: false,
     es: null,
@@ -272,10 +273,16 @@
   function toast(msg, isErr) {
     var t = $("#toast");
     t.textContent = msg;
+    // Resetting the class also cancels a fade in progress: a toast already
+    // showing takes the new text and a fresh timer; only a hidden one plays
+    // its entrance again.
     t.className = "toast" + (isErr ? " err" : "");
     t.hidden = false;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { t.hidden = true; }, isErr ? 4200 : 2400);
+    toastTimer = setTimeout(function () {
+      t.classList.add("out");
+      toastTimer = setTimeout(function () { t.hidden = true; t.classList.remove("out"); }, 250);
+    }, isErr ? 4200 : 2500);
   }
 
   // -------------------------------------------------------------------- sheet
@@ -574,11 +581,25 @@
   var androidNative = window.RymeshNative || null;
   var macNative = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ac || null;
 
-  function copyText(text, msg) {
-    var done = function () { toast(msg || "已复制"); };
+  // writeClipboard resolves to whether the text really reached the clipboard.
+  function writeClipboard(text) {
     if (navigator.clipboard && window.isSecureContext) {
-      navigator.clipboard.writeText(text).then(done).catch(function () { fallbackCopy(text, done); });
-    } else fallbackCopy(text, done);
+      return navigator.clipboard.writeText(text).then(function () { return true; }, function () { return fallbackCopy(text); });
+    }
+    return Promise.resolve(fallbackCopy(text));
+  }
+  function fallbackCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    ta.remove();
+    return ok;
+  }
+
+  function copyText(text, msg) {
+    writeClipboard(text).then(function (ok) { toast(ok ? msg || "已复制" : "复制失败", !ok); });
   }
 
   function canShare() { return !!(androidNative || navigator.share); }
@@ -1174,6 +1195,8 @@
   // lets the app leave.
   window.acBack = function () {
     if (overlays.length) { overlays[overlays.length - 1].close(); return true; }
+    if (!$("#term").hidden) { closeTerminalView(); return true; }
+    if (!$("#files").hidden) { closeFilesView(); return true; }
     if (nodeMenu() && !nodeMenu().hidden) { closeNodeMenu(); return true; }
     if (!$("#sheet").hidden) { closeSheet(); return true; }
     if (!$("#sidebar").hidden && !wide.matches) { closeSidebar(); return true; }
@@ -1302,7 +1325,7 @@
     var meta = $('meta[name="theme-color"]');
     if (!meta) return;
     var light = S.theme === "light" || (S.theme === "auto" && matchMedia("(prefers-color-scheme: light)").matches);
-    meta.setAttribute("content", light ? "#ffffff" : "#0f0f10");
+    meta.setAttribute("content", light ? "#fcfcfb" : "#0b0b0a");
     if (window.RymeshNative) window.RymeshNative.setTheme(!light);
   }
   matchMedia("(prefers-color-scheme: light)").addEventListener?.("change", updateThemeColor);
@@ -1316,6 +1339,8 @@
     var raw = (location.hash || "").replace(/^#\/?/, "");
     if (S.es && S.route === "chat" && !/^session\//.test(raw)) closeStream();
     closeSidebar();
+    closeTerminalView();
+    closeFilesView();
     if (wide.matches) renderSessionList();
     if (/^session\//.test(raw)) {
       var id = decodeURIComponent(raw.slice(8));
@@ -1551,6 +1576,7 @@
     S.eventSeqs = Object.create(null);
     S.toolNodes = Object.create(null);
     S.lastSeq = 0;
+    S.lastEv = null;
     S.oldestSeq = 0;
     S.hasOlder = false;
     ensureDraftAgent();
@@ -1562,6 +1588,8 @@
     // "任务运行中" hint and stop button.
     $("#composer-hint").textContent = "";
     $("#stop-btn").hidden = true;
+    $("#term-btn").hidden = true;
+    $("#files-btn").hidden = true;
     $("#settings-btn").classList.remove("active");
     setBackButton(false);
     setAgentPicker(true);
@@ -2044,6 +2072,7 @@
     S.toolNodes = Object.create(null);
     S.permDecisions = Object.create(null);
     S.lastSeq = 0;
+    S.lastEv = null;
     S.oldestSeq = 0;
     S.hasOlder = false;
     S.sessionTasks = [];
@@ -2060,7 +2089,7 @@
       '<div class="chat-wrap"><div id="perm-banner"></div>' +
       '<div id="events" class="events"><div class="events-inner" id="events-inner">' +
       '<div class="empty"><span class="spinner"></span> 正在加载会话…</div>' +
-      "</div></div></div>";
+      '</div><div id="activity" class="activity" aria-live="polite" hidden></div></div></div>';
     setTop("会话", "");
     setConn("wait");
 
@@ -2171,6 +2200,9 @@
     if (stopBtn) { stopBtn.hidden = !act; stopBtn.disabled = false; }
     if (permCount) setConn(S.conn === "on" ? "on" : S.conn);
     renderApprovalNotifications();
+    renderActivity();
+    $("#term-btn").hidden = noDevice();
+    $("#files-btn").hidden = noDevice();
   }
 
   function renderPermissionBanner() {
@@ -2310,7 +2342,7 @@
     evs.forEach(function (ev) {
       if (S.eventSeqs[ev.seq]) return;
       S.eventSeqs[ev.seq] = true;
-      if (ev.seq > S.lastSeq) S.lastSeq = ev.seq;
+      if (ev.seq > S.lastSeq) { S.lastSeq = ev.seq; S.lastEv = ev; }
       var node = eventNode(ev);
       if (node) frag.appendChild(node);
     });
@@ -2321,7 +2353,52 @@
     });
     groupTurns();
     trimDOM(inner);
+    renderActivity();
     if (!opts.quiet && wasNear) scrollBottom(false);
+  }
+
+  // The line under the newest event while the agent works: what it is doing
+  // and for how long, so a quiet stretch (a long think, a slow command) does
+  // not look like a hang. It ticks every second while shown.
+  var activityTimer = null;
+  function renderActivity() {
+    var box = $("#activity");
+    var act = box && S.session ? activeOnSession() : null;
+    var text = act ? activityText(act) : "";
+    if (!text) {
+      if (box) box.hidden = true;
+      clearInterval(activityTimer);
+      activityTimer = null;
+      return;
+    }
+    if (!box.firstChild) {
+      box.innerHTML = '<span class="activity-dot"></span><span class="activity-text"></span><span class="activity-time"></span>';
+    }
+    box.classList.toggle("waiting", act.status === "waiting_input");
+    box.children[1].textContent = text;
+    var since = act.status === "pending" ? "" : dur(act.started_at);
+    box.children[2].textContent = since;
+    box.children[2].hidden = !since;
+    if (box.hidden) {
+      var wasNear = nearBottom();
+      box.hidden = false;
+      if (wasNear) scrollBottom(false);
+    }
+    if (!activityTimer) activityTimer = setInterval(renderActivity, 1000);
+  }
+
+  function activityText(act) {
+    if (act.status === "pending") return act.queue_ahead > 0 ? "排队中" : "正在启动…";
+    if (act.status === "waiting_input") return "等待你的确认";
+    var ev = S.lastEv;
+    if (ev && ev.task_id === act.id && ev.kind === "tool") {
+      var p = ev.payload || {};
+      if (p.status === "running" || p.status === "in_progress") {
+        var what = truncate(String(toolSummary(p) || "").split("\n")[0], 60);
+        return "正在执行 " + toolLabel(p.name) + (what ? " · " + what : "");
+      }
+    }
+    return "正在思考…";
   }
 
   // Between a user message and the final assistant answer, collapse thinking,
@@ -2622,14 +2699,14 @@
       '<div class="tool-head"><span class="tool-name">' + esc(toolLabel(p.name)) + "</span>" +
       '<span class="tool-summary">' + esc(toolSummary(p)) + "</span>" +
       '<span class="tool-state' + (isErr ? " err" : "") + '">' + esc(statusText) + "</span></div>" +
-      '<div class="tool-body">' +
+      '<div class="tool-body"><div class="tool-body-in">' +
       '<div class="tool-block"><div class="tool-label">输入</div><pre class="tool-input" data-lazy-text></pre></div>' +
       (hasOut
         ? '<div class="tool-block"><div class="tool-label">输出</div><pre class="tool-output" data-lazy-text></pre></div>'
         : '<div class="tool-block tool-out-block" hidden><div class="tool-label">输出</div><pre class="tool-output" data-lazy-text></pre></div>') +
       (p.exit_code !== undefined && p.exit_code !== null && p.exit_code !== 0
         ? '<div class="small" style="color:var(--red)">exit ' + esc(String(p.exit_code)) + "</div>" : "") +
-      "</div>";
+      "</div></div>";
     // Tool input/output is usually the bulk of a transcript but stays hidden
     // until the user expands it; format it on first open instead of at load.
     setLazy(node.querySelector(".tool-input"), p.input, "pre");
@@ -3535,6 +3612,8 @@
     $("#composer-wrap").hidden = true;
     document.body.classList.remove("has-composer");
     $("#conn-dot").hidden = true;
+    $("#term-btn").hidden = true;
+    $("#files-btn").hidden = true;
     $("#settings-btn").classList.add("active");
     setBackButton(true);
     setAgentPicker(false);
@@ -3945,6 +4024,521 @@
     sendMessage();
   });
 
+  // ----------------------------------------------------------------- terminal
+  // A shell on the conversation's machine, in its directory (terminal.go).
+  // That machine's console runs it, so a server's terminal comes through the
+  // same /n/{node} relay as the rest of the page. The shell outlives the view:
+  // going back, or leaving the app, keeps it, and reopening picks up at the
+  // last byte shown. On touch screens a key row sits above the keyboard.
+
+  var TERM = { xterm: null, fit: null, key: "", node: "", id: "", offset: 0, es: null,
+    ended: false, ctrl: false, alt: false, fn: false, queue: "", sending: false };
+  // Both rows start with the same keys, so Fn stays put when it flips them.
+  var TERM_HEAD_KEYS = [
+    ["Esc", "\x1b"], ["Tab", "\t"], ["Ctrl", "mod:ctrl"], ["Alt", "mod:alt"], ["Fn", "fn"]
+  ];
+  var TERM_KEYS = TERM_HEAD_KEYS.concat([
+    ["↑", "arrow:A"], ["↓", "arrow:B"], ["←", "arrow:D"], ["→", "arrow:C"],
+    ["|", "|"], ["/", "/"], ["~", "~"], ["-", "-"]
+  ]);
+  var TERM_FN_KEYS = TERM_HEAD_KEYS.concat([
+    ["F1", "\x1bOP"], ["F2", "\x1bOQ"], ["F3", "\x1bOR"], ["F4", "\x1bOS"],
+    ["F5", "\x1b[15~"], ["F6", "\x1b[17~"], ["F7", "\x1b[18~"], ["F8", "\x1b[19~"],
+    ["F9", "\x1b[20~"], ["F10", "\x1b[21~"], ["F11", "\x1b[23~"], ["F12", "\x1b[24~"],
+    ["Home", "\x1b[H"], ["End", "\x1b[F"], ["PgUp", "\x1b[5~"], ["PgDn", "\x1b[6~"]
+  ]);
+
+  var xtermLoad = null;
+  function loadXterm() {
+    if (xtermLoad) return xtermLoad;
+    function script(src) {
+      return new Promise(function (ok, fail) {
+        var s = document.createElement("script");
+        s.src = src;
+        s.onload = ok;
+        s.onerror = function () { fail(new Error("无法加载终端组件")); };
+        document.head.appendChild(s);
+      });
+    }
+    var css = document.createElement("link");
+    css.rel = "stylesheet";
+    css.href = "/vendor/xterm/xterm.css";
+    document.head.appendChild(css);
+    xtermLoad = script("/vendor/xterm/xterm.js")
+      .then(function () { return script("/vendor/xterm/addon-fit.js"); })
+      .catch(function (e) { xtermLoad = null; throw e; });
+    return xtermLoad;
+  }
+
+  function termTheme() {
+    var cs = getComputedStyle(document.documentElement);
+    var v = function (n) { return cs.getPropertyValue(n).trim(); };
+    var dark = cs.colorScheme === "dark" || v("color-scheme") === "dark";
+    var t = { background: v("--bg"), foreground: v("--text"), cursor: v("--text"),
+      cursorAccent: v("--bg"), selectionBackground: v("--blue") + "55" };
+    // The stock palette is tuned for a dark screen; on paper its white and
+    // yellow all but vanish.
+    if (!dark) {
+      t.black = "#1a1a19"; t.red = "#c43c3c"; t.green = "#2f8f5b"; t.yellow = "#a66a12";
+      t.blue = "#3d6fd1"; t.magenta = "#8b4fc4"; t.cyan = "#1f8a8f"; t.white = "#6b6b66";
+      t.brightBlack = "#8c8c87"; t.brightWhite = "#1a1a19";
+    }
+    return t;
+  }
+
+  function termOpen() { return !$("#term").hidden; }
+
+  function openTerminal() {
+    if (!S.session || noDevice()) return;
+    var key = "term:" + S.node + ":" + S.session.id;
+    var cwd = S.session.cwd;
+    $("#term").hidden = false;
+    $("#term-sub").textContent = (nodeLabel(S.node) ? nodeLabel(S.node) + " · " : "") + cwd;
+    drawTermKeys();
+    loadXterm().then(function () {
+      if (!termOpen()) return;
+      if (!TERM.xterm) createXterm();
+      TERM.xterm.options.theme = termTheme();
+      fitTerm();
+      if (TERM.key !== key || TERM.ended) {
+        detachTerm();
+        TERM.xterm.reset();
+        TERM.key = key;
+        TERM.node = S.node;
+        TERM.cwd = cwd;
+        var id = LS.get(key, "");
+        if (id) attachTerm(id); else newTerm();
+      }
+      TERM.xterm.focus();
+    }).catch(function (e) {
+      toast(e.message, true);
+      closeTerminalView();
+    });
+  }
+
+  function closeTerminalView() {
+    var view = $("#term");
+    if (!view || view.hidden) return;
+    view.hidden = true;
+    if (TERM.xterm) TERM.xterm.blur();
+  }
+
+  function createXterm() {
+    var coarse = matchMedia("(pointer: coarse)").matches;
+    TERM.xterm = new window.Terminal({
+      cursorBlink: true, scrollback: 5000, macOptionIsMeta: true,
+      fontFamily: getComputedStyle(document.documentElement).getPropertyValue("--mono").trim(),
+      fontSize: coarse ? 12 : 13, lineHeight: 1.15, theme: termTheme()
+    });
+    TERM.fit = new window.FitAddon.FitAddon();
+    TERM.xterm.loadAddon(TERM.fit);
+    TERM.xterm.open($("#term-screen"));
+    TERM.xterm.onData(function (d) {
+      if (TERM.ended) { reopenTerm(); return; }
+      termSend(applyTermMods(d));
+    });
+    TERM.xterm.onResize(function (sz) {
+      if (TERM.id && !TERM.ended) {
+        api("/api/terminals/" + TERM.id + "/resize", { method: "POST", node: TERM.node,
+          body: { cols: sz.cols, rows: sz.rows } }).catch(function () {});
+      }
+    });
+    var refit = null;
+    function onViewport() {
+      clearTimeout(refit);
+      refit = setTimeout(function () { if (termOpen()) fitTerm(); }, 80);
+    }
+    window.addEventListener("resize", onViewport);
+    if (window.visualViewport) window.visualViewport.addEventListener("resize", onViewport);
+  }
+
+  function fitTerm() {
+    try { TERM.fit.fit(); } catch (e) { /* not laid out yet */ }
+  }
+
+  function newTerm() {
+    var key = TERM.key;
+    var sz = TERM.xterm;
+    return api("/api/terminals", { method: "POST", node: TERM.node,
+      body: { cwd: TERM.cwd, cols: sz.cols, rows: sz.rows } }).then(function (d) {
+      if (TERM.key !== key) return;
+      LS.set(key, d.id);
+      attachTerm(d.id);
+    }).catch(function (e) {
+      if (TERM.key !== key) return;
+      TERM.ended = true;
+      TERM.xterm.write("\r\n\x1b[31m无法打开终端：" + e.message + "\x1b[0m\r\n");
+    });
+  }
+
+  function reopenTerm() {
+    LS.del(TERM.key);
+    detachTerm();
+    TERM.xterm.write("\r\n");
+    newTerm();
+  }
+
+  function attachTerm(id) {
+    TERM.id = id;
+    TERM.offset = 0;
+    TERM.ended = false;
+    connectTerm();
+  }
+
+  function detachTerm() {
+    if (TERM.es) { TERM.es.close(); TERM.es = null; }
+    TERM.id = "";
+    TERM.queue = "";
+  }
+
+  function connectTerm() {
+    var id = TERM.id;
+    var es = new EventSource(nodePath("/api/terminals/" + id + "/stream?after=" + TERM.offset, TERM.node));
+    TERM.es = es;
+    es.addEventListener("out", function (ev) {
+      if (TERM.es !== es) return;
+      var d = JSON.parse(ev.data);
+      var bin = atob(d.d);
+      var bytes = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      TERM.xterm.write(bytes);
+      TERM.offset = d.at + bytes.length;
+    });
+    es.addEventListener("exit", function () {
+      if (TERM.es !== es) return;
+      es.close();
+      TERM.es = null;
+      TERM.ended = true;
+      LS.del(TERM.key);
+      TERM.xterm.write("\r\n\x1b[2m[已退出 · 按任意键重新打开]\x1b[0m\r\n");
+    });
+    // EventSource cannot see a 404 and would retry a finished terminal
+    // forever. Reconnect by hand, after asking whether it still exists (a
+    // resize answers 404 once it is gone).
+    es.onerror = function () {
+      if (TERM.es !== es) return;
+      es.close();
+      TERM.es = null;
+      setTimeout(function () {
+        if (TERM.id !== id || TERM.ended) return;
+        api("/api/terminals/" + id + "/resize", { method: "POST", node: TERM.node,
+          body: { cols: TERM.xterm.cols, rows: TERM.xterm.rows } }).then(function () {
+          if (TERM.id === id && !TERM.es) connectTerm();
+        }).catch(function (e) {
+          if (TERM.id !== id) return;
+          if (e.status === 404) {
+            TERM.xterm.write("\r\n\x1b[2m[终端已结束，已重新打开]\x1b[0m\r\n");
+            reopenTerm();
+          } else {
+            setTimeout(function () { if (TERM.id === id && !TERM.es) connectTerm(); }, 2000);
+          }
+        });
+      }, 1200);
+    };
+  }
+
+  // Keystrokes go out in order, one request at a time; what is typed while a
+  // request is in flight joins the next one.
+  function termSend(data) {
+    if (!data) return;
+    TERM.queue += data;
+    if (TERM.sending || !TERM.id) return;
+    var id = TERM.id, chunk = TERM.queue;
+    TERM.queue = "";
+    TERM.sending = true;
+    api("/api/terminals/" + id + "/input", { method: "POST", node: TERM.node, body: { data: chunk } })
+      .catch(function (e) { if (e.status === 404 || e.status === 410) toast("终端已结束", true); })
+      .then(function () {
+        TERM.sending = false;
+        if (TERM.queue) termSend("");
+      });
+  }
+
+  // The sticky Ctrl and Alt keys of the key row act on the next keystroke.
+  function applyTermMods(d) {
+    if (!TERM.ctrl && !TERM.alt) return d;
+    if (TERM.ctrl && d.length) {
+      var c = d[0].toUpperCase().charCodeAt(0);
+      var ctl = c >= 64 && c <= 95 ? String.fromCharCode(c - 64) : d[0] === " " ? "\x00" : d[0] === "?" ? "\x7f" : d[0];
+      d = ctl + d.slice(1);
+    }
+    if (TERM.alt) d = "\x1b" + d;
+    TERM.ctrl = TERM.alt = false;
+    drawTermKeys();
+    return d;
+  }
+
+  function drawTermKeys() {
+    var keys = TERM.fn ? TERM_FN_KEYS : TERM_KEYS;
+    $("#term-keys").innerHTML = keys.map(function (k) {
+      var on = (k[1] === "mod:ctrl" && TERM.ctrl) || (k[1] === "mod:alt" && TERM.alt) || (k[1] === "fn" && TERM.fn);
+      return '<button type="button" tabindex="-1" data-k="' + esc(k[1]) + '"' + (on ? ' class="on"' : "") + ">" + esc(k[0]) + "</button>";
+    }).join("");
+  }
+
+  function pressTermKey(k) {
+    if (k === "fn") { TERM.fn = !TERM.fn; drawTermKeys(); return; }
+    if (k === "mod:ctrl") { TERM.ctrl = !TERM.ctrl; drawTermKeys(); return; }
+    if (k === "mod:alt") { TERM.alt = !TERM.alt; drawTermKeys(); return; }
+    if (!TERM.xterm) return;
+    if (TERM.ended) { reopenTerm(); return; }
+    var seq = k;
+    if (k.indexOf("arrow:") === 0) {
+      var dir = k.slice(6);
+      var mod = TERM.ctrl ? 5 : TERM.alt ? 3 : 0;
+      seq = mod ? "\x1b[1;" + mod + dir : (TERM.xterm.modes.applicationCursorKeysMode ? "\x1bO" : "\x1b[") + dir;
+      if (mod) { TERM.ctrl = TERM.alt = false; drawTermKeys(); }
+      termSend(seq);
+      return;
+    }
+    termSend(applyTermMods(seq));
+  }
+
+  // The key row must not take focus from the terminal, or the keyboard would
+  // close: act on mousedown / on a touch that did not scroll the row, and
+  // cancel the default that would move focus.
+  (function () {
+    var bar = $("#term-keys"), start = null;
+    bar.addEventListener("mousedown", function (e) {
+      var b = e.target.closest("[data-k]");
+      if (!b) return;
+      e.preventDefault();
+      if (!e.sourceCapabilities || !e.sourceCapabilities.firesTouchEvents) pressTermKey(b.getAttribute("data-k"));
+    });
+    bar.addEventListener("touchstart", function (e) {
+      var t = e.touches[0];
+      start = { x: t.clientX, y: t.clientY, b: e.target.closest("[data-k]") };
+    }, { passive: true });
+    bar.addEventListener("touchend", function (e) {
+      var t = e.changedTouches[0];
+      if (!start || !start.b) return;
+      var moved = Math.abs(t.clientX - start.x) > 10 || Math.abs(t.clientY - start.y) > 10;
+      if (!moved) {
+        e.preventDefault();
+        pressTermKey(start.b.getAttribute("data-k"));
+      }
+      start = null;
+    });
+  })();
+
+  $("#term-btn").addEventListener("click", openTerminal);
+  $("#term-back").addEventListener("click", closeTerminalView);
+  $("#term-end").addEventListener("click", function () {
+    var id = TERM.id, node = TERM.node, key = TERM.key;
+    if (key) LS.del(key);
+    detachTerm();
+    TERM.key = "";
+    closeTerminalView();
+    if (id) api("/api/terminals/" + id, { method: "DELETE", node: node }).catch(function () {});
+    toast("终端已结束");
+  });
+
+  // -------------------------------------------------------------------- files
+  // The conversation machine's files (files.go), starting in its directory.
+  // A tap on a folder opens it, a tap on a file downloads it: the apps write
+  // it into Downloads themselves (a WebView cannot), a browser saves it as
+  // usual. Uploads go into the folder on screen.
+
+  var FILES = { node: "", path: "", parent: "", entries: [], truncated: false, token: 0,
+    hidden: LS.get("files.hidden", "") === "1", jobs: [] };
+
+  function openFiles() {
+    if (!S.session || noDevice()) return;
+    var start = FILES.node === S.node && FILES.session === S.session.id && FILES.path ? FILES.path : S.session.cwd;
+    FILES.node = S.node;
+    FILES.session = S.session.id;
+    $("#files").hidden = false;
+    $("#files-hidden").setAttribute("aria-pressed", FILES.hidden ? "true" : "false");
+    loadDir(start);
+  }
+
+  function closeFilesView() {
+    var view = $("#files");
+    if (view && !view.hidden) view.hidden = true;
+  }
+
+  function joinPath(dir, name) { return dir === "/" ? "/" + name : dir + "/" + name; }
+
+  function fmtSize(n) {
+    if (n < 1024) return n + " B";
+    var u = ["KB", "MB", "GB", "TB"], i = -1;
+    do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
+    return (n < 10 ? n.toFixed(1) : Math.round(n)) + " " + u[i];
+  }
+
+  function loadDir(path) {
+    var tok = ++FILES.token;
+    $("#files-list").innerHTML = '<div class="empty"><span class="spinner"></span></div>';
+    api("/api/files?path=" + encodeURIComponent(path), { node: FILES.node }).then(function (d) {
+      if (tok !== FILES.token) return;
+      FILES.path = d.path;
+      FILES.parent = d.parent;
+      FILES.entries = d.entries || [];
+      FILES.truncated = d.truncated;
+      renderFiles();
+      $("#files-list").scrollTop = 0;
+    }).catch(function (e) {
+      if (tok !== FILES.token) return;
+      $("#files-sub").textContent = path;
+      $("#files-list").innerHTML = '<div class="empty">无法打开：' + esc(e.message) +
+        (FILES.path && FILES.path !== path ? '<div><button type="button" class="btn sm" data-dir="' + esc(FILES.path) + '">返回</button></div>' : "") + "</div>";
+    });
+  }
+
+  function renderFiles() {
+    $("#files-sub").textContent = (nodeLabel(FILES.node) ? nodeLabel(FILES.node) + " · " : "") + FILES.path;
+    // The path as tappable segments, scrolled to its end.
+    var parts = FILES.path.split("/").filter(Boolean), acc = "";
+    var crumbs = ['<button type="button" data-dir="/">/</button>'];
+    parts.forEach(function (p) {
+      acc += "/" + p;
+      crumbs.push('<button type="button" data-dir="' + esc(acc) + '">' + esc(p) + "</button>");
+    });
+    var bar = $("#files-crumbs");
+    bar.innerHTML = crumbs.join('<span class="sep">›</span>');
+    bar.scrollLeft = bar.scrollWidth;
+
+    var shown = FILES.entries.filter(function (e) { return FILES.hidden || e.name.charAt(0) !== "."; });
+    var rows = [];
+    if (FILES.parent) {
+      rows.push('<button type="button" class="file-row up" data-dir="' + esc(FILES.parent) + '">' +
+        '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4.5 9.5 9 5M5 9.5h9a5.5 5.5 0 0 1 0 11h-2"/></svg>' +
+        '<span class="file-name">上一级</span></button>');
+    }
+    shown.forEach(function (e) {
+      var full = joinPath(FILES.path, e.name);
+      var ico = e.dir
+        ? '<path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>'
+        : '<path d="M7 3.5h6.5L18 8v12.5H7z"/><path d="M13 3.5V8h5"/>';
+      var meta = (e.dir ? "" : fmtSize(e.size) + " · ") + rel(e.mtime) + (e.link ? " · 链接" : "");
+      rows.push('<button type="button" class="file-row' + (e.dir ? " dir" : "") + '" ' +
+        (e.dir ? 'data-dir="' + esc(full) + '"' : 'data-file="' + esc(full) + '" data-name="' + esc(e.name) + '" data-size="' + e.size + '"') + ">" +
+        '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true">' + ico + "</svg>" +
+        '<span class="file-text"><span class="file-name">' + esc(e.name) + '</span><span class="file-meta">' + esc(meta) + "</span></span>" +
+        (e.dir ? "" : '<svg class="ico sm file-dl" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.5v11M7.5 11 12 15.5 16.5 11M5 19.5h14"/></svg>') +
+        "</button>");
+    });
+    if (!shown.length) {
+      var hiddenN = FILES.entries.length - shown.length;
+      rows.push('<div class="empty">' + (hiddenN ? "只有 " + hiddenN + " 个隐藏项" : "空文件夹") + "</div>");
+    }
+    if (FILES.truncated) rows.push('<div class="empty">只显示了前 5000 项</div>');
+    $("#files-list").innerHTML = rows.join("");
+  }
+
+  function fileJob(kind, name, total) {
+    var job = { id: rid(), kind: kind, name: name, done: 0, total: total || 0, state: "", info: "" };
+    FILES.jobs.unshift(job);
+    FILES.jobs = FILES.jobs.slice(0, 6);
+    renderJobs();
+    return job;
+  }
+
+  function renderJobs() {
+    var box = $("#files-jobs");
+    box.innerHTML = FILES.jobs.map(function (j) {
+      var pct = j.total > 0 ? Math.min(100, Math.round(j.done / j.total * 100)) : 0;
+      var verb = j.kind === "up" ? "上传" : "下载";
+      var status = j.state === "done"
+        ? (j.kind === "up" ? "已上传" : "已保存到" + (j.info ? " " + j.info : ""))
+        : j.state === "error" ? verb + "失败：" + j.info
+        : j.state === "browser" ? "已交给浏览器下载"
+        : (j.total > 0 ? pct + "% · " + fmtSize(j.done) + " / " + fmtSize(j.total) : verb + "中… " + (j.done ? fmtSize(j.done) : ""));
+      var open = j.kind === "down" && j.state === "done" && (androidNative || macNative)
+        ? '<button type="button" class="btn sm" data-open-dl="' + esc(j.id) + '">' + (macNative ? "在访达中显示" : "打开") + "</button>" : "";
+      return '<div class="file-job ' + esc(j.state || "run") + '">' +
+        '<div class="file-job-text"><span class="file-name">' + esc(j.name) + '</span><span class="file-meta">' + esc(status) + "</span></div>" +
+        open + (j.state ? "" : '<div class="file-job-bar"><i style="width:' + pct + '%"></i></div>') + "</div>";
+    }).join("");
+  }
+
+  // Native downloads report here (MainActivity / Download.swift).
+  window.acDownload = function (id, done, total, state, info) {
+    var j = FILES.jobs.filter(function (x) { return x.id === id; })[0];
+    if (!j) return;
+    j.done = done;
+    if (total > 0) j.total = total;
+    if (state) { j.state = state; j.info = info || ""; }
+    renderJobs();
+    if (state === "error") toast(j.name + " 下载失败", true);
+  };
+
+  function downloadFile(path, name, size) {
+    var url = nodePath("/api/files/download?path=" + encodeURIComponent(path), FILES.node);
+    var job = fileJob("down", name, size);
+    if (androidNative && androidNative.download) {
+      androidNative.download(job.id, url, name);
+    } else if (macNative) {
+      macNative.postMessage({ op: "download", id: job.id, path: url, name: name });
+    } else {
+      var a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      job.state = "browser";
+      renderJobs();
+    }
+  }
+
+  // XMLHttpRequest rather than fetch: it reports upload progress.
+  function uploadFile(file) {
+    var dir = FILES.path, node = FILES.node;
+    var job = fileJob("up", file.name, file.size);
+    var xhr = new XMLHttpRequest();
+    xhr.open("POST", nodePath("/api/files/upload?dir=" + encodeURIComponent(dir) + "&name=" + encodeURIComponent(file.name), node));
+    xhr.setRequestHeader("X-CSRF-Token", S.csrf);
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.upload.onprogress = function (e) {
+      job.done = e.loaded;
+      if (e.lengthComputable) job.total = e.total;
+      renderJobs();
+    };
+    xhr.onload = function () {
+      var d = {};
+      try { d = JSON.parse(xhr.responseText); } catch (e) {}
+      if (xhr.status === 200) {
+        job.state = "done";
+        job.done = job.total;
+        if (d.name && d.name !== file.name) job.name = file.name + " → " + d.name;
+        if (FILES.path === dir && FILES.node === node && !$("#files").hidden) loadDir(dir);
+      } else {
+        job.state = "error";
+        job.info = d.error || "HTTP " + xhr.status;
+        if (xhr.status === 401) showLogin();
+      }
+      renderJobs();
+    };
+    xhr.onerror = function () { job.state = "error"; job.info = "连接中断"; renderJobs(); };
+    xhr.send(file);
+  }
+
+  $("#files-btn").addEventListener("click", openFiles);
+  $("#files-back").addEventListener("click", closeFilesView);
+  $("#files-hidden").addEventListener("click", function () {
+    FILES.hidden = !FILES.hidden;
+    LS.set("files.hidden", FILES.hidden ? "1" : "");
+    this.setAttribute("aria-pressed", FILES.hidden ? "true" : "false");
+    renderFiles();
+  });
+  $("#files-input").addEventListener("change", function () {
+    Array.prototype.forEach.call(this.files || [], uploadFile);
+    this.value = "";
+  });
+  $("#files").addEventListener("click", function (e) {
+    var d = e.target.closest("[data-dir]");
+    if (d) { loadDir(d.getAttribute("data-dir")); return; }
+    var f = e.target.closest("[data-file]");
+    if (f) { downloadFile(f.getAttribute("data-file"), f.getAttribute("data-name"), +f.getAttribute("data-size")); return; }
+    var o = e.target.closest("[data-open-dl]");
+    if (o) {
+      var id = o.getAttribute("data-open-dl");
+      if (androidNative && androidNative.openDownload) androidNative.openDownload(id);
+      else if (macNative) macNative.postMessage({ op: "openDownload", id: id });
+    }
+  });
+
   // Global click for code copy buttons.
   document.addEventListener("click", function (e) {
     var c = e.target.closest(".code-copy");
@@ -3952,19 +4546,19 @@
     var block = c.closest(".code-block");
     var code = block ? block.querySelector("code") : null;
     if (!code) return;
-    var text = code.textContent;
-    var done = function () { c.textContent = "已复制"; setTimeout(function () { c.textContent = "复制"; }, 1400); };
-    if (navigator.clipboard && window.isSecureContext) {
-      navigator.clipboard.writeText(text).then(done).catch(function () { fallbackCopy(text, done); });
-    } else fallbackCopy(text, done);
+    writeClipboard(code.textContent).then(function (ok) {
+      if (!ok) { toast("复制失败", true); return; }
+      // The tick holds for 2.5s and fades back; another click while it shows
+      // only restarts the wait, so the icon does not flicker.
+      clearTimeout(c._copyTimer);
+      c.classList.add("done");
+      c.setAttribute("aria-label", "已复制");
+      c._copyTimer = setTimeout(function () {
+        c.classList.remove("done");
+        c.setAttribute("aria-label", "复制代码");
+      }, 2500);
+    });
   });
-  function fallbackCopy(text, done) {
-    var ta = document.createElement("textarea");
-    ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
-    document.body.appendChild(ta); ta.select();
-    try { document.execCommand("copy"); done(); } catch (e) { toast("复制失败", true); }
-    ta.remove();
-  }
 
   // Reconnect when the phone comes back online / tab becomes visible.
   window.addEventListener("online", function () {

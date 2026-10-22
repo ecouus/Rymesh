@@ -40,6 +40,18 @@ final class Console {
     /// Login Items; shown to the user once.
     private(set) var warning = ""
 
+    /// Stops the console when the app quits. Agent tasks are separate
+    /// processes and keep running; their output is picked up next launch.
+    func stop() {
+        let p = Process()
+        p.executableURL = binary
+        p.arguments = ["client", "stop"]
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        try? p.run()
+        p.waitUntilExit()
+    }
+
     func ensureRunning() throws {
         let p = Process()
         p.executableURL = binary

@@ -2772,6 +2772,16 @@
     var ta = $("#prompt");
     var text = ta.value.trim();
     if (!text || S.sending) return;
+    // A bare /model or /effort opens the picker, as in the interactive CLI;
+    // with an argument it goes to the agent like any command.
+    if (/^\/(model|effort)$/i.test(text)) {
+      ta.value = "";
+      ta.style.height = "auto";
+      hideSlashMenu();
+      closeProfileMenu();
+      openModelMenu();
+      return;
+    }
     if (!S.session) { sendNewChat(text); return; }
     var profile = selectedProfile();
     // Reuse the request id when the user retries the same text after a failed

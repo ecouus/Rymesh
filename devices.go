@@ -347,6 +347,9 @@ func (s *Server) deployNode(ctx context.Context, n NodeConfig, emit func(string)
 	if out, err := s.ssh.run(ctx, n, up, bin); err != nil {
 		return n, fmt.Errorf("上传失败：%s", strings.TrimSpace(out+" "+err.Error()))
 	}
+	if out, _ := s.ssh.run(ctx, n, `[ -f /etc/agentconsole/config.json ] && echo system`, nil); strings.TrimSpace(out) == "system" {
+		return s.adoptSystemNode(ctx, n, emit)
+	}
 	token := ""
 	if out, err := s.ssh.run(ctx, n, `C="$HOME/.agentconsole/config.json"; [ -f "$C" ] && "$HOME/.agentconsole/bin/agentconsole" node token --config "$C" 2>/dev/null`, nil); err == nil {
 		token = strings.TrimSpace(out)
@@ -393,6 +396,52 @@ func (s *Server) deployNode(ctx context.Context, n NodeConfig, emit func(string)
 		time.Sleep(time.Second)
 	}
 	return n, errors.New("节点已安装，但通过 SSH 隧道访问失败")
+}
+
+// adoptSystemNode takes over a server-wide install (`agentconsole install`:
+// /etc/agentconsole, a systemd unit) instead of starting a second node next to
+// it, which would fight it for the port. It keeps that install's config and
+// port, adds a node token, and upgrades its binary in place (the previous one
+// is kept as <binary>.prev). Running agent tasks survive the restart.
+func (s *Server) adoptSystemNode(ctx context.Context, n NodeConfig, emit func(string)) (NodeConfig, error) {
+	const cfg = "/etc/agentconsole/config.json"
+	emit("检测到服务器上的系统级安装（" + cfg + "），接管并升级它")
+	out, err := s.ssh.run(ctx, n, `"$HOME/.agentconsole/bin/agentconsole" node token --config `+cfg+` 2>/dev/null`, nil)
+	token := strings.TrimSpace(out)
+	if err != nil || token == "" {
+		return n, fmt.Errorf("读取节点令牌失败（需要能写 %s）：%s", cfg, strings.TrimSpace(out))
+	}
+	out, _ = s.ssh.run(ctx, n, `sed -n 's/.*"port": *\([0-9]*\).*/\1/p' `+cfg+` | head -1`, nil)
+	port, _ := strconv.Atoi(strings.TrimSpace(out))
+	if port == 0 {
+		port = defaultPort
+	}
+	emit("升级系统服务的程序并重启（运行中的任务不受影响）")
+	const swap = `set -e
+BIN=$(systemctl show -p ExecStart --value agentconsole | sed -n 's/.*path=\([^ ;]*\).*/\1/p')
+[ -n "$BIN" ] || BIN=/usr/local/bin/agentconsole
+cp -p "$BIN" "$BIN.prev" 2>/dev/null || true
+install -m 0755 "$HOME/.agentconsole/bin/agentconsole" "$BIN"
+systemctl restart agentconsole
+echo "$BIN"`
+	if out, err := s.ssh.run(ctx, n, swap, nil); err != nil {
+		return n, fmt.Errorf("升级系统服务失败（需要 root）：%s", strings.TrimSpace(out))
+	} else {
+		emit("已升级 " + strings.TrimSpace(out) + "（旧程序保存为 .prev）")
+	}
+	n, err = s.updateDevice(n.ID, func(d *NodeConfig) { d.Token, d.RemotePort = token, port })
+	if err != nil {
+		return n, err
+	}
+	emit("验证连接")
+	for i := 0; i < 15; i++ {
+		if v := probeNode(ctx, n, s.transportFor(n)); v.Online {
+			emit("完成：节点版本 " + v.Version)
+			return n, nil
+		}
+		time.Sleep(time.Second)
+	}
+	return n, errors.New("系统服务已升级，但通过 SSH 隧道访问失败")
 }
 
 func newNodeToken() (string, error) {

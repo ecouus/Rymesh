@@ -63,28 +63,32 @@ func clientMain(args []string) int {
 		return serveMain([]string{"--config", *configPath})
 	case "open":
 		return openConsole(cfg)
+	case "stop":
+		stopClientService(filepath.Dir(*configPath))
+		fmt.Println("控制台已停止；正在运行的 Agent 任务不受影响，下次启动时补上它们的输出。")
+		return 0
 	case "", "start":
-		// A service left running by an older build (the app was updated, or
-		// the binary moved) is restarted onto this one.
+		// On a personal machine the console runs only while it is wanted: a
+		// plain background process, no login item, no service manager. Agent
+		// tasks are separate processes and keep running when it stops.
 		exe, _ := os.Executable()
 		exe, _ = filepath.EvalSymlinks(exe)
+		base := filepath.Dir(*configPath)
 		if running := runningBuild(cfg.Port); running != "" && (running != buildID() || serviceUsesOther(exe)) {
-			fmt.Println("后台服务不是当前这个程序，正在切换…")
-			if _, warning := startNodeService(exe, *configPath, filepath.Dir(*configPath)); warning != "" {
-				fmt.Println("注意：" + warning)
-			}
-			time.Sleep(time.Second)
+			fmt.Println("正在运行的控制台不是当前这个程序，正在切换…")
+			stopClientService(base)
 		}
 		if !waitHealthy(cfg.Port, 500*time.Millisecond) {
-			service, warning := startNodeService(exe, *configPath, filepath.Dir(*configPath))
-			if warning != "" {
-				fmt.Println("注意：" + warning)
+			stopClientService(base) // also retires a launchd/systemd registration from older versions
+			if err := startDetached(exe, *configPath, base); err != nil {
+				fmt.Fprintln(os.Stderr, "无法启动控制台：", err)
+				return 1
 			}
 			if !waitHealthy(cfg.Port, 15*time.Second) {
 				fmt.Fprintf(os.Stderr, "控制台没有在 127.0.0.1:%d 启动，日志在 %s\n", cfg.Port, cfg.LogDir)
 				return 1
 			}
-			fmt.Printf("控制台已在后台运行（%s），开机自动启动。\n", service)
+			fmt.Println("控制台已在后台运行（不会开机自启；agentconsole client stop 停止）。")
 		}
 		if *noOpen {
 			fmt.Printf("http://127.0.0.1:%d\n", cfg.Port)
@@ -93,8 +97,9 @@ func clientMain(args []string) int {
 		return openConsole(cfg)
 	}
 	fmt.Fprintln(os.Stderr, `用法:
-  agentconsole client          启动（首次自动配置并注册为后台服务）并在浏览器中打开
+  agentconsole client          启动（首次自动配置）并在浏览器中打开
   agentconsole client open     在浏览器中打开（免密）
+  agentconsole client stop     停止控制台（运行中的 Agent 任务不受影响）
   agentconsole client serve    前台运行（供服务管理器调用）`)
 	return 2
 }
@@ -123,6 +128,42 @@ func buildID() string {
 		}
 	})
 	return buildHash
+}
+
+// stopClientService stops the console on this machine however it was started:
+// a detached process, or a launchd / user systemd service registered by an
+// older version (which it removes, so nothing starts at login any more).
+func stopClientService(base string) {
+	home, _ := os.UserHomeDir()
+	switch runtime.GOOS {
+	case "darwin":
+		uid := fmt.Sprint(os.Getuid())
+		plist := filepath.Join(home, "Library", "LaunchAgents", launchdLabel+".plist")
+		if _, err := os.Stat(plist); err == nil {
+			for _, d := range []string{"gui/" + uid, "user/" + uid} {
+				_ = exec.Command("launchctl", "bootout", d+"/"+launchdLabel).Run()
+			}
+			_ = os.Remove(plist)
+		}
+	case "linux":
+		unit := filepath.Join(home, ".config", "systemd", "user", nodeServiceName+".service")
+		if _, err := os.Stat(unit); err == nil && os.Geteuid() != 0 {
+			_ = systemctl(true, "disable", "--now", nodeServiceName)
+			_ = os.Remove(unit)
+		}
+	}
+	stopDetached(base)
+	// launchd stops its job asynchronously; wait for the port to free up.
+	for i := 0; i < 100 && runningBuild(readPort(base)) != ""; i++ {
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+func readPort(base string) int {
+	if c, err := loadConfig(filepath.Join(base, "config.json")); err == nil {
+		return c.Port
+	}
+	return defaultPort
 }
 
 // serviceUsesOther reports whether the registered service starts a different

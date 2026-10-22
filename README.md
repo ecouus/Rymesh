@@ -436,13 +436,14 @@ make macos       # → macos/dist/AgentConsole.app（Swift 外壳 + 通用二进
 把 `AgentConsole.app` 拖进“应用程序”。从网上下载的副本首次打开会被 Gatekeeper 拦下：
 系统设置 → 隐私与安全性 → “仍要打开”（或 `xattr -dr com.apple.quarantine /Applications/AgentConsole.app`）。
 App 提供独立窗口、菜单栏图标（待处理数量）、Dock 角标、审批/提问的系统通知（点击直达卡片）和“登录时打开”。
-控制台本身作为 launchd 服务运行（`com.agentconsole.node`），退出 App 不影响正在运行的 Agent；
-App 启动时若发现服务是旧版本或别处的程序，会自动切换到 App 内置的这一份。
-若在“系统设置 → 通用 → 登录项与扩展”里关闭了它的“允许在后台”，launchd 会拒绝注册服务；
-App 会提示并临时以普通后台进程运行（不会开机自启、崩溃后不自动恢复），打开开关后重新打开 App 即可。
+控制台只在 App 运行时运行（普通进程，不开机自启、不常驻）；退出 App 会停止控制台，
+但正在运行的 Agent 任务是独立进程，继续执行，下次打开 App 时补上它们的输出。
+App 内置 Linux amd64/arm64 节点程序，可直接部署服务器；若服务器上已有系统级安装
+（`agentconsole install`：`/etc/agentconsole` + systemd），部署会接管并原地升级它（旧程序保存为 `.prev`），
+而不是另起一个节点。
 
-不想用 App 也可以只用命令行：`agentconsole client`（首次自动配置并注册 launchd，免密打开浏览器）、
-`agentconsole client open`。
+不想用 App 也可以只用命令行：`agentconsole client`（首次自动配置，免密打开浏览器）、
+`agentconsole client open`、`agentconsole client stop`。
 
 设置 → 设备 → 添加服务器：可从 `~/.ssh/config` 一键导入，密钥可选 `~/.ssh` 里的、ssh-agent，
 或由客户端生成（显示公钥供加入服务器 `authorized_keys`）。首次连接核对并固定主机指纹

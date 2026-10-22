@@ -1,5 +1,4 @@
 import AppKit
-import ServiceManagement
 import UserNotifications
 import WebKit
 
@@ -79,6 +78,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    // The console runs only while the app does (no login item, no service).
+    func applicationWillTerminate(_ note: Notification) {
+        timer?.invalidate()
+        console?.stop()
+    }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
         showWindow()
@@ -225,10 +230,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             }
         }
         m.addItem(.separator())
-        let login = NSMenuItem(title: "登录时打开", action: #selector(toggleLoginItem), keyEquivalent: "")
-        login.target = self
-        login.state = SMAppService.mainApp.status == .enabled ? .on : .off
-        m.addItem(login)
         m.addItem(withTitle: "退出（Agent 任务继续在后台运行）", action: #selector(NSApplication.terminate(_:)),
                   keyEquivalent: "q")
         status.menu = m
@@ -237,22 +238,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     @objc private func openPending(_ sender: NSMenuItem) {
         guard sender.tag < pending.count else { return }
         open(pending[sender.tag])
-    }
-
-    @objc private func toggleLoginItem() {
-        do {
-            if SMAppService.mainApp.status == .enabled {
-                try SMAppService.mainApp.unregister()
-            } else {
-                try SMAppService.mainApp.register()
-            }
-        } catch {
-            let a = NSAlert()
-            a.messageText = "无法更改登录项"
-            a.informativeText = error.localizedDescription + "\n（请先把应用放到“应用程序”文件夹）"
-            a.runModal()
-        }
-        rebuildStatusMenu()
     }
 
     // MARK: Main menu (Edit keeps ⌘C/⌘V working inside the web view)

@@ -32,6 +32,9 @@ type TaskSpec struct {
 	PermTimeout int    `json:"permission_timeout_seconds"`
 	RunnerID    string `json:"runner_id"`
 	Executable  string `json:"executable"`
+	// Per-conversation settings (slash.go), applied to every message.
+	Model  string `json:"model,omitempty"`
+	Effort string `json:"effort,omitempty"`
 }
 
 type eventWriter struct {
@@ -507,6 +510,14 @@ func buildAgentCommand(spec TaskSpec, controlDir string) (*exec.Cmd, error) {
 			"--output-format", "stream-json", "--verbose",
 			"--permission-mode", mode,
 			"--permission-prompt-tool", "stdio",
+		}
+		if spec.Model != "" {
+			args = append(args, "--model", spec.Model)
+		}
+		for _, e := range claudeEfforts {
+			if spec.Effort == e {
+				args = append(args, "--effort", e)
+			}
 		}
 		if profile == "bypassPermissions" {
 			args = append(args, "--dangerously-skip-permissions")

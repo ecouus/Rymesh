@@ -74,6 +74,7 @@
 
   <div id="composer-wrap" class="composer-wrap" hidden>
     <div class="composer-box">
+      <div id="slash-menu" class="menu slash-menu" role="listbox" aria-label="指令" hidden></div>
       <form id="composer" class="composer">
         <textarea id="prompt" rows="1" placeholder="给 Agent 发消息…" aria-label="消息内容"></textarea>
         <button id="stop-btn" class="send-btn stop-btn" type="button" aria-label="停止任务" title="停止任务" hidden><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" stroke="none"/></svg></button>
@@ -91,6 +92,14 @@
             <div id="profile-menu" class="menu" role="listbox" aria-label="权限模式" hidden></div>
           </div>
           <select id="profile-select" aria-label="权限模式" hidden></select>
+          <div class="menu-wrap">
+            <button id="model-btn" class="pill" type="button" aria-haspopup="listbox" aria-expanded="false" title="模型与推理强度">
+              <svg class="ico sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l2.2 4.6 5 .7-3.6 3.5.9 5-4.5-2.4-4.5 2.4.9-5L4.8 8.3l5-.7L12 3z"/></svg>
+              <span id="model-label">默认模型</span>
+              <svg class="ico sm chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>
+            </button>
+            <div id="model-menu" class="menu model-menu" role="listbox" aria-label="模型" hidden></div>
+          </div>
         </div>
         <span id="composer-hint" class="muted small"></span>
       </div>

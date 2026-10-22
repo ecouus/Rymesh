@@ -106,6 +106,11 @@ func (c *claudeSession) onLine(line []byte) {
 		c.onNativeID(id)
 	}
 	if str(raw["type"]) == "result" {
+		// A /model or /effort the CLI accepted lasts only for this process;
+		// the console keeps it for the conversation's next messages.
+		if st, ok := claudeSettingFrom(c.spec.Prompt, str(raw["result"])); ok {
+			c.w.state(map[string]any{"session_settings": st})
+		}
 		c.closeInput()
 	}
 }

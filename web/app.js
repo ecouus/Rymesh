@@ -67,6 +67,14 @@
     nodeName: "",
     nodes: [],
     remotePerms: [],
+    // Slash commands and model choice (slash.go): caches per device+agent, the
+    // open conversation's settings, and the settings for a new conversation.
+    commands: {},
+    models: {},
+    sessionSettings: {},
+    draftSettings: {},
+    slashItems: [],
+    slashIdx: 0,
     permDecisions: Object.create(null),
     loadSeq: 0,
     loadPending: Object.create(null)
@@ -977,6 +985,7 @@
   }
 
   function openProfileMenu() {
+    closeModelMenu();
     var sel = $("#profile-select"), menu = $("#profile-menu");
     var agent = currentAgentName();
     menu.innerHTML = profilesForAgent(agent).map(function (p) {
@@ -1077,6 +1086,7 @@
     renderAgentSelect();
     updateComposerMeta();
     renderProfileSelect();
+    syncModelBtn();
     renderApprovalNotifications();
   }
 
@@ -1549,6 +1559,8 @@
       S.session = sessData.session;
       S.sessionTasks = sessData.tasks || [];
       S.sessionPerms = sessData.permissions || [];
+      S.sessionSettings = sessData.settings || {};
+      syncModelBtn();
       S.sessionActive = S.sessionTasks.filter(isActiveTask);
       if (!S.sessions.some(function (s) { return s.id === id; })) S.sessions.unshift(S.session);
       renderProfileSelect();
@@ -2036,6 +2048,7 @@
         break;
       }
       case "notice":
+        if (/^已为这个对话保存/.test(p.text || "")) refreshSessionSettings();
         wrap.innerHTML = '<div class="notice">' + esc(p.text || "") + "</div>";
         break;
       case "stderr":
@@ -2542,6 +2555,193 @@
     step();
   }
 
+  // ------------------------------------------------- model picker + slash menu
+
+  function cacheKey(agent) { return (S.node || "local") + "/" + agent; }
+
+  function loadCommands(agent) {
+    var k = cacheKey(agent);
+    if (S.commands[k]) return Promise.resolve(S.commands[k]);
+    return api("/api/agents/" + encodeURIComponent(agent) + "/commands").then(function (d) {
+      S.commands[k] = d.commands || [];
+      return S.commands[k];
+    }).catch(function () { return []; });
+  }
+
+  function loadModels(agent) {
+    var k = cacheKey(agent);
+    if (S.models[k]) return Promise.resolve(S.models[k]);
+    return api("/api/agents/" + encodeURIComponent(agent) + "/models").then(function (d) {
+      S.models[k] = d;
+      return d;
+    });
+  }
+
+  function currentSettings() { return (S.session ? S.sessionSettings : S.draftSettings) || {}; }
+
+  function syncModelBtn() {
+    var st = currentSettings();
+    var agent = currentAgentName();
+    var d = S.models[cacheKey(agent)];
+    var m = d && (d.models || []).filter(function (x) { return x.id === (st.model || ""); })[0];
+    var label = st.model ? (m ? m.label : st.model) : "默认模型";
+    $("#model-label").textContent = label + (st.effort ? " · " + st.effort : "");
+  }
+
+  function refreshSessionSettings() {
+    if (!S.session) return;
+    var sid = S.session.id;
+    api("/api/sessions/" + encodeURIComponent(sid)).then(function (r) {
+      if (S.session && S.session.id === sid) { S.sessionSettings = r.settings || {}; syncModelBtn(); }
+    }).catch(function () {});
+  }
+
+  // Picking in the menu sets the conversation's settings directly, like the
+  // CLI's /model picker; typing /model goes through the agent as in the CLI.
+  function saveSettings(next) {
+    if (!S.session) {
+      S.draftSettings = next;
+      syncModelBtn();
+      return Promise.resolve();
+    }
+    return api("/api/sessions/" + encodeURIComponent(S.session.id), { method: "PATCH", body: { settings: next } })
+      .then(function (r) { S.sessionSettings = r.settings || next; syncModelBtn(); });
+  }
+
+  function closeModelMenu() {
+    $("#model-menu").hidden = true;
+    $("#model-btn").setAttribute("aria-expanded", "false");
+  }
+
+  function openModelMenu() {
+    var agent = currentAgentName(), menu = $("#model-menu");
+    menu.innerHTML = '<div class="menu-item"><span class="spinner"></span> 读取模型列表…</div>';
+    menu.hidden = false;
+    $("#model-btn").setAttribute("aria-expanded", "true");
+    loadModels(agent).then(function (d) {
+      var st = currentSettings();
+      var models = d.models || [];
+      var cur = models.filter(function (m) { return m.id === (st.model || ""); })[0] ||
+        models.filter(function (m) { return m.default; })[0];
+      var efforts = (cur && cur.efforts && cur.efforts.length ? cur.efforts : d.efforts) || [];
+      menu.innerHTML = '<div class="menu-section">模型</div>' + models.map(function (m) {
+        var on = (st.model || "") === m.id || (!st.model && !m.id);
+        return '<button type="button" class="menu-item' + (on ? " on" : "") + '" data-model="' + esc(m.id) + '">' +
+          '<span class="menu-text"><span class="menu-label">' + esc(m.label) + (m.default && m.id ? "（默认）" : "") + "</span>" +
+          (m.id ? '<span class="menu-detail mono">' + esc(m.id) + "</span>" : "") + "</span>" +
+          '<svg class="ico sm menu-check" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg></button>';
+      }).join("") + (efforts.length ? '<div class="menu-section">推理强度</div><div class="effort-row">' +
+        ['<button type="button" class="chip' + (!st.effort ? " active" : "") + '" data-effort="">默认</button>']
+          .concat(efforts.map(function (e) {
+            return '<button type="button" class="chip' + (st.effort === e ? " active" : "") + '" data-effort="' + esc(e) + '">' + esc(e) + "</button>";
+          })).join("") + "</div>" : "");
+    }).catch(function (e) {
+      menu.innerHTML = '<div class="menu-item">' + esc(e.message) + "</div>";
+    });
+  }
+
+  $("#model-btn").addEventListener("click", function (e) {
+    e.stopPropagation();
+    closeProfileMenu();
+    if ($("#model-menu").hidden) openModelMenu(); else closeModelMenu();
+  });
+  $("#model-menu").addEventListener("click", function (e) {
+    e.stopPropagation();
+    var st = currentSettings();
+    var m = e.target.closest("[data-model]");
+    if (m) {
+      var next = { model: m.getAttribute("data-model"), effort: st.effort || "" };
+      saveSettings(next).then(function () { toast("模型：" + $("#model-label").textContent); openModelMenu(); })
+        .catch(function (err) { toast(err.message, true); });
+      return;
+    }
+    var ef = e.target.closest("[data-effort]");
+    if (ef) {
+      saveSettings({ model: st.model || "", effort: ef.getAttribute("data-effort") })
+        .then(function () { closeModelMenu(); toast("推理强度：" + (ef.getAttribute("data-effort") || "默认")); })
+        .catch(function (err) { toast(err.message, true); });
+    }
+  });
+  document.addEventListener("click", function (e) {
+    if (!e.target.closest("#model-menu") && !e.target.closest("#model-btn")) closeModelMenu();
+    if (!e.target.closest("#slash-menu") && !e.target.closest("#prompt")) hideSlashMenu();
+  });
+
+  // Typing "/" offers the agent's commands, as the CLI does.
+  function hideSlashMenu() {
+    var m = $("#slash-menu");
+    if (m) m.hidden = true;
+    S.slashItems = [];
+  }
+
+  function updateSlashMenu() {
+    var ta = $("#prompt");
+    var match = ta.value.match(/^\/([^\s]*)$/);
+    if (!match) { hideSlashMenu(); return; }
+    var q = match[1].toLowerCase();
+    var agent = currentAgentName();
+    loadCommands(agent).then(function (list) {
+      if (!$("#prompt").value.match(/^\/([^\s]*)$/)) return;
+      var starts = list.filter(function (c) { return c.name.toLowerCase().indexOf(q) === 0; });
+      var rest = list.filter(function (c) { return q && c.name.toLowerCase().indexOf(q) > 0; });
+      S.slashItems = starts.concat(rest).slice(0, 9);
+      S.slashIdx = 0;
+      renderSlashMenu();
+    });
+  }
+
+  function renderSlashMenu() {
+    var m = $("#slash-menu");
+    if (!S.slashItems.length) { m.hidden = true; return; }
+    m.innerHTML = S.slashItems.map(function (c, i) {
+      return '<button type="button" class="menu-item' + (i === S.slashIdx ? " on hl" : "") + '" data-slash="' + i + '">' +
+        '<span class="menu-text"><span class="menu-label mono">/' + esc(c.name) +
+        (c.args ? ' <span class="muted">' + esc(c.args) + "</span>" : "") + "</span>" +
+        (c.description ? '<span class="menu-detail">' + esc(c.description) + "</span>" : "") + "</span></button>";
+    }).join("");
+    m.hidden = false;
+  }
+
+  function completeSlash(i) {
+    var c = S.slashItems[i];
+    if (!c) return;
+    var ta = $("#prompt");
+    ta.value = "/" + c.name + " ";
+    hideSlashMenu();
+    ta.focus();
+  }
+
+  // slashKey handles the menu's keys; true means the key was consumed.
+  function slashKey(e) {
+    var m = $("#slash-menu");
+    if (!m || m.hidden || !S.slashItems.length) return false;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      var n = S.slashItems.length;
+      S.slashIdx = (S.slashIdx + (e.key === "ArrowDown" ? 1 : n - 1)) % n;
+      renderSlashMenu();
+      return true;
+    }
+    if (e.key === "Escape") { e.preventDefault(); hideSlashMenu(); return true; }
+    if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey && !e.isComposing)) {
+      var typed = $("#prompt").value.trim().slice(1).toLowerCase();
+      var c = S.slashItems[S.slashIdx];
+      // Enter on a fully typed command runs it, as in the CLI.
+      if (e.key === "Enter" && c && c.name.toLowerCase() === typed) { hideSlashMenu(); return false; }
+      e.preventDefault();
+      completeSlash(S.slashIdx);
+      return true;
+    }
+    return false;
+  }
+
+  $("#prompt").addEventListener("input", updateSlashMenu);
+  $("#slash-menu").addEventListener("mousedown", function (e) { e.preventDefault(); });
+  $("#slash-menu").addEventListener("click", function (e) {
+    var b = e.target.closest("[data-slash]");
+    if (b) completeSlash(+b.getAttribute("data-slash"));
+  });
+
   // ---------------------------------------------------------------- composer
 
   $("#composer").addEventListener("submit", function (e) {
@@ -2602,6 +2802,26 @@
       if (!S.session || S.session.id !== sid) return;
       ta.value = "";
       ta.style.height = "auto";
+      hideSlashMenu();
+      if (d.local) {
+        // Answered by the console itself (slash.go): /clear and /new open a
+        // fresh conversation; the others printed their reply into this one.
+        optimistic.remove();
+        if (d.session) {
+          S.sessions.unshift(d.session);
+          toast("已开始新对话");
+          go("#/session/" + encodeURIComponent(d.session.id));
+        } else {
+          catchUp();
+          api("/api/sessions/" + encodeURIComponent(sid)).then(function (r) {
+            S.session.title = r.session.title;
+            S.sessions.forEach(function (x) { if (x.id === sid) x.title = r.session.title; });
+            updateChatChrome();
+            renderSessionList();
+          }).catch(function () {});
+        }
+        return;
+      }
       var t = d.task;
       S.sessionActive = S.sessionActive.filter(function (x) { return x.id !== t.id; });
       S.sessionActive.push(t);
@@ -2639,7 +2859,7 @@
     $("#send-btn").disabled = true;
     $("#composer-hint").textContent = "正在创建对话…";
 
-    api("/api/sessions", { method: "POST", body: { agent: agent.name, cwd: cwd, title: "" } })
+    api("/api/sessions", { method: "POST", body: { agent: agent.name, cwd: cwd, title: "", settings: S.draftSettings } })
       .then(function (d) {
         sid = d.session.id;
         S.sessions.unshift(d.session);
@@ -2651,7 +2871,8 @@
         var ta = $("#prompt");
         ta.value = "";
         ta.style.height = "auto";
-        go("#/session/" + encodeURIComponent(sid));
+        hideSlashMenu();
+        go("#/session/" + encodeURIComponent(d.local && d.session ? d.session.id : sid));
         if (d.queue_ahead > 0) toast("已排队，前面还有 " + d.queue_ahead + " 个任务");
       }).catch(function (err) {
         toast(err.message, true);
@@ -2666,6 +2887,7 @@
   // Keyboard: desktop Enter sends, Shift+Enter newline; touch devices use the button.
   var coarse = matchMedia("(pointer: coarse)").matches;
   $("#prompt").addEventListener("keydown", function (e) {
+    if (slashKey(e)) return;
     if (e.key === "Enter" && !e.shiftKey && !coarse && !e.isComposing && e.keyCode !== 229) {
       e.preventDefault();
       sendMessage();
@@ -3019,6 +3241,7 @@
     var a = agentMeta(name);
     S.draftAgent = name;
     LS.set("draftAgent", name);
+    S.draftSettings = {}; // models differ per agent
     if (S.route !== "home") toast("已选择 " + (a.label || name) + "，开始新对话");
     newChat(name);
   });

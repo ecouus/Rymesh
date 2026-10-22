@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -154,17 +155,18 @@ func (c *codexSession) handleResponse(id string, result json.RawMessage, errMsg 
 		c.finish(StatusFailed, msg)
 		return
 	}
-	sandbox, approval, _ := codexModes(c.spec.Profile)
 	switch method {
 	case "initialize":
 		c.send(map[string]any{"jsonrpc": "2.0", "method": "initialized"})
-		params := map[string]any{"cwd": c.spec.Cwd, "sandbox": sandbox, "approvalPolicy": approval}
-		if !c.spec.IsNew && c.spec.NativeID != "" {
-			params["threadId"] = c.spec.NativeID
-			c.call("thread/resume", params)
-		} else {
-			c.call("thread/start", params)
+		if name, arg, ok := slashCommand(c.spec.Prompt); ok {
+			c.command(name, arg)
+			return
 		}
+		c.openThread()
+	case "model/list":
+		c.modelCommand(result)
+	case "thread/compact/start", "review/start":
+		// The work runs as a turn; turn/completed ends the task.
 	case "thread/start", "thread/resume":
 		var r struct {
 			Thread struct {
@@ -179,18 +181,170 @@ func (c *codexSession) handleResponse(id string, result json.RawMessage, errMsg 
 		if r.Thread.ID != "" {
 			c.onNativeID(r.Thread.ID)
 		}
+		if name, arg, ok := slashCommand(c.spec.Prompt); ok {
+			c.threadCommand(name, arg, r.Thread.ID)
+			return
+		}
 		_, _, collab := codexModes(c.spec.Profile)
 		params := map[string]any{
 			"threadId": r.Thread.ID,
 			"input":    []any{map[string]any{"type": "text", "text": c.spec.Prompt}},
 		}
-		if r.Model != "" {
+		model := orDefault(c.spec.Model, r.Model)
+		if c.spec.Model != "" {
+			params["model"] = c.spec.Model
+		}
+		if c.spec.Effort != "" {
+			params["effort"] = c.spec.Effort
+		}
+		if model != "" {
 			// Sent every turn: the mode is per turn, so leaving plan mode is as
-			// explicit as entering it.
-			params["collaborationMode"] = map[string]any{"mode": collab, "settings": map[string]any{"model": r.Model}}
+			// explicit as entering it. Its settings carry the effort too: left
+			// out, they reset it, overriding the turn's own "effort".
+			settings := map[string]any{"model": model}
+			if c.spec.Effort != "" {
+				settings["reasoning_effort"] = c.spec.Effort
+			}
+			params["collaborationMode"] = map[string]any{"mode": collab, "settings": settings}
 		}
 		c.call("turn/start", params)
 	}
+}
+
+// openThread starts the conversation's thread, or resumes it.
+func (c *codexSession) openThread() {
+	sandbox, approval, _ := codexModes(c.spec.Profile)
+	params := map[string]any{"cwd": c.spec.Cwd, "sandbox": sandbox, "approvalPolicy": approval}
+	if c.spec.Model != "" {
+		params["model"] = c.spec.Model
+	}
+	if !c.spec.IsNew && c.spec.NativeID != "" {
+		params["threadId"] = c.spec.NativeID
+		c.call("thread/resume", params)
+	} else {
+		c.call("thread/start", params)
+	}
+}
+
+// reply prints a command's answer in the transcript, as the CLI prints it.
+func (c *codexSession) reply(text string) {
+	c.w.append(map[string]any{"method": "agentconsole/reply", "params": map[string]any{"text": text}})
+}
+
+// command runs one of Codex's slash commands (codexCommands in slash.go).
+func (c *codexSession) command(name, arg string) {
+	switch name {
+	case "model":
+		c.call("model/list", map[string]any{})
+	case "effort":
+		levels := []string{"low", "medium", "high", "xhigh", "max", "ultra"}
+		for _, l := range levels {
+			if arg == l {
+				c.w.state(map[string]any{"session_settings": map[string]any{"effort": arg}})
+				c.reply("推理强度已设为 " + arg)
+				c.finish(StatusCompleted, "")
+				return
+			}
+		}
+		if arg == "default" {
+			c.w.state(map[string]any{"session_settings": map[string]any{"effort": ""}})
+			c.reply("推理强度已恢复为模型默认值")
+		} else {
+			c.reply("用法：/effort <" + strings.Join(levels, "|") + "|default>")
+		}
+		c.finish(StatusCompleted, "")
+	case "status":
+		sandbox, approval, collab := codexModes(c.spec.Profile)
+		lines := []string{
+			"**模型**：" + orDefault(c.spec.Model, "默认") + "　**推理强度**：" + orDefault(c.spec.Effort, "默认"),
+			"**权限**：" + profileLabel("codex", c.spec.Profile) + "（sandbox " + sandbox + "，approval " + approval + "，" + collab + " 模式）",
+			"**目录**：`" + c.spec.Cwd + "`",
+			"**会话**：`" + orDefault(c.spec.NativeID, "尚未开始") + "`",
+		}
+		c.reply(strings.Join(lines, "\n\n"))
+		c.finish(StatusCompleted, "")
+	case "compact", "review":
+		if name == "compact" && (c.spec.IsNew || c.spec.NativeID == "") {
+			c.reply("还没有可以压缩的对话。")
+			c.finish(StatusCompleted, "")
+			return
+		}
+		c.openThread() // continues in threadCommand
+	default:
+		c.reply("未知指令 /" + name)
+		c.finish(StatusCompleted, "")
+	}
+}
+
+// threadCommand runs a command that needs the conversation's thread.
+func (c *codexSession) threadCommand(name, arg, threadID string) {
+	switch name {
+	case "compact":
+		c.call("thread/compact/start", map[string]any{"threadId": threadID})
+	case "review":
+		target := map[string]any{"type": "uncommittedChanges"}
+		if arg != "" {
+			target = map[string]any{"type": "custom", "instructions": arg}
+		}
+		c.call("review/start", map[string]any{"threadId": threadID, "target": target, "delivery": "inline"})
+	default:
+		c.finish(StatusCompleted, "")
+	}
+}
+
+// modelCommand lists the models (bare /model) or switches to one, checked
+// against the list Codex reports: "/model gpt-6-sol high".
+func (c *codexSession) modelCommand(result json.RawMessage) {
+	defer c.finish(StatusCompleted, "")
+	models, err := parseCodexModels(result)
+	if err != nil {
+		c.reply("读取模型列表失败：" + err.Error())
+		return
+	}
+	_, arg, _ := slashCommand(c.spec.Prompt)
+	fields := strings.Fields(arg)
+	if len(fields) == 0 {
+		var b strings.Builder
+		b.WriteString("当前模型：**" + orDefault(c.spec.Model, "默认") + "**，推理强度：**" + orDefault(c.spec.Effort, "默认") + "**\n\n")
+		for _, m := range models {
+			mark := ""
+			if m.Default {
+				mark = "（默认）"
+			}
+			b.WriteString("- `" + m.ID + "` " + m.Label + mark + " · 强度：" + strings.Join(m.Efforts, "/") + "\n")
+		}
+		b.WriteString("\n用法：`/model <模型> [强度]`，`/model default` 恢复默认")
+		c.reply(b.String())
+		return
+	}
+	if fields[0] == "default" {
+		c.w.state(map[string]any{"session_settings": map[string]any{"model": "", "effort": ""}})
+		c.reply("已恢复为默认模型")
+		return
+	}
+	for _, m := range models {
+		if m.ID != fields[0] {
+			continue
+		}
+		set := map[string]any{"model": m.ID}
+		msg := "已切换到 " + m.Label
+		if len(fields) > 1 {
+			ok := false
+			for _, e := range m.Efforts {
+				ok = ok || e == fields[1]
+			}
+			if !ok {
+				c.reply(m.Label + " 不支持推理强度 " + fields[1] + "，可选：" + strings.Join(m.Efforts, "/"))
+				return
+			}
+			set["effort"] = fields[1]
+			msg += "，推理强度 " + fields[1]
+		}
+		c.w.state(map[string]any{"session_settings": set})
+		c.reply(msg)
+		return
+	}
+	c.reply("没有模型 " + fields[0] + "。输入 /model 查看可用模型。")
 }
 
 // Only these notifications become transcript events; deltas and status noise

@@ -437,6 +437,9 @@ func (ing *Ingestor) applyState(t *Task, st map[string]any) {
 			_ = ing.store.SetTaskLiveStatus(t.ID, status)
 		}
 	}
+	if ss, ok := st["session_settings"].(map[string]any); ok {
+		ing.applySessionSettings(t, ss)
+	}
 	if rp, ok := number(st["runner_pid"]); ok && rp > 1 {
 		if t.PID == 0 {
 			_ = ing.store.MarkTaskRunning(t.ID, int(rp), int(rp), str(st["boot_id"]))
@@ -444,10 +447,39 @@ func (ing *Ingestor) applyState(t *Task, st map[string]any) {
 	}
 }
 
+// applySessionSettings saves a model or effort change the agent confirmed and
+// says so in the transcript (the CLI's own reply says "this session only").
+func (ing *Ingestor) applySessionSettings(t *Task, ss map[string]any) {
+	var notes []string
+	_, _ = ing.store.UpdateSessionSettings(t.SessionID, func(st *SessionSettings) {
+		if v, ok := ss["model"].(string); ok {
+			st.Model = v
+			notes = append(notes, "模型 "+orDefault(v, "默认"))
+		}
+		if v, ok := ss["effort"].(string); ok {
+			st.Effort = v
+			notes = append(notes, "推理强度 "+orDefault(v, "默认"))
+		}
+	})
+	if len(notes) > 0 {
+		ing.insert(t, 1<<39, 0, nowRFC3339(), "notice", map[string]any{
+			"text": "已为这个对话保存：" + strings.Join(notes, "，") + "。之后的消息都会使用这个设置。"})
+	}
+}
+
 func (ing *Ingestor) applyNativeState(t *Task, raw any) {
 	m, ok := raw.(map[string]any)
 	if !ok {
 		return
+	}
+	// The CLI lists its slash commands (built-ins, skills, custom commands)
+	// when it starts; the composer offers them after "/".
+	if str(m["type"]) == "system" && str(m["subtype"]) == "init" && t.Agent == "claude" {
+		if cmds, ok := m["slash_commands"].([]any); ok && len(cmds) > 0 {
+			if b, err := json.Marshal(cmds); err == nil {
+				_ = ing.store.SetMeta(claudeCommandsMeta, string(b))
+			}
+		}
 	}
 	if id := extractNativeID(raw); id != "" {
 		_ = ing.store.SetTaskNativeID(t.ID, id)
@@ -757,7 +789,17 @@ func normalizeCodexRPC(method string, params map[string]any) []normEvent {
 			if done {
 				return []normEvent{{Kind: "notice", Payload: map[string]any{"text": "上下文已压缩"}}}
 			}
+		case "enteredReviewMode":
+			if done {
+				return []normEvent{{Kind: "notice", Payload: map[string]any{"text": "开始代码审查：" + orDefault(str(item["review"]), "未提交的改动")}}}
+			}
+		case "exitedReviewMode":
+			if txt := str(item["review"]); txt != "" && done {
+				return []normEvent{{Kind: "assistant", Payload: map[string]any{"text": txt}}}
+			}
 		}
+	case "agentconsole/reply":
+		return []normEvent{{Kind: "assistant", Payload: map[string]any{"text": str(params["text"])}}}
 	case "agentconsole/usage":
 		u, _ := params["usage"].(map[string]any)
 		return []normEvent{{Kind: "usage", Payload: map[string]any{"agent": "codex", "usage": map[string]any{

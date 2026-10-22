@@ -576,6 +576,14 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
 .has-composer .main { padding-bottom: var(--composer-h, 110px); }
 .has-composer .chat-wrap { min-height: calc(100dvh - 54px - var(--composer-h, 110px)); }
 
+.menu-section { font-size: 11px; color: var(--text-faint); padding: 8px 12px 4px; }
+.effort-row { display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 8px 6px; }
+.model-menu { max-height: min(60vh, 460px); overflow-y: auto; }
+.slash-menu { max-width: 460px; max-height: min(50vh, 420px); overflow-y: auto; }
+.menu-item.hl { background: var(--hover); }
+.menu-label .muted { font-size: 12px; }
+#model-label { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* ---------- Settings ---------- */
 /* Settings: grouped rows (label left, value right), iOS/Linear style. */
 .settings { max-width: 640px; margin: 0 auto; }

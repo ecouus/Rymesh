@@ -100,6 +100,8 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/bootstrap", s.authed(s.handleBootstrap))
 	m.HandleFunc("GET /api/agents", s.authed(s.handleAgents))
 	m.HandleFunc("POST /api/agents/rescan", s.authed(s.handleAgents))
+	m.HandleFunc("GET /api/agents/{name}/commands", s.authed(s.handleAgentCommands))
+	m.HandleFunc("GET /api/agents/{name}/models", s.authed(s.handleAgentModels))
 
 	m.HandleFunc("GET /api/sessions", s.authed(s.handleListSessions))
 	m.HandleFunc("POST /api/sessions", s.authed(s.handleCreateSession))
@@ -665,9 +667,10 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Agent string `json:"agent"`
-		Cwd   string `json:"cwd"`
-		Title string `json:"title"`
+		Agent    string           `json:"agent"`
+		Cwd      string           `json:"cwd"`
+		Title    string           `json:"title"`
+		Settings *SessionSettings `json:"settings"`
 	}
 	if err := decodeJSON(w, r, &req); err != nil {
 		return
@@ -691,6 +694,9 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.CreateSession(sess); err != nil {
 		writeErr(w, 500, err.Error())
 		return
+	}
+	if req.Settings != nil {
+		_, _ = s.store.UpdateSessionSettings(sess.ID, func(st *SessionSettings) { *st = *req.Settings })
 	}
 	writeJSON(w, 201, map[string]any{"session": sess})
 }
@@ -722,18 +728,31 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	perms, _ := s.store.PendingPermissions(id)
 	writeJSON(w, 200, map[string]any{
 		"session": sess, "tasks": tasks, "event_count": events,
-		"last_seq": lastSeq, "permissions": perms,
+		"last_seq": lastSeq, "permissions": perms, "settings": s.store.GetSessionSettings(id),
 	})
 }
 
 func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req struct {
-		Title  *string `json:"title"`
-		Hidden *bool   `json:"hidden"`
+		Title    *string          `json:"title"`
+		Hidden   *bool            `json:"hidden"`
+		Settings *SessionSettings `json:"settings"`
 	}
 	if err := decodeJSON(w, r, &req); err != nil {
 		return
+	}
+	// The model picker sets these directly, as the CLI's /model picker does.
+	if req.Settings != nil {
+		st, err := s.store.UpdateSessionSettings(id, func(st *SessionSettings) { *st = *req.Settings })
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		if req.Title == nil && req.Hidden == nil {
+			writeJSON(w, 200, map[string]any{"ok": true, "settings": st})
+			return
+		}
 	}
 	if req.Title != nil {
 		t := truncateTitle(*req.Title, 200)
@@ -983,6 +1002,9 @@ func (s *Server) handleCreateMessage(w http.ResponseWriter, r *http.Request) {
 	// turn this message starts rather than after it.
 	if err := s.imp.SyncSession(id); err != nil {
 		s.logger.Printf("同步原生会话 %s 失败: %v", id, err)
+	}
+	if s.handleLocalCommand(w, sess, req.Text) {
+		return
 	}
 	if req.Profile == "" {
 		req.Profile = defaultProfileFor(sess.Agent)
@@ -1477,11 +1499,13 @@ func (s *Server) launch(t *Task) error {
 	if isNew && t.Agent == "claude" {
 		nativeID = newUUID()
 	}
+	settings := s.store.GetSessionSettings(sess.ID)
 	spec := TaskSpec{
 		TaskID: t.ID, SessionID: t.SessionID, Agent: t.Agent,
 		NativeID: nativeID, IsNew: isNew, Cwd: sess.Cwd, Prompt: t.Prompt,
 		Profile: t.Profile, MaxLogBytes: cfg.TaskLogMaxBytes,
 		PermTimeout: cfg.PermissionTTLMin * 60, RunnerID: randomID(9),
+		Model: settings.Model, Effort: settings.Effort,
 	}
 	if exe, err := os.Executable(); err == nil {
 		spec.Executable = exe

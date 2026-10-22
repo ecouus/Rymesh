@@ -214,7 +214,7 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
   animation: sidebar-in .16s ease-out;
 }
 @keyframes sidebar-in { from { transform: translateX(-12px); opacity: 0; } }
-.sidebar-head { display: flex; align-items: center; gap: 2px; padding: calc(10px + env(safe-area-inset-top, 0px)) 8px 8px 18px; }
+.sidebar-head { position: relative; display: flex; align-items: center; gap: 2px; padding: calc(10px + env(safe-area-inset-top, 0px)) 8px 8px 18px; }
 .sidebar-head h2 { flex: 1; font-size: 15px; letter-spacing: -.01em; }
 .sidebar-search { padding: 0 14px 8px; }
 .sidebar-search input {
@@ -256,7 +256,13 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
   display: inline-flex; align-items: center; gap: 7px; border: 0; background: transparent; padding: 4px 8px 4px 0;
   font-size: 15px; font-weight: 600; letter-spacing: -.01em; color: var(--text); border-radius: 8px;
 }
-.node-switch .ico { color: var(--text-faint); }
+.node-switch .ico { color: var(--text-faint); transition: transform .15s; }
+.node-switch[aria-expanded="true"] .ico { transform: rotate(180deg); }
+/* The device switcher drops down under the device name. */
+.menu.node-menu { top: calc(100% - 4px); bottom: auto; left: 10px; right: 10px; max-width: 300px; max-height: 60vh; overflow-y: auto; }
+.node-item .node-dot { margin: 0 2px; }
+.node-item.offline .menu-label { color: var(--text-dim); }
+.menu-sep { height: 1px; background: var(--line-soft); margin: 4px 8px; }
 .node-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
 .node-dot.off { background: var(--text-faint); }
 .group > button.g-row:disabled { opacity: .55; }
@@ -585,6 +591,14 @@ textarea.input { display: block; resize: vertical; font-size: 12px; }
 @media (hover: hover) { .pill:hover, .agent-select:hover { background: var(--hover); color: var(--text); } }
 .pill[aria-expanded="true"] { background: var(--hover); color: var(--text); }
 .pill, .agent-select { white-space: nowrap; flex-shrink: 0; }
+/* A long model name shrinks with an ellipsis instead of running off the edge. */
+.composer-opts > .menu-wrap:last-of-type { min-width: 0; flex-shrink: 1; }
+#model-btn { flex-shrink: 1; min-width: 0; max-width: 100%; }
+/* Phones: the row is ~300px; the leading icons go so the model name fits. */
+@media (max-width: 480px) {
+  .composer-opts { gap: 2px; }
+  #profile-btn > .ico:first-child, #model-btn > .ico:first-child { display: none; }
+}
 .composer-meta .small { min-width: 0; }
 .pill .chev { margin-left: -2px; transition: transform .15s; }
 .pill[aria-expanded="true"] .chev { transform: rotate(180deg); }
@@ -622,6 +636,8 @@ textarea.input { display: block; resize: vertical; font-size: 12px; }
 
 .menu-section { font-size: 11px; color: var(--text-faint); padding: 8px 12px 4px; }
 .effort-row { display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 8px 6px; }
+.effort-row .chip { min-height: 28px; padding: 3px 10px; font-size: 12.5px; }
+.effort-row .chip.active { font-weight: 400; }
 .model-menu { max-height: min(60vh, 460px); overflow-y: auto; }
 /* Search stays at the top while the list scrolls under it. */
 .model-search {
@@ -636,7 +652,7 @@ textarea.input { display: block; resize: vertical; font-size: 12px; }
 .slash-menu { max-width: 460px; max-height: min(50vh, 420px); overflow-y: auto; }
 .menu-item.hl { background: var(--hover); }
 .menu-label .muted { font-size: 12px; }
-#model-label { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#model-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---------- Settings ---------- */
 /* Settings: grouped rows (label left, value right), iOS/Linear style. */
@@ -656,6 +672,8 @@ textarea.input { display: block; resize: vertical; font-size: 12px; }
 }
 .group > details[open] > summary::after { transform: rotate(45deg); }
 .g-label { flex: 1; min-width: 0; }
+.g-label.fixed { flex: none; } /* a short label next to a long value */
+.g-label.fixed + .g-value { flex: 1; }
 .g-value { color: var(--text-faint); font-size: 13px; text-align: right; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .g-row.danger { color: var(--red); justify-content: center; }
 .g-body { padding: 0 16px 16px; }

@@ -47,7 +47,10 @@ var vaultSchema = []string{`CREATE TABLE IF NOT EXISTS ssh_keys (
 	private     BLOB NOT NULL,
 	source      TEXT NOT NULL,
 	created_at  INTEGER NOT NULL
-)`, `CREATE TABLE IF NOT EXISTS devices (
+)`,
+	// Key comments written before the product was renamed.
+	`UPDATE ssh_keys SET public = replace(public, ' agentconsole-', ' rymesh-') WHERE public LIKE '% agentconsole-%'`,
+	`CREATE TABLE IF NOT EXISTS devices (
 	id   TEXT PRIMARY KEY,
 	pos  INTEGER NOT NULL,
 	data TEXT NOT NULL

@@ -616,7 +616,7 @@
     if (!t) return;
     if (!multiNode()) { t.textContent = "对话"; return; }
     var cur = S.nodes.filter(function (n) { return n.id === S.node; })[0];
-    t.innerHTML = '<button type="button" id="node-switch" class="node-switch" aria-haspopup="dialog">' +
+    t.innerHTML = '<button type="button" id="node-switch" class="node-switch" aria-haspopup="listbox" aria-expanded="false">' +
       '<span class="node-dot' + (cur && !cur.online ? " off" : "") + '"></span>' +
       esc(cur ? cur.name : nodeLabel(S.node)) +
       '<svg class="ico sm" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg></button>';
@@ -626,10 +626,13 @@
     return S.nodes.map(function (n) {
       // An offline device can still be chosen: its welcome page says why it
       // cannot be reached and offers a retry.
-      return '<button type="button" class="g-row' + (n.online || n.checking ? "" : " offline") + '" data-node="' + esc(n.id) + '">' +
+      var state = n.online ? (n.local ? "本机" : n.target || "") : n.checking ? "连接中…" : (n.error || "离线");
+      return '<button type="button" class="menu-item node-item' + (n.id === S.node ? " on" : "") +
+        (n.online || n.checking ? "" : " offline") + '" data-node="' + esc(n.id) + '">' +
         '<span class="node-dot' + (n.online ? "" : " off") + '"></span>' +
-        '<span class="g-label">' + esc(n.name) + (n.local ? ' <span class="muted small">主控</span>' : "") + "</span>" +
-        '<span class="g-value">' + esc(n.online ? (n.id === S.node ? "当前" : "") : n.checking ? "连接中…" : (n.error || "离线")) + "</span></button>";
+        '<span class="menu-text"><span class="menu-label">' + esc(n.name) + "</span>" +
+        '<span class="menu-detail">' + esc(state) + "</span></span>" +
+        '<svg class="ico sm menu-check" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg></button>';
     }).join("");
   }
 
@@ -1009,7 +1012,7 @@
         esc(r.installed ? r.installed + (online ? " · 运行中" : " · 未运行") : "未安装") + "</span></div></div>" +
         '<button class="btn ' + (online ? "" : "primary ") + 'block" type="button" data-deploy="1" style="margin-top:12px">' +
         (r.installed ? "升级 / 重新部署节点" : "部署节点") + "</button>" +
-        (online ? '<button class="btn primary block" type="button" data-use="1" style="margin-top:8px">切换到这台设备</button>' : "") +
+        (online && S.node !== id ? '<button class="btn primary block" type="button" data-use="1" style="margin-top:8px">切换到这台设备</button>' : "") +
         '<pre class="deploy-log mono" hidden></pre></div>';
       var log = box.querySelector(".deploy-log");
       var use = box.querySelector("[data-use]");
@@ -1147,9 +1150,9 @@
   function keyDetailSheet(k) {
     if (!k) return;
     var body = openSheet(k.name, '<div class="stack">' + pubBox(k.public, false) +
-      '<div class="group"><div class="g-row"><span class="g-label">类型</span><span class="g-value">' + esc(k.type) + "</span></div>" +
-      '<div class="g-row"><span class="g-label">指纹</span><span class="g-value mono">' + esc(k.fingerprint) + "</span></div>" +
-      '<div class="g-row"><span class="g-label">用于</span><span class="g-value">' + esc(k.used_by.join("、") || "—") + "</span></div></div>" +
+      '<div class="group"><div class="g-row"><span class="g-label fixed">类型</span><span class="g-value">' + esc(k.type) + "</span></div>" +
+      '<div class="g-row"><span class="g-label fixed">指纹</span><span class="g-value mono">' + esc(k.fingerprint) + "</span></div>" +
+      '<div class="g-row"><span class="g-label fixed">用于</span><span class="g-value">' + esc(k.used_by.join("、") || "—") + "</span></div></div>" +
       '<div class="row" style="gap:8px"><button type="button" class="btn grow" data-rename="1">重命名</button>' +
       '<button type="button" class="btn danger grow" data-delete="1">删除</button></div>' +
       '<button type="button" class="btn ghost block" data-back="1">返回密钥列表</button></div>');
@@ -1251,25 +1254,59 @@
   // lets the app leave.
   window.acBack = function () {
     if (overlays.length) { overlays[overlays.length - 1].close(); return true; }
+    if (nodeMenu() && !nodeMenu().hidden) { closeNodeMenu(); return true; }
     if (!$("#sheet").hidden) { closeSheet(); return true; }
     if (!$("#sidebar").hidden && !wide.matches) { closeSidebar(); return true; }
     if (location.hash && location.hash !== "#/" && location.hash !== "#") { location.hash = "#/"; return true; }
     return false;
   };
 
-  function nodeSheet() {
-    var body = openSheet("切换设备", '<div class="group">' + nodeRows() + "</div>" +
-      '<p class="g-note">每台设备上的 Agent 都在各自机器上运行；切换只是换一个查看和操作的对象。</p>');
-    loadNodes().then(function () {
-      var g = body.querySelector(".group");
-      if (g) g.innerHTML = nodeRows();
-    });
+  // The device switcher drops down in place under the device name.
+  function nodeMenu() { return $("#node-menu"); }
+  function openNodeMenu() {
+    var menu = nodeMenu();
+    if (!menu) {
+      menu = document.createElement("div");
+      menu.id = "node-menu";
+      menu.className = "menu node-menu";
+      menu.setAttribute("role", "listbox");
+      $(".sidebar-head").appendChild(menu);
+    }
+    function draw() {
+      menu.innerHTML = '<div class="menu-section">切换设备</div>' + nodeRows() +
+        '<div class="menu-sep"></div>' +
+        '<button type="button" class="menu-item" data-add-device="1"><span class="menu-text"><span class="menu-label">添加服务器…</span></span></button>' +
+        '<button type="button" class="menu-item" data-manage-devices="1"><span class="menu-text"><span class="menu-label">管理设备</span></span></button>';
+    }
+    draw();
+    menu.hidden = false;
+    var btn = $("#node-switch");
+    if (btn) btn.setAttribute("aria-expanded", "true");
+    loadNodes().then(function () { if (!menu.hidden) draw(); }); // live status
+  }
+  function closeNodeMenu() {
+    var menu = nodeMenu();
+    if (menu) menu.hidden = true;
+    var btn = $("#node-switch");
+    if (btn) btn.setAttribute("aria-expanded", "false");
   }
 
   document.addEventListener("click", function (e) {
-    if (e.target.closest("#node-switch")) { nodeSheet(); return; }
+    if (e.target.closest("#node-switch")) {
+      var m = nodeMenu();
+      if (m && !m.hidden) closeNodeMenu(); else openNodeMenu();
+      return;
+    }
+    var inMenu = e.target.closest("#node-menu");
+    if (!inMenu) closeNodeMenu();
+    if (inMenu && e.target.closest("[data-manage-devices]")) {
+      closeNodeMenu();
+      location.hash = "#/settings";
+      return;
+    }
+    if (inMenu && e.target.closest("[data-add-device]")) closeNodeMenu();
     var n = e.target.closest("[data-node]");
-    if (n && !n.disabled) switchNode(n.getAttribute("data-node"));
+    if (n && !n.disabled) { closeNodeMenu(); switchNode(n.getAttribute("data-node")); }
   });
 
   // Approvals on the other devices, so a waiting agent anywhere is noticed.

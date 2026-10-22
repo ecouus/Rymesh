@@ -137,6 +137,7 @@ func (s *Server) routes() {
 	// Multi-device: list devices, and relay a device's API through this hub.
 	m.HandleFunc("GET /api/nodes", s.authed(s.handleNodes))
 	m.HandleFunc("GET /api/nodes/self", s.authed(s.handleNodeSelf))
+	m.HandleFunc("POST /api/nodes/{id}/use", s.authed(s.handleUseNode))
 	m.HandleFunc("GET /api/nodes/{id}/snapshot", s.authed(s.handleNodeSnapshot))
 	m.HandleFunc("PUT /api/nodes/{id}/snapshot", s.authed(s.handleNodeSnapshot))
 	// Device management (this console's own device list and keys; devices.go).

@@ -349,3 +349,19 @@ func (j *cookieJar) SetCookies(_ *url.URL, cs []*http.Cookie) {
 	j.mu.Unlock()
 }
 func (j *cookieJar) Cookies(_ *url.URL) []*http.Cookie { j.mu.Lock(); defer j.mu.Unlock(); return j.c }
+
+func TestDialFailureNamesTheCause(t *testing.T) {
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+	ln.Close() // nothing listens here now
+	keyPath, _ := clientKey(t)
+	n := NodeConfig{ID: "x", Transport: transportSSH, SSHHost: "127.0.0.1", SSHPort: mustAtoi(port), SSHUser: "root", KeyPath: keyPath,
+		HostKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"}
+	_, err := dialSSH(t.Context(), n, nil)
+	if got := dialFailure(err); !strings.Contains(got, "连接被拒绝") {
+		t.Fatalf("refused: %q (%v)", got, err)
+	}
+	if got := dialFailure(errors.New("ssh: handshake failed: ssh: unable to authenticate, attempted methods [none publickey]")); !strings.Contains(got, "认证失败") {
+		t.Fatalf("auth: %q", got)
+	}
+}

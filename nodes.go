@@ -143,7 +143,7 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
 		}(i, n)
 	}
 	wg.Wait()
-	writeJSON(w, 200, map[string]any{"nodes": out, "hub_only": cfg.HubOnly})
+	writeJSON(w, 200, map[string]any{"nodes": out, "hub_only": cfg.HubOnly, "current": s.store.GetMeta("current_node")})
 }
 
 // probe checks a device and remembers the result for fast listings.
@@ -171,6 +171,28 @@ func (s *Server) lastProbe(n NodeConfig) nodeView {
 		v.URL, v.Target = "", n.SSHUser+"@"+n.SSHHost
 	}
 	return v
+}
+
+// handleUseNode records the device the user is working with (the page's own
+// storage may not survive Android stopping the app) and lifts any reconnect
+// backoff, so choosing it or pressing retry always makes a fresh attempt.
+func (s *Server) handleUseNode(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id != localNodeID {
+		n, ok := s.device(id)
+		if !ok {
+			writeErr(w, 404, "设备不存在")
+			return
+		}
+		if n.Transport == transportSSH {
+			s.ssh.retry(n)
+		}
+	}
+	if err := s.store.SetMeta("current_node", id); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
 // handleNodeSnapshot keeps the page's last view of a device (its bootstrap,
@@ -331,10 +353,34 @@ func (s *Server) handleNodeProxy(w http.ResponseWriter, r *http.Request) {
 				writeErr(w, http.StatusBadGateway, "设备「"+n.Name+"」拒绝了令牌，请检查 node_token")
 				return
 			}
-			writeErr(w, http.StatusBadGateway, "设备「"+n.Name+"」无法连接")
+			writeErr(w, http.StatusBadGateway, dialFailure(err))
 		},
 	}
 	proxy.ServeHTTP(w, r)
+}
+
+// dialFailure says why a device could not be reached, in words that point at
+// what to check.
+func dialFailure(err error) string {
+	msg := err.Error()
+	var ne net.Error
+	switch {
+	case strings.Contains(msg, "unable to authenticate"):
+		return "SSH 认证失败：服务器不接受这把密钥"
+	case strings.Contains(msg, "节点程序未在"):
+		return msg
+	case strings.Contains(msg, "connection refused"):
+		return "连接被拒绝：服务器的 SSH 端口没有开放，或端口填错了"
+	case strings.Contains(msg, "no such host"):
+		return "找不到这个主机名，请检查地址"
+	case strings.Contains(msg, "network is unreachable"), strings.Contains(msg, "no route to host"):
+		return "网络不可达：请检查网络连接"
+	case errors.As(err, &ne) && ne.Timeout(), strings.Contains(msg, "i/o timeout"):
+		return "连接超时：服务器没有响应，请检查地址和网络"
+	case strings.Contains(msg, "handshake failed: EOF"):
+		return "服务器在 SSH 握手时断开：地址或端口可能不对，或被网络代理拦截"
+	}
+	return sshErrorText(err)
 }
 
 func cliTransport(n NodeConfig, keys keySource) http.RoundTripper {

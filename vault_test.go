@@ -319,4 +319,14 @@ func TestFastNodeListAndSnapshot(t *testing.T) {
 	if rec := h.do("PUT", "/api/nodes/nope/snapshot", `{}`); rec.Code != 404 {
 		t.Fatalf("unknown device: %d", rec.Code)
 	}
+	// The device in use is remembered by the hub.
+	if rec := h.do("POST", "/api/nodes/dfar/use", `{}`); rec.Code != 200 {
+		t.Fatalf("use: %d", rec.Code)
+	}
+	if r := decode[struct{ Current string }](t, h.do("GET", "/api/nodes?fast=1", "")); r.Current != "dfar" {
+		t.Fatalf("current = %q", r.Current)
+	}
+	if rec := h.do("POST", "/api/nodes/nope/use", `{}`); rec.Code != 404 {
+		t.Fatalf("use unknown: %d", rec.Code)
+	}
 }

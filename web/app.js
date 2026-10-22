@@ -499,6 +499,7 @@
         var first = S.nodes.filter(function (n) { return n.online; })[0] || S.nodes[0];
         S.node = first ? first.id : "local";
         LS.set("node", S.node);
+        if (first) useNode(S.node);
         S.draftCwd = ""; // a directory on the previous device means nothing here
         LS.del("draftCwd");
         renderNodeSwitch(); // it was drawn before the device was chosen
@@ -555,14 +556,34 @@
       showLogin(); toast(err.message || "无法连接服务", true);
     });
   }
+  // Tell the hub which device is in use (it remembers it, and a retry
+  // skips any reconnect backoff).
+  function useNode(id) {
+    return api("/api/nodes/" + encodeURIComponent(id) + "/use", { method: "POST", hub: true, body: {} }).catch(function () {});
+  }
+
   document.addEventListener("click", function (e) {
-    if (e.target.closest("[data-reboot]")) boot();
+    var b = e.target.closest("[data-reboot]");
+    if (!b) return;
+    b.disabled = true;
+    setLink("connecting");
+    useNode(S.node).then(boot);
   });
 
+  var nodesLoaded = false;
   function loadNodes(fast) {
     return api("/api/nodes" + (fast ? "?fast=1" : ""), { hub: true }).then(function (d) {
       S.nodes = d.nodes || [];
       S.hubOnly = !!d.hub_only;
+      // The hub's record of the device in use outlives the page's storage;
+      // it only decides at start-up (a switch in progress is newer).
+      var startup = !nodesLoaded;
+      nodesLoaded = true;
+      if (startup && d.current && d.current !== S.node &&
+          (d.current === "local" ? !S.hubOnly : S.nodes.some(function (n) { return n.id === d.current; }))) {
+        S.node = d.current;
+        LS.set("node", S.node);
+      }
       if (S.node !== "local" && !S.nodes.some(function (n) { return n.id === S.node; })) {
         S.node = "local";
         LS.set("node", "local");
@@ -580,6 +601,7 @@
     S.booted = false; // route() waits for the new device's bootstrap
     S.node = id;
     LS.set("node", id);
+    useNode(id);
     S.draftCwd = "";
     LS.del("draftCwd");
     S.session = null;
@@ -1568,7 +1590,7 @@
     // The directory is shown (and changed) in the greeting, so the top bar
     // stays a plain title here.
     setTop("新对话", "");
-    $("#prompt").placeholder = S.draftAgent ? "给 " + (a.label || a.name) + " 发消息…" : "给 Agent 发消息…";
+    $("#prompt").placeholder = S.agents.length && S.draftAgent ? "给 " + (a.label || a.name) + " 发消息…" : "给 Agent 发消息…";
     var recent = S.sessions.slice(0, 3).map(function (s) {
       return '<button type="button" class="recent-card" data-recent="' + esc(s.id) + '">' +
         agentIcon(s.agent) +

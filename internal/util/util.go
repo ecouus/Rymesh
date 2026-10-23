@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-const Version = "1.1.1"
+const Version = "1.0.0"
 
 func FileExists(p string) bool {
 	_, err := os.Stat(p)

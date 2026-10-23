@@ -1,3 +1,6 @@
 .build/
+.swiftpm/
 dist/
 dist.noindex/
+xcuserdata/
+*.xcuserstate

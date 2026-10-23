@@ -1,7 +1,30 @@
+# Build output
 /rymesh
 /dist/
+*.apk
+*.aar
+*.test
+*.out
+
+# Local data: console databases, device exports (encrypted SSH keys), notes
 *.db
 *.db-*
+*.rymesh
 TEST_REPORT.md
-.DS_Store
 /ref/
+
+# Signing keys and secrets
+*.jks
+*.keystore
+*.p12
+*.mobileprovision
+.env
+.env.*
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
+*.iml
+*.swp
+*~

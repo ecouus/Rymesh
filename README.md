@@ -202,3 +202,11 @@ rymesh import           # 立即导入原生历史（默认每 30 秒自动同�
 
 开发约束（尤其是“只做遥控器”的原则）见 [CLAUDE.md](CLAUDE.md)。
 `principle_test.go` 会在源码里出现模型服务商 API 地址或凭据变量时让构建失败。
+
+## 许可证
+
+Copyright © 2026 ecouus
+
+Rymesh 以 [GNU Affero 通用公共许可证 第 3 版（AGPL-3.0）](LICENSE) 发布：
+可以自由使用、修改和分发，但分发修改后的版本，或把修改后的版本作为网络服务提供给他人使用时，
+必须以同样的许可证公开完整源码。

@@ -6,7 +6,7 @@ import (
 
 func TestCheckDirectURL(t *testing.T) {
 	for u, ok := range map[string]bool{
-		"http://10.0.0.2:8899":  true,
+		"http://10.0.0.2:8899":    true,
 		"http://192.168.1.5:8899": true,
 		"http://100.80.1.2:8899":  true,
 		"http://127.0.0.1:8899":   true,

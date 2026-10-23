@@ -10,7 +10,7 @@
 set -eu
 cd "$(dirname "$0")"
 ROOT=..
-VERSION=${VERSION:-$(git -C "$ROOT" describe --tags --always 2>/dev/null || echo dev)}
+VERSION=${VERSION:-$(sed -n 's/^const Version = "\(.*\)"/\1/p' "$ROOT/internal/util/util.go")}
 APP=dist.noindex/Rymesh.app
 
 for f in "$ROOT/dist/rymesh_darwin_arm64" "$ROOT/dist/rymesh_darwin_amd64" \
@@ -27,6 +27,9 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 sed "s/__VERSION__/$VERSION/g" Resources/Info.plist > "$APP/Contents/Info.plist"
 lipo -create .build/arm64/release/RymeshMac .build/x86_64/release/RymeshMac \
 	-output "$APP/Contents/MacOS/Rymesh"
+# Drop debug and local symbols: they name the source and build directories
+# (the builder's home) and nothing at run time needs them.
+strip -S -x "$APP/Contents/MacOS/Rymesh"
 lipo -create "$ROOT/dist/rymesh_darwin_arm64" "$ROOT/dist/rymesh_darwin_amd64" \
 	-output "$APP/Contents/Resources/rymesh"
 # Node programs the app uploads when it deploys to a Linux server, gzipped

@@ -52,17 +52,21 @@ func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request) {
 }
 
 type deviceInput struct {
-	Name       *string `json:"name"`
-	Transport  *string `json:"transport"`
-	SSHHost    *string `json:"ssh_host"`
-	SSHPort    *int    `json:"ssh_port"`
-	SSHUser    *string `json:"ssh_user"`
-	KeyPath    *string `json:"key_path"`
-	KeyID      *string `json:"key_id"`
-	UseAgent   *bool   `json:"use_agent"`
-	RemotePort *int    `json:"remote_port"`
-	URL        *string `json:"url"`
-	Token      *string `json:"token"`
+	Name      *string `json:"name"`
+	Transport *string `json:"transport"`
+	SSHHost   *string `json:"ssh_host"`
+	SSHPort   *int    `json:"ssh_port"`
+	SSHUser   *string `json:"ssh_user"`
+	KeyPath   *string `json:"key_path"`
+	KeyID     *string `json:"key_id"`
+	UseAgent  *bool   `json:"use_agent"`
+	// Password is write-only: stored sealed (store.SetDevicePassword) and
+	// never sent back. PasswordAuth false stops using (and forgets) it.
+	Password     *string `json:"password"`
+	PasswordAuth *bool   `json:"password_auth"`
+	RemotePort   *int    `json:"remote_port"`
+	URL          *string `json:"url"`
+	Token        *string `json:"token"`
 }
 
 // apply merges the input into n; changing where or how to connect forgets the
@@ -88,6 +92,12 @@ func (in deviceInput) apply(n *config.NodeConfig) error {
 	if in.UseAgent != nil {
 		n.UseAgent = *in.UseAgent
 	}
+	if in.PasswordAuth != nil {
+		n.PasswordAuth = *in.PasswordAuth
+	}
+	if in.Password != nil && *in.Password != "" {
+		n.PasswordAuth = true
+	}
 	if in.RemotePort != nil {
 		n.RemotePort = *in.RemotePort
 	}
@@ -99,8 +109,8 @@ func (in deviceInput) apply(n *config.NodeConfig) error {
 		if n.SSHHost == "" || n.SSHUser == "" {
 			return errors.New("需要主机和用户名")
 		}
-		if n.KeyPath == "" && n.KeyID == "" && !n.UseAgent {
-			return errors.New("请选择密钥或使用 ssh-agent")
+		if n.KeyPath == "" && n.KeyID == "" && !n.UseAgent && !n.PasswordAuth {
+			return errors.New("请选择密钥，或使用密码登录")
 		}
 		if n.SSHPort < 0 || n.SSHPort > 65535 || n.RemotePort < 0 || n.RemotePort > 65535 {
 			return errors.New("端口无效")
@@ -110,6 +120,7 @@ func (in deviceInput) apply(n *config.NodeConfig) error {
 		}
 	case "", "direct":
 		n.Transport = ""
+		n.PasswordAuth = false
 		if n.URL == "" || n.Token == "" {
 			return errors.New("直连设备需要地址和令牌")
 		}
@@ -166,9 +177,19 @@ func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
+	if n.PasswordAuth && (in.Password == nil || *in.Password == "") {
+		writeErr(w, 400, "请输入服务器登录密码")
+		return
+	}
+	// The password first: a device that needs it must not exist without it.
+	if err := s.storeDevicePassword(n, in.Password); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
 	if err := s.saveNodes(func(nodes []config.NodeConfig) ([]config.NodeConfig, error) {
 		return append(nodes, n), nil
 	}); err != nil {
+		_ = s.store.SetDevicePassword(n.ID, "")
 		writeErr(w, 500, err.Error())
 		return
 	}
@@ -180,8 +201,27 @@ func (s *Server) handlePatchDevice(w http.ResponseWriter, r *http.Request) {
 	if err := decodeJSON(w, r, &in); err != nil {
 		return
 	}
+	id := r.PathValue("id")
+	cur, ok := s.device(id)
+	if !ok {
+		writeErr(w, 404, "设备不存在")
+		return
+	}
+	next := cur
+	if err := in.apply(&next); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	if next.PasswordAuth && !cur.PasswordAuth && (in.Password == nil || *in.Password == "") {
+		writeErr(w, 400, "请输入服务器登录密码")
+		return
+	}
+	if err := s.storeDevicePassword(next, in.Password); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
 	var applyErr error
-	n, err := s.updateDevice(r.PathValue("id"), func(n *config.NodeConfig) { applyErr = in.apply(n) })
+	n, err := s.updateDevice(id, func(n *config.NodeConfig) { applyErr = in.apply(n) })
 	if applyErr != nil {
 		writeErr(w, 400, applyErr.Error())
 		return
@@ -190,7 +230,24 @@ func (s *Server) handlePatchDevice(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, err.Error())
 		return
 	}
+	if in.Password != nil && *in.Password != "" {
+		s.ssh.Reconnect(n) // the old login used the old password
+	} else {
+		s.ssh.Retry(n) // new settings: do not wait out a failed attempt's backoff
+	}
 	writeJSON(w, 200, map[string]any{"device": viewDevice(n)})
+}
+
+// storeDevicePassword keeps the password given for a device, or forgets the
+// stored one when the device no longer logs in with a password.
+func (s *Server) storeDevicePassword(n config.NodeConfig, password *string) error {
+	switch {
+	case !n.PasswordAuth:
+		return s.store.SetDevicePassword(n.ID, "")
+	case password != nil && *password != "":
+		return s.store.SetDevicePassword(n.ID, *password)
+	}
+	return nil
 }
 
 func (s *Server) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
@@ -211,6 +268,7 @@ func (s *Server) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, err.Error())
 		return
 	}
+	_ = s.store.SetDevicePassword(id, "")
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
@@ -249,12 +307,23 @@ func (s *Server) handleDeviceTest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// No key and no stored password (e.g. imported without one): ask for the
+	// password rather than failing on missing credentials.
+	if n.KeyID == "" && n.KeyPath == "" && !n.UseAgent {
+		if _, err := s.store.DevicePassword(n.ID); !n.PasswordAuth || err != nil {
+			writeJSON(w, 200, map[string]any{"stage": "auth", "password_auth": true,
+				"error": "还没有这台服务器的登录密码，请输入，或改用密钥"})
+			return
+		}
+	}
 	s.ssh.Retry(n) // an explicit test always tries again
 	out, err := s.ssh.Run(ctx, n, `uname -s -m; B="$HOME/.rymesh/bin/rymesh"; [ -x "$B" ] && "$B" version`, nil)
 	if err != nil && out == "" {
 		if strings.Contains(err.Error(), "unable to authenticate") {
-			res := map[string]any{"stage": "auth", "error": "服务器还不认识这把密钥"}
-			if pub, err := s.publicKeyOf(n); err == nil {
+			res := map[string]any{"stage": "auth", "error": "服务器还不认识这把密钥", "password_auth": n.PasswordAuth}
+			if n.PasswordAuth && n.KeyID == "" && n.KeyPath == "" && !n.UseAgent {
+				res["error"] = "服务器拒绝了密码：密码不正确，或服务器不允许密码登录"
+			} else if pub, err := s.publicKeyOf(n); err == nil {
 				res["public"] = pub
 			}
 			writeJSON(w, 200, res)

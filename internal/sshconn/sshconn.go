@@ -36,7 +36,9 @@ func (e *HostKeyMismatchError) Error() string {
 
 // sshAuth collects the configured authentication methods: a vault key, a key
 // file (unencrypted; protected keys are imported into the vault or kept in
-// ssh-agent) and/or the agent.
+// ssh-agent), the agent, and/or the stored password (tried last, both as
+// "password" and as a keyboard-interactive prompt, which is how many servers
+// ask for it).
 func sshAuth(n config.NodeConfig, keys KeySource) ([]ssh.AuthMethod, func(), error) {
 	var methods []ssh.AuthMethod
 	cleanup := func() {}
@@ -85,10 +87,35 @@ func sshAuth(n config.NodeConfig, keys KeySource) ([]ssh.AuthMethod, func(), err
 		}
 		methods = append(methods, ssh.PublicKeys(signer))
 	}
+	if n.PasswordAuth {
+		if keys == nil {
+			cleanup()
+			return nil, func() {}, errors.New("密钥库不可用")
+		}
+		pw, err := keys.DevicePassword(n.ID)
+		if err != nil {
+			cleanup()
+			return nil, func() {}, err
+		}
+		methods = append(methods, PasswordMethods(pw)...)
+	}
 	if len(methods) == 0 {
-		return nil, cleanup, errors.New("没有配置密钥或 ssh-agent")
+		return nil, cleanup, errors.New("没有配置密钥、ssh-agent 或密码")
 	}
 	return methods, cleanup, nil
+}
+
+// PasswordMethods log in with a password, offered both ways servers ask for
+// one: the "password" method and keyboard-interactive prompts.
+func PasswordMethods(password string) []ssh.AuthMethod {
+	answer := func(_, _ string, qs []string, _ []bool) ([]string, error) {
+		out := make([]string, len(qs))
+		for i := range qs {
+			out[i] = password
+		}
+		return out, nil
+	}
+	return []ssh.AuthMethod{ssh.Password(password), ssh.KeyboardInteractive(answer)}
 }
 
 // PinnedHostKey verifies the server against NodeConfig.HostKey only.
@@ -265,6 +292,20 @@ func (p *Pool) Retry(n config.NodeConfig) {
 	e.mu.Unlock()
 }
 
+// Reconnect closes the device's connection and lifts the backoff, so the
+// next request logs in again: its password changed, which the connection's
+// identity (NodeConfig.SSHKey) does not show.
+func (p *Pool) Reconnect(n config.NodeConfig) {
+	e := p.entry(n)
+	e.mu.Lock()
+	c := e.client
+	e.client, e.failUntil, e.backoff = nil, time.Time{}, 0
+	e.mu.Unlock()
+	if c != nil {
+		c.Close()
+	}
+}
+
 // keepalive drops the connection when the server stops answering, so the
 // next request redials instead of hanging on a dead TCP stream.
 func (p *Pool) keepalive(e *sshEntry, c *ssh.Client) {
@@ -393,7 +434,9 @@ func (b *lockedBuffer) String() string {
 	return b.buf.String()
 }
 
-// KeySource resolves NodeConfig.KeyID to a private key (the Store).
+// KeySource resolves NodeConfig.KeyID to a private key, and a device's
+// stored password (the Store).
 type KeySource interface {
 	PrivateKey(id string) ([]byte, error)
+	DevicePassword(deviceID string) (string, error)
 }

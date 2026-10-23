@@ -817,14 +817,34 @@
       '<div class="row"><label class="field grow"><span>主机</span><input id="dev-host" class="mono" placeholder="IP 或域名" autocapitalize="off" spellcheck="false"></label>' +
       '<label class="field" style="width:84px"><span>SSH 端口</span><input id="dev-port" class="mono" inputmode="numeric" value="22"></label></div>' +
       '<label class="field"><span>用户</span><input id="dev-user" class="mono" value="root" autocapitalize="off" spellcheck="false"></label>' +
-      '<div class="field"><span>认证密钥</span><button type="button" class="pick-btn input-like" id="dev-key"><span class="t"></span>' +
+      '<div class="field"><span>登录方式</span><span class="seg auth-seg" role="radiogroup">' +
+      '<button type="button" class="on" data-auth="key" role="radio" aria-checked="true">密钥</button>' +
+      '<button type="button" data-auth="password" role="radio" aria-checked="false">密码</button></span></div>' +
+      '<div class="field" id="dev-key-field"><span>认证密钥</span><button type="button" class="pick-btn input-like" id="dev-key"><span class="t"></span>' +
       '<svg class="ico sm" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg></button></div>' +
       '<div id="dev-pub"></div>' +
+      '<label class="field" id="dev-pw-field" hidden><span>服务器登录密码</span>' +
+      '<input id="dev-pw" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false"></label>' +
+      '<p class="small muted" id="dev-pw-note" hidden style="margin:0">适用于只允许密码登录的服务器。密码加密保存在本应用里，' +
+      '每次连接时使用，网页和导出文件之外的地方都看不到它。服务器支持密钥时，用密钥更安全。</p>' +
       '<details class="fold"><summary>高级</summary><label class="field" style="margin-top:8px"><span>节点端口（服务器本机回环端口）</span>' +
       '<input id="dev-rport" class="mono" inputmode="numeric" value="8899"></label></details>' +
       '<button id="dev-save" class="btn primary block" type="button">连接</button>' +
       '<div id="dev-flow"></div></div>');
-    var keys = { keys: [], detected: [] }, chosen = "", fresh = "";
+    var keys = { keys: [], detected: [] }, chosen = "", fresh = "", auth = "key";
+    body.querySelector(".auth-seg").addEventListener("click", function (e) {
+      var b = e.target.closest("[data-auth]");
+      if (!b) return;
+      auth = b.getAttribute("data-auth");
+      $$("[data-auth]", body).forEach(function (x) {
+        var on = x === b;
+        x.classList.toggle("on", on);
+        x.setAttribute("aria-checked", String(on));
+      });
+      $("#dev-key-field").hidden = $("#dev-pub").hidden = auth !== "key";
+      $("#dev-pw-field").hidden = $("#dev-pw-note").hidden = auth !== "password";
+      if (auth === "password") setTimeout(function () { $("#dev-pw").focus(); }, 30);
+    });
     function renderKey() {
       var label = keyLabel(keys, chosen);
       var b = $("#dev-key");
@@ -890,16 +910,19 @@
       });
     });
     $("#dev-save").addEventListener("click", function () {
-      if (!chosen) { toast("请先选择或生成一把密钥", true); return; }
+      var pw = $("#dev-pw").value;
+      if (auth === "key" && !chosen) { toast("请先选择或生成一把密钥", true); return; }
+      if (auth === "password" && !pw) { toast("请输入服务器登录密码", true); $("#dev-pw").focus(); return; }
       var req = Object.assign({
         transport: "ssh", name: $("#dev-name").value.trim(), ssh_host: $("#dev-host").value.trim(),
         ssh_port: parseInt($("#dev-port").value, 10) || 22, ssh_user: $("#dev-user").value.trim(),
         remote_port: parseInt($("#dev-rport").value, 10) || 8899
-      }, keyFields(chosen));
+      }, auth === "key" ? keyFields(chosen) : { password: pw });
       var btn = this; btn.disabled = true;
       api("/api/devices", { method: "POST", body: req, hub: true }).then(function (d) {
+        $("#dev-pw").value = "";
         btn.hidden = true;
-        $$(".device-form > .field, .device-form > .row, .device-form > details, .device-form > .pick-btn, #dev-pub", body)
+        $$(".device-form > .field, .device-form > .row, .device-form > details, .device-form > .pick-btn, #dev-pub, #dev-pw-note", body)
           .forEach(function (el) { el.hidden = true; });
         deviceFlow(d.device.id, $("#dev-flow"));
       }).catch(function (e) { toast(e.message, true); btn.disabled = false; });
@@ -966,6 +989,10 @@
   // once (as ssh-copy-id does), or add it by hand and retry.
   function authStep(id, box, r) {
     var path = "/api/devices/" + encodeURIComponent(id);
+    if (r.password_auth && !r.public) {
+      passwordStep(id, box, r.error);
+      return;
+    }
     if (!r.public) {
       box.innerHTML = '<div class="flow-step"><div class="error-block">服务器不接受 ssh-agent 里的密钥。</div>' +
         '<button class="btn block" type="button" data-retry="1">重试</button></div>';
@@ -985,8 +1012,12 @@
       '<div class="row" style="gap:8px"><button type="button" class="btn sm grow" data-copy-text="' + esc(cmd) + '">复制命令</button>' +
       '<button type="button" class="btn sm grow" data-copy-text="' + esc(r.public) + '">复制公钥</button>' +
       (canShare() ? '<button type="button" class="btn sm grow" data-share-text="' + esc(r.public) + '">分享…</button>' : "") + "</div>" +
-      '<button class="btn block" type="button" data-retry="1" style="margin-top:10px">已添加，重新连接</button></div></div>';
+      '<button class="btn block" type="button" data-retry="1" style="margin-top:10px">已添加，重新连接</button></div>' +
+      '<div class="choice-card"><div class="choice-title">改用密码登录</div>' +
+      '<div class="small muted">服务器不允许密钥登录时选这个：密码加密保存在本应用里，每次连接时使用。</div>' +
+      '<button class="btn block" type="button" data-use-password="1" style="margin-top:8px">输入密码…</button></div></div>';
     box.querySelector("[data-retry]").addEventListener("click", function () { deviceFlow(id, box); });
+    box.querySelector("[data-use-password]").addEventListener("click", function () { passwordStep(id, box, ""); });
     box.querySelector("[data-install]").addEventListener("submit", function (e) {
       e.preventDefault();
       var pw = this.pw.value, b = this.querySelector("button");
@@ -1004,13 +1035,41 @@
     });
   }
 
+  // passwordStep asks for the server's login password, keeps it (sealed, on
+  // this client) and connects again.
+  function passwordStep(id, box, message) {
+    var path = "/api/devices/" + encodeURIComponent(id);
+    box.innerHTML = '<div class="flow-step">' +
+      (message ? '<div class="error-block">' + esc(message) + "</div>" : "") +
+      '<form data-password="1"><label class="field"><span>服务器登录密码</span>' +
+      '<input class="input" type="password" name="pw" autocomplete="new-password" autocapitalize="off" spellcheck="false"></label>' +
+      '<button class="btn primary block" type="submit" style="margin-top:8px">保存并连接</button></form>' +
+      '<div class="small muted" style="margin-top:6px">密码加密保存在本应用里，用于以后每次连接。</div></div>';
+    var form = box.querySelector("[data-password]");
+    setTimeout(function () { form.pw.focus(); }, 30);
+    form.addEventListener("submit", function (e) {
+      e.preventDefault();
+      var pw = form.pw.value, b = form.querySelector("button");
+      if (!pw) { form.pw.focus(); return; }
+      b.disabled = true; b.textContent = "正在连接…";
+      api(path, { method: "PATCH", hub: true, body: { password: pw } }).then(function () {
+        form.pw.value = "";
+        deviceFlow(id, box);
+      }).catch(function (err) {
+        toast(err.message, true);
+        b.disabled = false; b.textContent = "保存并连接";
+      });
+    });
+  }
+
   function deviceSheet(id) {
     var n = S.nodes.filter(function (x) { return x.id === id; })[0] || { id: id, name: id };
     var body = openSheet(n.name,
       '<div class="stack"><div class="group">' +
       '<div class="g-row"><span class="g-label">地址</span><span class="g-value mono">' + esc(n.target || n.url || "") + "</span></div>" +
       '<div class="g-row"><span class="g-label">状态</span><span class="g-value">' + esc(n.online ? "在线 " + (n.version || "") : (n.error || "离线")) + "</span></div>" +
-      '<button type="button" class="g-row link" data-dev-key="1" hidden><span class="g-label">认证密钥</span><span class="g-value"></span></button></div>' +
+      '<button type="button" class="g-row link" data-dev-key="1" hidden><span class="g-label">认证密钥</span><span class="g-value"></span></button>' +
+      '<button type="button" class="g-row link" data-dev-pw="1" hidden><span class="g-label">登录密码</span><span class="g-value"></span></button></div>' +
       '<div id="dev-flow"></div>' +
       '<button class="btn danger block" type="button" data-del-device="1">删除设备</button>' +
       '<p class="small muted">删除只移除本客户端里的记录，不会卸载服务器上的节点。</p></div>');
@@ -1022,6 +1081,28 @@
       var cur = keyValueOf(dev);
       row.hidden = false;
       row.querySelector(".g-value").textContent = keyLabel(keys, cur) || "未设置";
+      var pwRow = body.querySelector("[data-dev-pw]");
+      pwRow.hidden = false;
+      pwRow.querySelector(".g-value").textContent = dev.password_auth ? "已保存" : "未使用";
+      pwRow.addEventListener("click", function () {
+        var choice = dev.password_auth
+          ? pickList("登录密码", [{ value: "change", label: "更换密码…" }].concat(cur
+            ? [{ value: "off", label: "不再使用密码", sub: "只用密钥登录，并删除保存的密码" }] : []))
+          : Promise.resolve("change");
+        choice.then(function (v) {
+          if (v === "off") {
+            return api("/api/devices/" + encodeURIComponent(id), { method: "PATCH", hub: true, body: { password_auth: false } })
+              .then(function () { toast("已删除保存的密码"); deviceSheet(id); });
+          }
+          if (v !== "change") return;
+          return askText(dev.password_auth ? "更换登录密码" : "使用密码登录", { label: "服务器登录密码", type: "password", ok: "保存",
+            note: "密码加密保存在本应用里，每次连接时使用；有密钥时先用密钥。" }).then(function (pw) {
+            if (!pw) return;
+            return api("/api/devices/" + encodeURIComponent(id), { method: "PATCH", hub: true, body: { password: pw } })
+              .then(function () { toast("已保存密码"); deviceSheet(id); });
+          });
+        }).catch(function (e) { toast(e.message, true); });
+      });
       row.addEventListener("click", function () {
         pickList("认证密钥", keyChoices(keys, cur, true)).then(function (v) {
           if (v === "new") return generateKeyFlow().then(function (k) { return k && "id:" + k.id; });
@@ -1114,19 +1195,27 @@
     api("/api/devices", { hub: true }).then(function (d) {
       var devs = d.devices || [];
       if (!devs.length) { body.innerHTML = '<p class="muted">还没有可以导出的设备。</p>'; return; }
-      body.innerHTML = '<div class="stack"><p class="small muted" style="margin:0">把选中的服务器连同它们的密钥、主机指纹和节点令牌导出成一个加密文件，在另一台设备（例如手机）上导入即可直接使用。</p>' +
+      body.innerHTML = '<div class="stack"><p class="small muted" style="margin:0">把选中的服务器连同它们的密钥、登录密码、主机指纹和节点令牌加密导出，在另一台设备（例如手机）上导入即可直接使用。</p>' +
         '<div class="group">' + devs.map(function (n) {
           return '<label class="g-row check-row"><input type="checkbox" value="' + esc(n.id) + '" checked>' +
             '<span class="g-label">' + esc(n.name) + '<span class="g-sub">' + esc(n.ssh_user ? n.ssh_user + "@" + n.ssh_host : n.url || "") + "</span></span></label>";
         }).join("") + "</div>" +
-        '<button type="button" class="btn primary block" data-do-export="1">导出</button></div>';
-      body.querySelector("[data-do-export]").addEventListener("click", function () {
+        '<button type="button" class="btn primary block" data-do-export="qr">显示二维码</button>' +
+        '<button type="button" class="btn block" data-do-export="file">导出为文件</button>' +
+        '<p class="small muted" style="margin:0">二维码给手机扫描用：先在手机上点 导入设备 → 扫描二维码，手机会显示一个配对码。</p></div>';
+      body.addEventListener("click", function (e) {
+        var b = e.target.closest("[data-do-export]");
+        if (!b) return;
         var ids = $$("input[type=checkbox]:checked", body).map(function (c) { return c.value; });
         if (!ids.length) { toast("请至少选择一台设备", true); return; }
-        this.disabled = true;
+        if (b.getAttribute("data-do-export") === "qr") { exportQRPairing(body, ids); return; }
+        $$("[data-do-export]", body).forEach(function (x) { x.disabled = true; });
         api("/api/vault/export", { method: "POST", hub: true, body: { devices: ids } }).then(function (r) {
           exportResult(body, r);
-        }).catch(function (e) { toast(e.message, true); body.querySelector("[data-do-export]").disabled = false; });
+        }).catch(function (err) {
+          toast(err.message, true);
+          $$("[data-do-export]", body).forEach(function (x) { x.disabled = false; });
+        });
       });
     }).catch(function (e) { body.innerHTML = '<div class="error-block">' + esc(e.message) + "</div>"; });
   }
@@ -1142,16 +1231,116 @@
     body.querySelector("[data-save]").addEventListener("click", function () { saveTextFile(r.filename, r.bundle); });
   }
 
+  // exportQRPairing asks for the pairing code the phone shows, then shows the
+  // bundle sealed with it as a QR code. The code comes from the phone and is
+  // never displayed here: a photo of this screen opens nothing.
+  function exportQRPairing(body, ids) {
+    body.innerHTML = '<form class="stack" data-pair="1">' +
+      '<p class="small muted" style="margin:0">在手机上打开 Rymesh → 设置 → 导入设备 → 扫描二维码，把手机上显示的配对码输入到这里。</p>' +
+      '<label class="field"><span>手机上的配对码</span><input name="code" class="mono" placeholder="XXXX-XXXX-XXXX-XXXX" ' +
+      'autocomplete="off" autocapitalize="characters" spellcheck="false"></label>' +
+      '<button type="submit" class="btn primary block">生成二维码</button></form>';
+    var form = body.querySelector("form");
+    setTimeout(function () { form.code.focus(); }, 30);
+    form.addEventListener("submit", function (e) {
+      e.preventDefault();
+      var code = form.code.value.toUpperCase().replace(/[^23456789A-HJ-NP-Z]/g, "");
+      if (code.length !== 16) { toast("配对码应为 16 位", true); form.code.focus(); return; }
+      var b = form.querySelector("button"); b.disabled = true;
+      api("/api/vault/export", { method: "POST", hub: true, body: { devices: ids, qr: true, code: code } }).then(function (r) {
+        form.code.value = "";
+        exportQR(body, r);
+      }).catch(function (err) { toast(err.message, true); b.disabled = false; });
+    });
+  }
+
+  // exportQR shows the QR code for two minutes.
+  function exportQR(body, r) {
+    if (!r.qr_svg) {
+      body.innerHTML = '<div class="stack"><div class="error-block">' + esc(r.qr_error || "无法生成二维码") + "</div>" +
+        '<button type="button" class="btn block" data-done="1">关闭</button></div>';
+      body.querySelector("[data-done]").addEventListener("click", closeSheet);
+      return;
+    }
+    body.innerHTML = '<div class="stack">' +
+      '<div class="qr-card"><div class="qr-img">' + r.qr_svg + "</div>" +
+      '<div class="small muted" data-qr-left></div></div>' +
+      '<div class="notice">用刚才显示配对码的那台手机扫描。二维码只能用那个配对码解开，这个屏幕上不显示任何密码。</div>' +
+      (r.warnings.length ? '<div class="error-block">' + r.warnings.map(esc).join("\n") + "</div>" : "") +
+      '<button type="button" class="btn block" data-done="1">完成</button></div>';
+    var left = 120, label = body.querySelector("[data-qr-left]");
+    function tick() {
+      if (!body.isConnected) { clearInterval(timer); return; }
+      if (left <= 0) {
+        clearInterval(timer);
+        body.querySelector(".qr-img").innerHTML = '<div class="qr-gone">二维码已隐藏</div>';
+        label.textContent = "需要时请重新导出";
+        return;
+      }
+      label.textContent = left + " 秒后隐藏";
+      left--;
+    }
+    var timer = setInterval(tick, 1000);
+    tick();
+    body.querySelector("[data-done]").addEventListener("click", function () { clearInterval(timer); closeSheet(); });
+  }
+
+  // pairingCode is 16 random symbols from the export code alphabet (80 bits),
+  // made on this device; 256 is a multiple of 32, so no symbol is favoured.
+  function pairingCode() {
+    var abc = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ", b = new Uint8Array(16), out = "";
+    crypto.getRandomValues(b);
+    for (var i = 0; i < 16; i++) out += (i && i % 4 === 0 ? "-" : "") + abc[b[i] % 32];
+    return out;
+  }
+
+  // importByQR: the phone shows a fresh pairing code, the user types it on the
+  // exporting device, and the QR code that device then shows is opened with
+  // the code this page still holds. The code lives only in this page.
+  function importByQR(body) {
+    var code = pairingCode();
+    body.innerHTML = '<div class="stack">' +
+      '<p class="small muted" style="margin:0">在电脑的 Rymesh 里：设置 → 导出设备 → 显示二维码，输入下面的配对码。</p>' +
+      '<button type="button" class="code-card copyable" data-copy-text="' + esc(code) + '" aria-label="复制配对码">' +
+      '<div class="small muted">配对码 · 点按复制</div><div class="code-big mono">' + esc(code) + "</div></button>" +
+      '<button type="button" class="btn primary block" data-scan="1">电脑上已显示二维码，开始扫描</button>' +
+      '<button type="button" class="btn ghost block" data-back="1">返回</button></div>';
+    body.querySelector("[data-back]").addEventListener("click", function () { code = ""; importSheet(); });
+    body.querySelector("[data-scan]").addEventListener("click", function () {
+      var b = this;
+      window.acScanResult = function (text) {
+        window.acScanResult = null;
+        if (!text) return;
+        if (text.indexOf("RYMESH1:") !== 0) { toast("这不是 Rymesh 导出的二维码", true); return; }
+        b.disabled = true; b.textContent = "正在导入…";
+        api("/api/vault/import", { method: "POST", hub: true, body: { qr: text, code: code } }).then(function (r) {
+          code = "";
+          closeSheet();
+          toast("已导入 " + (r.added + r.updated) + " 台设备" + (r.keys ? "、" + r.keys + " 把密钥" : ""));
+          loadNodes().then(function () { if (S.hubOnly && S.node === "local") boot(); else if (S.route === "settings") renderSettings(); });
+        }).catch(function (err) {
+          toast(/解密码/.test(err.message) ? "二维码不是用这个配对码生成的，请在电脑上重新输入配对码" : err.message, true);
+          b.disabled = false; b.textContent = "电脑上已显示二维码，开始扫描";
+        });
+      };
+      window.RymeshNative.scanQR();
+    });
+  }
+
   function importSheet() {
+    var canScan = !!(window.RymeshNative && window.RymeshNative.scanQR);
     var body = openSheet("导入设备",
       '<form class="stack" data-import-form="1">' +
-      '<p class="small muted" style="margin:0">选择从另一台设备导出的 <code>.rymesh</code> 文件，并输入导出时显示的解密码。</p>' +
+      (canScan ? '<button type="button" class="btn primary block" data-scan-start="1">扫描二维码</button>' : "") +
+      '<p class="small muted" style="margin:0">' + (canScan ? "或选择" : "选择") +
+      '从另一台设备导出的 <code>.rymesh</code> 文件，并输入导出时显示的解密码。</p>' +
       '<label class="file-pick"><input type="file" name="file" accept=".rymesh,.acbundle,application/json,application/octet-stream,*/*">' +
       '<span class="file-pick-label">选择文件…</span></label>' +
       '<details class="fold"><summary>或粘贴文件内容</summary><textarea name="text" class="input mono" rows="4" style="margin-top:8px"></textarea></details>' +
       '<label class="field"><span>解密码</span><input name="code" class="mono" placeholder="XXXX-XXXX-XXXX-XXXX" autocomplete="off" autocapitalize="characters" spellcheck="false"></label>' +
       '<button type="submit" class="btn primary block">导入</button></form>');
     var form = body.querySelector("form"), bundle = "";
+    if (canScan) body.querySelector("[data-scan-start]").addEventListener("click", function () { importByQR(body); });
     form.file.addEventListener("change", function () {
       var f = this.files && this.files[0];
       if (!f) return;
@@ -3815,9 +4004,9 @@
       (multiNode() ? "下面的 Agent、通用与服务设置属于当前设备「" + esc(nodeLabel(S.node)) + "」。" : "") + "</div></div>" +
       '<div><div class="section-title">密钥与迁移</div><div class="group">' +
       '<button type="button" class="g-row link" data-keys="1"><span class="g-label">密钥</span><span class="g-value">SSH 密钥库</span></button>' +
-      '<button type="button" class="g-row link" data-export="1"><span class="g-label">导出设备</span><span class="g-value">加密文件</span></button>' +
+      '<button type="button" class="g-row link" data-export="1"><span class="g-label">导出设备</span><span class="g-value">二维码或文件</span></button>' +
       '<button type="button" class="g-row link" data-import="1"><span class="g-label">导入设备</span></button></div>' +
-      '<div class="g-note">导出的文件用随机生成的解密码加密，可以把电脑上的服务器配置快速迁到手机。只包含 SSH 与节点凭据，不含任何 Agent 账号。</div></div>';
+      '<div class="g-note">二维码用手机上生成的配对码加密，文件用随机生成的解密码加密，可以把电脑上的服务器配置快速迁到手机。只包含 SSH 与节点凭据，不含任何 Agent 账号。</div></div>';
     $("#main").innerHTML = '<div class="pad stack settings">' + devices + (noDevice() ? "" :
       '<div><div class="section-title">Agent</div><div class="group">' + agents + "</div></div>") +
 

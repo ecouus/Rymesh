@@ -415,7 +415,15 @@ textarea.input { display: block; resize: vertical; font-size: 12px; }
 .g-sub { display: block; font-size: 11.5px; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .check-row { cursor: pointer; }
 .check-row input { width: 18px; height: 18px; accent-color: var(--accent); flex-shrink: 0; margin: 0; }
+/* Export QR: dark on white whatever the theme, with room around it for the camera. */
+.qr-card { text-align: center; }
+.qr-img { width: min(100%, 360px); aspect-ratio: 1; margin: 0 auto 8px; background: #fff; border-radius: 14px; padding: 12px; }
+.qr-img svg { display: block; width: 100%; height: 100%; }
+.qr-gone { height: 100%; display: grid; place-items: center; color: #6b6b6b; font-size: 13px; }
 .code-card { background: var(--bg-soft); border-radius: 14px; padding: 16px; text-align: center; }
+.code-card.copyable { display: block; width: 100%; border: 0; color: inherit; font: inherit; cursor: pointer; transition: background .15s; }
+.code-card.copyable:active { background: color-mix(in srgb, var(--text) 6%, var(--bg-soft)); }
+@media (hover: hover) { .code-card.copyable:hover { background: color-mix(in srgb, var(--text) 4%, var(--bg-soft)); } }
 .code-big { font-size: 21px; letter-spacing: .06em; font-weight: var(--fw-semibold); margin: 6px 0 12px; word-break: break-all; }
 .file-pick { display: block; position: relative; }
 .file-pick input { position: absolute; inset: 0; opacity: 0; width: 100%; cursor: pointer; }

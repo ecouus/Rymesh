@@ -32,6 +32,12 @@ var vaultSchema = []string{`CREATE TABLE IF NOT EXISTS ssh_keys (
 	id   TEXT PRIMARY KEY,
 	pos  INTEGER NOT NULL,
 	data TEXT NOT NULL
+)`,
+	// SSH login passwords of devices that authenticate with one, sealed like
+	// the private keys. Kept out of the devices rows, which are plain JSON.
+	`CREATE TABLE IF NOT EXISTS device_passwords (
+	device_id TEXT PRIMARY KEY,
+	sealed    BLOB NOT NULL
 )`}
 
 // VaultKey is a stored key as the page sees it: never the private part.
@@ -150,6 +156,35 @@ func (s *Store) DeleteKey(id string) error {
 		return errors.New("密钥不存在")
 	}
 	return nil
+}
+
+// DevicePassword is the stored SSH password of a device.
+func (s *Store) DevicePassword(deviceID string) (string, error) {
+	var b []byte
+	err := s.DB.QueryRow(`SELECT sealed FROM device_passwords WHERE device_id=?`, deviceID).Scan(&b)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", errors.New("没有保存这台设备的登录密码，请重新输入")
+	}
+	if err != nil {
+		return "", err
+	}
+	plain, err := s.openPrivate(b)
+	return string(plain), err
+}
+
+// SetDevicePassword stores (or, when empty, removes) a device's SSH password.
+func (s *Store) SetDevicePassword(deviceID, password string) error {
+	if password == "" {
+		_, err := s.DB.Exec(`DELETE FROM device_passwords WHERE device_id=?`, deviceID)
+		return err
+	}
+	sealed, err := s.sealPrivate([]byte(password))
+	if err != nil {
+		return err
+	}
+	_, err = s.DB.Exec(`INSERT INTO device_passwords (device_id, sealed) VALUES (?,?)
+		ON CONFLICT(device_id) DO UPDATE SET sealed=excluded.sealed`, deviceID, sealed)
+	return err
 }
 
 func (s *Store) LoadDevices() ([]config.NodeConfig, error) {

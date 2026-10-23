@@ -57,16 +57,22 @@ Agent 在服务器上独立运行：关掉 App、锁屏、断网，任务都会�
    `codex`（登录 ChatGPT 账号或配置好 API）、`claude`（登录 Claude 账号）、
    `hermes setup`（Hermes Agent）。装哪个都行，Rymesh 只用已经能正常工作的。
 2. **打开 App → 侧边栏底部“设置” → 设备 → 添加服务器**。
-   可以从 `~/.ssh/config` 一键填入；密钥可以用已有的、ssh-agent 里的，或在 App 里当场生成。
+   可以从 `~/.ssh/config` 一键填入；登录方式选“密钥”或“密码”：
+   - 密钥可以用已有的、ssh-agent 里的，或在 App 里当场生成。服务器还不认这把密钥时，
+     可以输入一次服务器密码自动把公钥加进去（这种情况下密码只用一次，不保存）。
+   - 服务器只允许密码登录时选“密码”：密码加密保存在 App 里，每次连接时使用。
+
    首次连接会让你核对并固定主机指纹，之后指纹变化一律拒绝连接。
-   服务器还不认这把密钥时，可以输入一次服务器密码自动把公钥加进去（密码不保存）。
 3. **点“部署”**。App 把节点程序上传到服务器并安装到 `~/.rymesh`
    （root 用 systemd，普通用户用 `systemctl --user`，macOS 用 launchd）。
    已经部署过的服务器会原地升级，并保留原来的配对，所以 Mac 和手机可以共用同一台服务器。
 4. **开始用**：选 Agent、选工作目录，输入消息。
 
-想在电脑和手机之间同步设备列表：设置 → 导出设备，得到一个用随机解密码加密的 `.rymesh` 文件；
-在另一台设备上 设置 → 导入设备。解密码只显示一次，请和文件分开传递。
+想把电脑上的服务器配置搬到手机上：手机上 设置 → 导入设备 → 扫描二维码，手机会显示一个 16 位配对码；
+电脑上 设置 → 导出设备 → 显示二维码，输入这个配对码，再用手机扫描电脑上出现的二维码即可。
+二维码用手机生成的配对码加密，电脑屏幕上从不显示任何密码，拍到或录下电脑屏幕都打不开；
+二维码 2 分钟后自动隐藏。也可以导出成 `.rymesh` 文件，在另一台设备上选择文件并输入解密码导入，
+解密码请和文件分开传递。
 
 ### 把 Mac 作为手机的服务器
 
@@ -119,9 +125,10 @@ rymesh run-task（每个任务一个独立进程，和网页服务分离）
 
 - 服务器上的节点只监听 `127.0.0.1`，除 SSH 外不开放任何端口。App 到服务器的流量走 SSH，
   主机指纹固定。
-- 没有密码登录：App 用一次性票据登录本机控制台，主控访问节点用每个节点独立的令牌。
+- 控制台本身没有密码登录：App 用一次性票据登录本机控制台，主控访问节点用每个节点独立的令牌。
   在浏览器里直接打开节点地址只会看到“请在应用中打开”。
-- SSH 私钥和设备列表加密保存在客户端自己的数据库里（macOS 用钥匙串、Android 用 Keystore 保管密钥）。
+- SSH 私钥、服务器登录密码和设备列表保存在客户端自己的数据库里，私钥和密码经过加密
+  （macOS 用钥匙串、Android 用 Keystore 保管加密密钥），页面和接口都不会返回它们。
 - 不读取、不保存任何 Codex / Claude / Hermes 的账号凭据；导入 Hermes 历史时会让 Hermes 先把聊天里的密钥打码。
 - 默认权限模式下，危险操作必须在页面上批准。“危险”类模式需要逐次显式选择，任务记录会保留当时的模式。
 
@@ -134,7 +141,8 @@ make build      # 命令行程序 ./rymesh
 make test       # go vet + go test -race
 make dist       # 各平台程序（含 App 内置的 Linux 节点程序）→ dist/
 make macos      # Mac App → macos/dist.noindex/Rymesh.app（需要 Xcode 命令行工具）
-make android    # Android APK → android/app/build/outputs/apk/release/app-release.apk
+make android    # Android APK → dist/Rymesh-Android.apk
+make release    # 发布用的全部文件和校验值 → dist/release/
 ```
 
 Android 需要 Android SDK / NDK 和 gomobile：

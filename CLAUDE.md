@@ -45,9 +45,8 @@ provider API hosts or credential variables appear in the source.
 - After every change, once `make test` passes, update every client so none
   runs a stale build: `make macos` and replace `/Applications/Rymesh.app`
   with `macos/dist.noindex/Rymesh.app` (quit and reopen the app), and
-  `make android` then `adb install -r
-  android/app/build/outputs/apk/release/app-release.apk` on the connected phone
-  (relaunch `dev.rymesh.app`). Then upgrade the remote server nodes too, the
+  `make android` then `adb install -r dist/Rymesh-Android.apk` on the
+  connected phone (relaunch `dev.rymesh.app`). Then upgrade the remote server nodes too, the
   same way the app does it: the Mac console's `POST /api/devices/{id}/deploy`
   uploads the new Linux build over SSH and runs `rymesh node setup`, which
   upgrades in place and keeps the node's token. Confirm it took: the node's

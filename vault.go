@@ -399,16 +399,9 @@ const installAuthorizedKeyScript = `umask 077; K=$(cat); mkdir -p "$HOME/.ssh" &
 	`{ grep -qxF "$K" "$HOME/.ssh/authorized_keys" || printf '%s\n' "$K" >> "$HOME/.ssh/authorized_keys"; }`
 
 func installAuthorizedKey(ctx context.Context, n config.NodeConfig, password, pub string) error {
-	answer := func(_, _ string, qs []string, _ []bool) ([]string, error) {
-		out := make([]string, len(qs))
-		for i := range qs {
-			out[i] = password
-		}
-		return out, nil
-	}
 	cfg := &ssh.ClientConfig{
 		User:              n.SSHUser,
-		Auth:              []ssh.AuthMethod{ssh.Password(password), ssh.KeyboardInteractive(answer)},
+		Auth:              sshconn.PasswordMethods(password),
 		HostKeyCallback:   sshconn.PinnedHostKey(n),
 		HostKeyAlgorithms: sshconn.HostKeyAlgorithms(n),
 		Timeout:           10 * time.Second,
@@ -473,6 +466,17 @@ type bundleKey struct {
 type bundlePayload struct {
 	Devices []config.NodeConfig `json:"devices"`
 	Keys    []bundleKey         `json:"keys"`
+	// Passwords of devices that log in with one, by device id.
+	Passwords map[string]string `json:"passwords,omitempty"`
+}
+
+// bundleVersion is 2 when the bundle carries passwords: an older client
+// would import those devices without them, so it is told to upgrade instead.
+func bundleVersion(p bundlePayload) int {
+	if len(p.Passwords) > 0 {
+		return 2
+	}
+	return 1
 }
 
 // codeAlphabet has 32 symbols without look-alikes (no 0/O, 1/I).
@@ -539,7 +543,7 @@ func sealBundle(p bundlePayload, code, from string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	f := bundleFile{Format: bundleFormat, Version: 1, Created: time.Now().Format(time.RFC3339), From: from,
+	f := bundleFile{Format: bundleFormat, Version: bundleVersion(p), Created: time.Now().Format(time.RFC3339), From: from,
 		Devices: len(p.Devices), N: n, Salt: base64.StdEncoding.EncodeToString(salt),
 		Nonce: base64.StdEncoding.EncodeToString(nonce)}
 	f.Data = base64.StdEncoding.EncodeToString(aead.Seal(nil, nonce, plain, []byte(f.Format)))
@@ -551,7 +555,7 @@ func openBundle(data []byte, code string) (*bundlePayload, error) {
 	if err := json.Unmarshal(data, &f); err != nil || f.Format != bundleFormat {
 		return nil, errors.New("不是 Rymesh 导出的文件")
 	}
-	if f.Version != 1 {
+	if f.Version != 1 && f.Version != 2 {
 		return nil, errors.New("文件版本过新，请先升级 Rymesh")
 	}
 	if len(normalizeCode(code)) != 16 {
@@ -591,6 +595,11 @@ func openBundle(data []byte, code string) (*bundlePayload, error) {
 func (s *Server) handleVaultExport(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Devices []string `json:"devices"`
+		// QR returns the bundle as a QR code only, sealed with Code: the
+		// pairing code the scanning phone shows. The code never appears on
+		// this screen, so a photo of it opens nothing.
+		QR   bool   `json:"qr"`
+		Code string `json:"code"`
 	}
 	if err := decodeJSON(w, r, &req); err != nil {
 		return
@@ -631,8 +640,19 @@ func (s *Server) handleVaultExport(w http.ResponseWriter, r *http.Request) {
 					warnings = append(warnings, n.Name+"：私钥有密码短语，请先在「密钥」里导入它再导出")
 				}
 			}
-		default:
+		case n.UseAgent:
 			warnings = append(warnings, n.Name+"：使用 ssh-agent，导入后需要为它另选密钥")
+		}
+		if n.PasswordAuth {
+			pw, err := s.store.DevicePassword(n.ID)
+			if err != nil {
+				warnings = append(warnings, n.Name+"：读取登录密码失败，导入后需要重新输入")
+			} else {
+				if p.Passwords == nil {
+					p.Passwords = map[string]string{}
+				}
+				p.Passwords[n.ID] = pw
+			}
 		}
 		out := n
 		out.KeyPath, out.KeyID, out.UseAgent = "", "", false
@@ -651,6 +671,28 @@ func (s *Server) handleVaultExport(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "请至少选择一台设备")
 		return
 	}
+	if warnings == nil {
+		warnings = []string{}
+	}
+	if req.QR {
+		if len(normalizeCode(req.Code)) != 16 {
+			writeErr(w, 400, "请输入手机上显示的 16 位配对码")
+			return
+		}
+		text, err := sealBundleQR(p, req.Code)
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		res := map[string]any{"warnings": warnings}
+		if svg, err := qrSVG(text); err != nil {
+			res["qr_error"] = err.Error()
+		} else {
+			res["qr_svg"] = svg
+		}
+		writeJSON(w, 200, res)
+		return
+	}
 	code, err := newBundleCode()
 	if err != nil {
 		writeErr(w, 500, err.Error())
@@ -660,9 +702,6 @@ func (s *Server) handleVaultExport(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
-	}
-	if warnings == nil {
-		warnings = []string{}
 	}
 	writeJSON(w, 200, map[string]any{"code": code, "bundle": string(data),
 		"filename": "rymesh-" + time.Now().Format("20060102-1504") + ".rymesh", "warnings": warnings})
@@ -674,12 +713,19 @@ func (s *Server) handleVaultExport(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleVaultImport(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Bundle string `json:"bundle"`
+		QR     string `json:"qr"` // the text of a scanned export QR code
 		Code   string `json:"code"`
 	}
 	if err := decodeJSON(w, r, &req); err != nil {
 		return
 	}
-	p, err := openBundle([]byte(req.Bundle), req.Code)
+	var p *bundlePayload
+	var err error
+	if req.QR != "" {
+		p, err = openBundleQR(req.QR, req.Code)
+	} else {
+		p, err = openBundle([]byte(req.Bundle), req.Code)
+	}
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
@@ -698,12 +744,27 @@ func (s *Server) handleVaultImport(w http.ResponseWriter, r *http.Request) {
 		keyMap[k.ID] = vk.ID
 	}
 	added, updated := 0, 0
+	// Passwords go in before the devices that need them.
+	for i, d := range p.Devices {
+		if d.ID == "" || d.ID == config.LocalNodeID {
+			p.Devices[i].ID = "d" + strings.ToLower(util.RandomID(7))
+		}
+		if !d.PasswordAuth {
+			continue
+		}
+		pw := p.Passwords[d.ID]
+		if pw == "" {
+			p.Devices[i].PasswordAuth = false // nothing to log in with; the device asks again
+			continue
+		}
+		if err := s.store.SetDevicePassword(p.Devices[i].ID, pw); err != nil {
+			writeErr(w, 500, "保存「"+d.Name+"」的登录密码失败："+err.Error())
+			return
+		}
+	}
 	err = s.saveNodes(func(nodes []config.NodeConfig) ([]config.NodeConfig, error) {
 		for _, d := range p.Devices {
 			d.KeyID = keyMap[d.KeyID]
-			if d.ID == "" || d.ID == config.LocalNodeID {
-				d.ID = "d" + strings.ToLower(util.RandomID(7))
-			}
 			replaced := false
 			for i := range nodes {
 				if nodes[i].ID == d.ID {

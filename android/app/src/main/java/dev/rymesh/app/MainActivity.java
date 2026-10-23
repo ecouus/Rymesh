@@ -51,6 +51,9 @@ import android.security.keystore.KeyProperties;
 
 import org.json.JSONObject;
 
+import com.google.zxing.integration.android.IntentIntegrator;
+import com.google.zxing.integration.android.IntentResult;
+
 import dev.rymesh.mobile.Mobile;
 
 /**
@@ -59,7 +62,8 @@ import dev.rymesh.mobile.Mobile;
  *
  * The page asks this shell, through RymeshNative, for what a web page
  * cannot do well on a phone: the share sheet, saving a file, downloading one
- * into Downloads, and matching the system bars to its theme.
+ * into Downloads, scanning a QR code, and matching the system bars to its
+ * theme.
  */
 public class MainActivity extends Activity {
     private static final int REQ_SAVE = 1, REQ_OPEN = 2;
@@ -259,6 +263,21 @@ public class MainActivity extends Activity {
             });
         }
 
+        /**
+         * Scans one QR code (an export from another client) and hands its text
+         * to the page's window.acScanResult(text), or null when cancelled. The
+         * camera is asked for here, and only runs while the scanner is open.
+         */
+        @JavascriptInterface
+        public void scanQR() {
+            runOnUiThread(() -> new IntentIntegrator(MainActivity.this)
+                    .setDesiredBarcodeFormats(IntentIntegrator.QR_CODE)
+                    .setPrompt("扫描另一台设备上显示的导出二维码")
+                    .setBeepEnabled(false)
+                    .setOrientationLocked(false)
+                    .initiateScan());
+        }
+
         @JavascriptInterface
         public void setTheme(boolean dark) {
             runOnUiThread(() -> applyBars(dark));
@@ -368,6 +387,13 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int req, int result, Intent data) {
         super.onActivityResult(req, result, data);
+        IntentResult scan = IntentIntegrator.parseActivityResult(req, result, data);
+        if (scan != null) {
+            String text = scan.getContents();
+            web.evaluateJavascript("window.acScanResult&&acScanResult("
+                    + (text == null ? "null" : JSONObject.quote(text)) + ")", null);
+            return;
+        }
         Uri uri = result == RESULT_OK && data != null ? data.getData() : null;
         if (req == REQ_OPEN) {
             if (pendingChooser != null) pendingChooser.onReceiveValue(uri == null ? null : new Uri[]{uri});

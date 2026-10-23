@@ -11,19 +11,22 @@ import (
 // or VPN address); an SSH device through an SSH connection to its loopback
 // port (internal/sshconn), with HostKey pinned on first contact.
 type NodeConfig struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	URL        string `json:"url,omitempty"`
-	Token      string `json:"token"`
-	Transport  string `json:"transport,omitempty"` // "" (direct) or "ssh"
-	SSHHost    string `json:"ssh_host,omitempty"`
-	SSHPort    int    `json:"ssh_port,omitempty"`
-	SSHUser    string `json:"ssh_user,omitempty"`
-	KeyPath    string `json:"key_path,omitempty"` // a key file (~/.ssh)
-	KeyID      string `json:"key_id,omitempty"`   // or a key in the vault (internal/store/vault.go)
-	UseAgent   bool   `json:"use_agent,omitempty"`
-	HostKey    string `json:"host_key,omitempty"`
-	RemotePort int    `json:"remote_port,omitempty"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	URL       string `json:"url,omitempty"`
+	Token     string `json:"token"`
+	Transport string `json:"transport,omitempty"` // "" (direct) or "ssh"
+	SSHHost   string `json:"ssh_host,omitempty"`
+	SSHPort   int    `json:"ssh_port,omitempty"`
+	SSHUser   string `json:"ssh_user,omitempty"`
+	KeyPath   string `json:"key_path,omitempty"` // a key file (~/.ssh)
+	KeyID     string `json:"key_id,omitempty"`   // or a key in the vault (internal/store/vault.go)
+	UseAgent  bool   `json:"use_agent,omitempty"`
+	// PasswordAuth logs in with the SSH password kept sealed in the vault
+	// (store.DevicePassword), for servers that do not take keys.
+	PasswordAuth bool   `json:"password_auth,omitempty"`
+	HostKey      string `json:"host_key,omitempty"`
+	RemotePort   int    `json:"remote_port,omitempty"`
 }
 
 // LocalNodeID names this instance in the device list; it is never proxied.
@@ -78,5 +81,5 @@ func (n NodeConfig) BaseURL() string {
 // fresh entry instead of reusing a connection made with old credentials.
 func (n NodeConfig) SSHKey() string {
 	return strings.Join([]string{n.ID, n.SSHHost, strconv.Itoa(n.SSHPort), n.SSHUser,
-		n.KeyPath, n.KeyID, strconv.FormatBool(n.UseAgent), n.HostKey}, "|")
+		n.KeyPath, n.KeyID, strconv.FormatBool(n.UseAgent), strconv.FormatBool(n.PasswordAuth), n.HostKey}, "|")
 }

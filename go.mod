@@ -3,6 +3,7 @@ module rymesh
 go 1.26.0
 
 require (
+	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	golang.org/x/crypto v0.43.0
 	golang.org/x/sys v0.49.0
 	modernc.org/sqlite v1.39.1
@@ -23,3 +24,5 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
+
+tool golang.org/x/mobile/cmd/gobind

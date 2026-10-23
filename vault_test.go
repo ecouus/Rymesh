@@ -5,8 +5,10 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -332,5 +334,212 @@ func TestFastNodeListAndSnapshot(t *testing.T) {
 	}
 	if rec := h.do("POST", "/api/nodes/nope/use", `{}`); rec.Code != 404 {
 		t.Fatalf("use unknown: %d", rec.Code)
+	}
+}
+
+// A server that only takes a password: the device keeps it sealed, never
+// shows it, logs in with it, asks again when it is wrong, and forgets it with
+// the device.
+func TestPasswordOnlyDevice(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	testPassword = "server-pw"
+	defer func() { testPassword = "" }()
+	sshd := newTestSSHServer(t, nil) // takes no keys
+	h := newTestHub(t, testConfig(t), "")
+	host, port, _ := net.SplitHostPort(sshd.addr)
+
+	if rec := h.do("POST", "/api/devices", `{"transport":"ssh","ssh_host":"`+host+`","ssh_port":`+port+`,"ssh_user":"me","password_auth":true}`); rec.Code != 400 {
+		t.Fatalf("password device without a password: %d", rec.Code)
+	}
+	rec := h.do("POST", "/api/devices", `{"transport":"ssh","name":"Pw","ssh_host":"`+host+`","ssh_port":`+port+`,"ssh_user":"me","password":"server-pw"}`)
+	if rec.Code != 201 || strings.Contains(rec.Body.String(), "server-pw") {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
+	}
+	dev := decode[struct{ Device deviceView }](t, rec).Device
+	if !dev.PasswordAuth {
+		t.Fatalf("device = %+v", dev)
+	}
+	path := "/api/devices/" + dev.ID
+	// Sealed at rest, and not in the device rows.
+	var sealed []byte
+	_ = h.st.DB.QueryRow(`SELECT sealed FROM device_passwords WHERE device_id=?`, dev.ID).Scan(&sealed)
+	var rows string
+	_ = h.st.DB.QueryRow(`SELECT group_concat(data) FROM devices`).Scan(&rows)
+	if len(sealed) == 0 || strings.Contains(string(sealed), "server-pw") || strings.Contains(rows, "server-pw") {
+		t.Fatalf("password stored in the clear: sealed=%q rows=%q", sealed, rows)
+	}
+	if list := h.do("GET", "/api/devices", ""); strings.Contains(list.Body.String(), "server-pw") {
+		t.Fatal("device list shows the password")
+	}
+
+	probe := decode[struct{ Hostkey sshconn.HostKeyProbe }](t, h.do("POST", path+"/test", "{}"))
+	h.do("POST", path+"/trust", `{"key":`+strconv.Quote(probe.Hostkey.Key)+`}`)
+	if rec := h.do("POST", path+"/test", "{}"); !strings.Contains(rec.Body.String(), `"stage":"ready"`) {
+		t.Fatalf("test with the password = %s", rec.Body.String())
+	}
+
+	h.do("PATCH", path, `{"password":"wrong"}`)
+	rec = h.do("POST", path+"/test", "{}")
+	if r := decode[struct {
+		Stage, Error string
+		PasswordAuth bool `json:"password_auth"`
+	}](t, rec); r.Stage != "auth" || !r.PasswordAuth || !strings.Contains(r.Error, "密码") {
+		t.Fatalf("test with a wrong password = %s", rec.Body.String())
+	}
+	h.do("PATCH", path, `{"password":"server-pw"}`)
+	if rec := h.do("POST", path+"/test", "{}"); !strings.Contains(rec.Body.String(), `"stage":"ready"`) {
+		t.Fatalf("test after correcting = %s", rec.Body.String())
+	}
+
+	h.do("DELETE", path, "{}")
+	if _, err := h.st.DevicePassword(dev.ID); err == nil {
+		t.Fatal("password kept after the device was deleted")
+	}
+}
+
+// Passwords travel in the sealed bundle (version 2) and in the QR code. The
+// QR code is sealed with the pairing code the phone shows: the export screen
+// gets only the picture, never a code or the file.
+func TestBundleAndQRCarryPasswords(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	mac := newTestHub(t, testConfig(t), "")
+	key := decode[struct{ Key store.VaultKey }](t, mac.do("POST", "/api/keys/generate", `{"name":"mac"}`)).Key
+	_ = mac.srv.saveNodes(func([]config.NodeConfig) ([]config.NodeConfig, error) {
+		return []config.NodeConfig{
+			{ID: "dkey", Name: "Key box", Transport: config.TransportSSH, SSHHost: "h", SSHUser: "root", KeyID: key.ID, Token: "tok-a"},
+			{ID: "dpw", Name: "Pw box", Transport: config.TransportSSH, SSHHost: "h2", SSHUser: "root", PasswordAuth: true, Token: "tok-b"},
+		}, nil
+	})
+	if err := mac.st.SetDevicePassword("dpw", "s3cret-pw"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The file.
+	rec := mac.do("POST", "/api/vault/export", `{"devices":["dkey","dpw"]}`)
+	ex := decode[struct{ Code, Bundle string }](t, rec)
+	if rec.Code != 200 || !strings.Contains(ex.Bundle, `"version": 2`) {
+		t.Fatalf("export: %d %.300s", rec.Code, rec.Body.String())
+	}
+	for _, secret := range []string{"s3cret-pw", "tok-a", "PRIVATE KEY"} {
+		if strings.Contains(ex.Bundle, secret) {
+			t.Fatalf("bundle leaks %q", secret)
+		}
+	}
+	phone := newTestHub(t, testConfig(t), "")
+	rec = phone.do("POST", "/api/vault/import", `{"bundle":`+strconv.Quote(ex.Bundle)+`,"code":`+strconv.Quote(ex.Code)+`}`)
+	if rec.Code != 200 {
+		t.Fatalf("import file: %d %s", rec.Code, rec.Body.String())
+	}
+	if d, _ := phone.srv.device("dpw"); !d.PasswordAuth {
+		t.Fatalf("imported device = %+v", d)
+	}
+	if pw, _ := phone.st.DevicePassword("dpw"); pw != "s3cret-pw" {
+		t.Fatalf("imported password = %q", pw)
+	}
+
+	// The QR code, sealed with the phone's pairing code.
+	const pairing = "WXYZ-2345-6789-ABCD"
+	if rec := mac.do("POST", "/api/vault/export", `{"devices":["dkey"],"qr":true}`); rec.Code != 400 {
+		t.Fatalf("qr export without a pairing code: %d", rec.Code)
+	}
+	rec = mac.do("POST", "/api/vault/export", `{"devices":["dkey","dpw"],"qr":true,"code":"`+pairing+`"}`)
+	qx := decode[map[string]any](t, rec)
+	if svg, _ := qx["qr_svg"].(string); rec.Code != 200 || !strings.HasPrefix(svg, "<svg") {
+		t.Fatalf("qr export: %d %.300s", rec.Code, rec.Body.String())
+	}
+	for _, k := range []string{"code", "bundle"} {
+		if _, ok := qx[k]; ok {
+			t.Fatalf("qr export returns %q", k)
+		}
+	}
+	for _, secret := range []string{"s3cret-pw", "tok-a", "PRIVATE KEY", pairing} {
+		if strings.Contains(rec.Body.String(), secret) {
+			t.Fatalf("qr export response leaks %q", secret)
+		}
+	}
+	// What the phone's scanner reads is the sealed text the picture holds.
+	p, err := openBundle([]byte(ex.Bundle), ex.Code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, err := sealBundleQR(*p, pairing)
+	if err != nil || !strings.HasPrefix(text, qrPrefix) || strings.Trim(text[len(qrPrefix):], base45Alphabet) != "" {
+		t.Fatalf("qr text %q %v", text, err)
+	}
+	tablet := newTestHub(t, testConfig(t), "")
+	if rec := tablet.do("POST", "/api/vault/import", `{"qr":`+strconv.Quote(text)+`,"code":"2222-3333-4444-5555"}`); rec.Code != 400 {
+		t.Fatalf("qr with another pairing code: %d", rec.Code)
+	}
+	rec = tablet.do("POST", "/api/vault/import", `{"qr":`+strconv.Quote(text)+`,"code":"`+pairing+`"}`)
+	if r := decode[struct{ Added, Keys int }](t, rec); rec.Code != 200 || r.Added != 2 || r.Keys != 1 {
+		t.Fatalf("import qr: %d %s", rec.Code, rec.Body.String())
+	}
+	if pw, _ := tablet.st.DevicePassword("dpw"); pw != "s3cret-pw" {
+		t.Fatalf("password from the qr = %q", pw)
+	}
+	want, _ := mac.st.PrivateKey(key.ID)
+	if d, _ := tablet.srv.device("dkey"); d.Token != "tok-a" {
+		t.Fatalf("device from the qr = %+v", d)
+	} else if got, _ := tablet.st.PrivateKey(d.KeyID); string(got) != string(want) {
+		t.Fatal("private key differs after the qr import")
+	}
+}
+
+// A handful of servers fit in one code; too many are refused with a reason
+// rather than drawn as a code no camera reads.
+func TestQRCapacity(t *testing.T) {
+	payload := func(n int) bundlePayload {
+		var p bundlePayload
+		for i := 0; i < n; i++ {
+			b, err := newKeyPair(fmt.Sprintf("k%d", i))
+			if err != nil {
+				t.Fatal(err)
+			}
+			id := fmt.Sprintf("b%d", i)
+			p.Keys = append(p.Keys, bundleKey{ID: id, Name: id, Private: string(b)})
+			p.Devices = append(p.Devices, config.NodeConfig{ID: fmt.Sprintf("d%07d", i), Name: fmt.Sprintf("server-%d", i),
+				Transport: config.TransportSSH, SSHHost: "203.0.113.10", SSHPort: 22, SSHUser: "root", KeyID: id, RemotePort: 8899,
+				HostKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl", Token: strings.Repeat("t", 43)})
+		}
+		return p
+	}
+	for _, c := range []struct {
+		n    int
+		fits bool
+	}{{3, true}, {8, true}, {40, false}} {
+		text, err := sealBundleQR(payload(c.n), "2222-3333-4444-5555")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = qrSVG(text)
+		if (err == nil) != c.fits {
+			t.Fatalf("%d devices (%d chars): fits=%v, want %v (%v)", c.n, len(text), err == nil, c.fits, err)
+		}
+	}
+}
+
+func TestBase45(t *testing.T) {
+	// RFC 9285 section 4.
+	for in, want := range map[string]string{"AB": "BB8", "Hello!!": "%69 VD92EX0", "base-45": "UJCLQE7W581", "ietf!": "QED8WEX0"} {
+		if got := base45Encode([]byte(in)); got != want {
+			t.Fatalf("encode %q = %q, want %q", in, got, want)
+		}
+		if got, err := base45Decode(want); err != nil || string(got) != in {
+			t.Fatalf("decode %q = %q %v", want, got, err)
+		}
+	}
+	for n := 0; n < 40; n++ {
+		b := make([]byte, n)
+		for i := range b {
+			b[i] = byte(i * 37)
+		}
+		if got, err := base45Decode(base45Encode(b)); err != nil || string(got) != string(b) {
+			t.Fatalf("round trip of %d bytes: %v", n, err)
+		}
+	}
+	for _, bad := range []string{"A", "GGW", "ZZZZ", "abc"} {
+		if _, err := base45Decode(bad); err == nil {
+			t.Fatalf("decode %q accepted", bad)
+		}
 	}
 }

@@ -13,6 +13,10 @@
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
   <key>NSHighResolutionCapable</key><true/>
+  <!-- System panels (save, open, alerts' standard buttons) follow the
+       system language; the app's own text follows Settings (Lang.swift). -->
+  <key>CFBundleDevelopmentRegion</key><string>en</string>
+  <key>CFBundleAllowMixedLocalizations</key><true/>
   <key>NSAppTransportSecurity</key>
   <dict>
     <!-- The console is on loopback over plain HTTP; nothing else is. -->

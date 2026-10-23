@@ -196,7 +196,7 @@ func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		os.Remove(tmp.Name())
-		writeErr(w, 400, "上传中断: "+err.Error())
+		writeErr(w, 400, fmt.Sprintf("上传中断: %v", err))
 		return
 	}
 	_ = os.Chmod(tmp.Name(), 0o644)

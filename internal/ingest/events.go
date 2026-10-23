@@ -500,21 +500,30 @@ func (ing *Ingestor) applyState(t *store.Task, st map[string]any) {
 // applySessionSettings saves a model or effort change the agent confirmed and
 // says so in the transcript (the CLI's own reply says "this session only").
 func (ing *Ingestor) applySessionSettings(t *store.Task, ss map[string]any) {
-	var notes []string
+	var model, effort *string
 	_, _ = ing.store.UpdateSessionSettings(t.SessionID, func(st *store.SessionSettings) {
 		if v, ok := ss["model"].(string); ok {
 			st.Model = v
-			notes = append(notes, "模型 "+agent.OrDefault(v, "默认"))
+			model = &v
 		}
 		if v, ok := ss["effort"].(string); ok {
 			st.Effort = v
-			notes = append(notes, "推理强度 "+agent.OrDefault(v, "默认"))
+			effort = &v
 		}
 	})
-	if len(notes) > 0 {
-		ing.insert(t, 1<<39, 0, util.NowRFC3339(), "notice", map[string]any{
-			"text": "已为这个对话保存：" + strings.Join(notes, "，") + "。之后的消息都会使用这个设置。"})
+	var text string
+	switch {
+	case model != nil && effort != nil:
+		text = fmt.Sprintf("已为这个对话保存：模型 %s，推理强度 %s。之后的消息都会使用这个设置。",
+			agent.OrDefault(*model, "默认"), agent.OrDefault(*effort, "默认"))
+	case model != nil:
+		text = fmt.Sprintf("已为这个对话保存：模型 %s。之后的消息都会使用这个设置。", agent.OrDefault(*model, "默认"))
+	case effort != nil:
+		text = fmt.Sprintf("已为这个对话保存：推理强度 %s。之后的消息都会使用这个设置。", agent.OrDefault(*effort, "默认"))
+	default:
+		return
 	}
+	ing.insert(t, 1<<39, 0, util.NowRFC3339(), "notice", map[string]any{"text": text})
 }
 
 func (ing *Ingestor) applyNativeState(t *store.Task, raw any) {
@@ -844,7 +853,7 @@ func normalizeCodexRPC(method string, params map[string]any) []normEvent {
 			}
 		case "enteredReviewMode":
 			if done {
-				return []normEvent{{Kind: "notice", Payload: map[string]any{"text": "开始代码审查：" + agent.OrDefault(util.Str(item["review"]), "未提交的改动")}}}
+				return []normEvent{{Kind: "notice", Payload: map[string]any{"text": fmt.Sprintf("开始代码审查：%s", agent.OrDefault(util.Str(item["review"]), "未提交的改动"))}}}
 			}
 		case "exitedReviewMode":
 			if txt := util.Str(item["review"]); txt != "" && done {
@@ -852,7 +861,8 @@ func normalizeCodexRPC(method string, params map[string]any) []normEvent {
 			}
 		}
 	case "rymesh/reply":
-		return []normEvent{{Kind: "assistant", Payload: map[string]any{"text": util.Str(params["text"])}}}
+		// console: written by Rymesh, not the model, so the page may translate it.
+		return []normEvent{{Kind: "assistant", Payload: map[string]any{"text": util.Str(params["text"]), "console": true}}}
 	case "rymesh/usage":
 		u, _ := params["usage"].(map[string]any)
 		return []normEvent{{Kind: "usage", Payload: map[string]any{"agent": "codex", "usage": map[string]any{
@@ -867,7 +877,7 @@ func normalizeCodexRPC(method string, params map[string]any) []normEvent {
 		e, _ := params["error"].(map[string]any)
 		msg := agent.OrDefault(util.Str(e["message"]), "Codex 错误")
 		if b, _ := params["willRetry"].(bool); b {
-			return []normEvent{{Kind: "notice", Payload: map[string]any{"text": msg + "（正在重试）"}}}
+			return []normEvent{{Kind: "notice", Payload: map[string]any{"text": fmt.Sprintf("%s（正在重试）", msg)}}}
 		}
 		return []normEvent{{Kind: "error", Payload: map[string]any{"text": msg}}}
 	}

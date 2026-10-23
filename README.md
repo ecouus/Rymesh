@@ -18,9 +18,6 @@ carries on; when you come back you see what you missed.
 > uploads the CLIs' credentials. Use it to control your own machines only, not to let other people use
 > your account (that is account sharing, which the providers' terms forbid).
 
-> The app's interface is currently in **Chinese**. Menu names below are given in English with the
-> Chinese label in brackets.
-
 ---
 
 ## Features
@@ -46,6 +43,8 @@ carries on; when you come back you see what you missed.
   system notifications for approvals and questions that open the card.
 - **Android app**: the whole console runs inside the app, no computer needed; follows the system's
   light or dark mode.
+- **English and Chinese**: the apps follow the system language; change it under Settings → Interface →
+  Language. Messages from servers are shown in that language too, also from nodes on an older version.
 
 ## Download and install
 
@@ -70,24 +69,24 @@ launch is blocked: open System Settings → Privacy & Security and click "Open A
 1. **Install the agents on the server and log in**, as you would for terminal use:
    `codex` (sign in with ChatGPT or set up an API key), `claude` (sign in to Claude),
    `hermes setup` (Hermes Agent). Any of them will do; Rymesh uses whichever already work.
-2. **In the app: sidebar → Settings (设置) at the bottom → Add server (添加服务器)**.
-   Fill it in from `~/.ssh/config` with one tap if you like, and pick how to log in (登录方式):
-   - **Key (密钥)**: an existing key, one in ssh-agent, or one generated in the app. If the server does
+2. **In the app: sidebar → Settings at the bottom → Add server**.
+   Fill it in from `~/.ssh/config` with one tap if you like, and pick how to log in:
+   - **Key**: an existing key, one in ssh-agent, or one generated in the app. If the server does
      not know the key yet, enter the server password once and the app installs the public key
      (the password is used for that one connection and not kept).
-   - **Password (密码)**: for servers that only accept passwords. The password is kept encrypted in the
+   - **Password**: for servers that only accept passwords. The password is kept encrypted in the
      app and used for every connection.
 
    On first contact you confirm the server's host key fingerprint; from then on a changed fingerprint is
    refused.
-3. **Tap Deploy node (部署节点)**. The app uploads the node program and installs it in `~/.rymesh` (systemd for
+3. **Tap Deploy node**. The app uploads the node program and installs it in `~/.rymesh` (systemd for
    root, `systemctl --user` for other users, launchd on macOS). A server that already has it is upgraded
    in place and keeps its pairing, so a Mac and a phone can share a server.
 4. **Start**: pick an agent and a working directory, and send a message.
 
 **Moving your servers from the computer to the phone**: on the phone, Settings → Import devices
-(导入设备) → Scan QR code (扫描二维码); the phone shows a 16-character pairing code. On the computer,
-Settings → Export devices (导出设备) → Show QR code (显示二维码), type in that pairing code, then scan the
+→ Scan QR code; the phone shows a 16-character pairing code. On the computer,
+Settings → Export devices → Show QR code, type in that pairing code, then scan the
 QR code that appears with the phone. The QR code is sealed with the phone's pairing code and the
 computer's screen never shows any secret, so a photo or recording of that screen opens nothing; the code
 hides itself after two minutes. You can also export a `.rymesh` file and import it on the other device
@@ -235,7 +234,6 @@ The configuration is `~/.rymesh/config.json` (`/etc/rymesh/config.json` for a ro
 
 ## Known limitations
 
-- The interface is in Chinese only for now.
 - Hermes can only continue conversations created over ACP; its other conversations are read-only.
 - Codex MCP form requests (elicitation) are not supported yet and are declined.
 - When Codex resumes a long-idle thread it sets the thread's "updated" time to now; that is Codex's own

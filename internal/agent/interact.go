@@ -207,9 +207,9 @@ func suggestionText(s map[string]any) string {
 		for _, d := range dirs {
 			parts = append(parts, shortPath(util.Str(d)))
 		}
-		return "访问目录 " + strings.Join(parts, "、")
+		return fmt.Sprintf("访问目录 %s", strings.Join(parts, "、"))
 	case "setMode":
-		return "切换为 " + util.Str(s["mode"]) + " 模式"
+		return fmt.Sprintf("切换为 %s 模式", util.Str(s["mode"]))
 	}
 	return util.Str(s["type"])
 }
@@ -235,7 +235,7 @@ func modeLabel(mode string) string {
 	case "plan":
 		return "进入计划模式"
 	}
-	return "切换为 " + mode + " 模式"
+	return fmt.Sprintf("切换为 %s 模式", mode)
 }
 
 // shortPath keeps the last two components of a long path ("…/e2e/work"),
@@ -294,7 +294,7 @@ func claudeInteraction(r claudeToolRequest) CtlRequest {
 	}
 	req.Kind = store.KindPermission
 	if req.Description == "" && r.BlockedPath != "" {
-		req.Description = "需要访问 " + r.BlockedPath
+		req.Description = fmt.Sprintf("需要访问 %s", r.BlockedPath)
 	}
 	req.Options = []CtlOption{{ID: DecisionAllow, Label: "允许"}}
 	rules, mode := splitSuggestions(r.Suggestions)
@@ -306,7 +306,7 @@ func claudeInteraction(r claudeToolRequest) CtlRequest {
 	// its own choice (as in the CLI), never folded into "allow for session".
 	if mode != nil {
 		req.Options = append(req.Options, CtlOption{ID: decisionAllowMode,
-			Label: "允许，并在本会话" + modeLabel(util.Str(mode["mode"]))})
+			Label: fmt.Sprintf("允许，并在本会话%s", modeLabel(util.Str(mode["mode"])))})
 	}
 	var persistent []map[string]any
 	dest := ""
@@ -322,7 +322,7 @@ func claudeInteraction(r claudeToolRequest) CtlRequest {
 			label = dest
 		}
 		req.Options = append(req.Options, CtlOption{ID: decisionAllowAlways, Label: "始终允许",
-			Detail: joinTexts(persistent) + "（写入" + label + "）"})
+			Detail: fmt.Sprintf("%s（写入%s）", joinTexts(persistent), label)})
 	}
 	req.Options = append(req.Options,
 		CtlOption{ID: DecisionDeny, Label: "拒绝"},
@@ -458,7 +458,7 @@ func codexDecisionOptions(available []json.RawMessage) ([]CtlOption, map[string]
 		if json.Unmarshal(raw, &obj) == nil {
 			if a, ok := obj["acceptWithExecpolicyAmendment"]; ok {
 				add(CtlOption{ID: decisionAllowAlways, Label: "始终允许",
-					Detail: "以后不再询问：" + strings.Join(a.Amendment, " ")}, raw)
+					Detail: fmt.Sprintf("以后不再询问：%s", strings.Join(a.Amendment, " "))}, raw)
 			}
 		}
 	}

@@ -288,7 +288,7 @@ func (s *Server) handleNodeProxy(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("node")
 	n, ok := s.config().FindNode(id)
 	if !ok {
-		writeErr(w, 404, "未知设备: "+id)
+		writeErr(w, 404, fmt.Sprintf("未知设备: %s", id))
 		return
 	}
 	path := "/api/" + r.PathValue("rest")
@@ -339,7 +339,7 @@ func (s *Server) handleNodeProxy(w http.ResponseWriter, r *http.Request) {
 			}
 			s.logger.Printf("node %s: %v", id, err)
 			if errors.Is(err, errNodeToken) {
-				writeErr(w, http.StatusBadGateway, "设备「"+n.Name+"」拒绝了令牌，请检查 node_token")
+				writeErr(w, http.StatusBadGateway, fmt.Sprintf("设备「%s」拒绝了令牌，请检查 node_token", n.Name))
 				return
 			}
 			writeErr(w, http.StatusBadGateway, dialFailure(err))
@@ -410,14 +410,14 @@ func cliTransport(n config.NodeConfig, keys sshconn.KeySource) http.RoundTripper
 
 func nodeMain(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, `用法:
+		fmt.Fprintln(os.Stderr, T(`用法:
   rymesh node setup --token 令牌 [--port 8899] [--name 名称]  在本机安装/升级节点（~/.rymesh，仅监听 127.0.0.1）
   rymesh node token [--rotate]                       显示本机节点令牌（首次自动生成）
   rymesh node name <名称>                             设置本机在设备列表中的名称
   rymesh node add <id> --name 名称 --url 地址 --token 令牌  添加远程设备（在主控台上执行）
   rymesh node remove <id>                            移除远程设备
   rymesh node list                                   列出远程设备
-所有子命令都接受 --config；修改后需重启服务生效。`)
+所有子命令都接受 --config；修改后需重启服务生效。`))
 		return 2
 	}
 	sub, rest := args[0], args[1:]
@@ -442,7 +442,7 @@ func nodeMain(args []string) int {
 	pos = append(pos, fset.Args()...)
 	cfg, err := config.LoadConfig(*configPath)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "读取配置失败:", err)
+		fmt.Fprintln(os.Stderr, T("读取配置失败:"), Tr(err.Error()))
 		return 1
 	}
 	// Devices live in the database (vault.go); token and name only touch
@@ -450,12 +450,12 @@ func nodeMain(args []string) int {
 	var st *store.Store
 	if sub == "add" || sub == "remove" || sub == "list" {
 		if st, err = store.OpenStore(cfg.DataDir); err != nil {
-			fmt.Fprintln(os.Stderr, "打开数据库失败:", err)
+			fmt.Fprintln(os.Stderr, T("打开数据库失败:"), Tr(err.Error()))
 			return 1
 		}
 		defer st.Close()
 		if err := initVault(st, cfg, *configPath); err != nil {
-			fmt.Fprintln(os.Stderr, "读取设备失败:", err)
+			fmt.Fprintln(os.Stderr, T("读取设备失败:"), Tr(err.Error()))
 			return 1
 		}
 	}
@@ -469,10 +469,10 @@ func nodeMain(args []string) int {
 			err = config.SaveConfig(*configPath, cfg)
 		}
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "保存配置失败:", err)
+			fmt.Fprintln(os.Stderr, T("保存配置失败:"), Tr(err.Error()))
 			return 1
 		}
-		fmt.Fprintln(os.Stderr, "已保存；重启服务后生效。")
+		fmt.Fprintln(os.Stderr, T("已保存；重启服务后生效。"))
 		return 0
 	}
 	switch sub {
@@ -480,7 +480,7 @@ func nodeMain(args []string) int {
 		if cfg.NodeToken == "" || *rotate {
 			b, err := util.RandomBytes(32)
 			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
+				fmt.Fprintln(os.Stderr, Tr(err.Error()))
 				return 1
 			}
 			cfg.NodeToken = base64.RawURLEncoding.EncodeToString(b)
@@ -492,23 +492,23 @@ func nodeMain(args []string) int {
 		return 0
 	case "name":
 		if len(pos) != 1 {
-			fmt.Fprintln(os.Stderr, "用法: rymesh node name <名称>")
+			fmt.Fprintln(os.Stderr, T("用法: rymesh node name <名称>"))
 			return 2
 		}
 		cfg.NodeName = pos[0]
 		return save()
 	case "add":
 		if len(pos) != 1 || *nodeURL == "" || *token == "" {
-			fmt.Fprintln(os.Stderr, "用法: rymesh node add <id> --name 名称 --url 地址 --token 令牌")
+			fmt.Fprintln(os.Stderr, T("用法: rymesh node add <id> --name 名称 --url 地址 --token 令牌"))
 			return 2
 		}
 		id := pos[0]
 		if !store.ValidID(id) || id == config.LocalNodeID {
-			fmt.Fprintln(os.Stderr, "设备 id 只能包含字母、数字、- 和 _，且不能是 local")
+			fmt.Fprintln(os.Stderr, T("设备 id 只能包含字母、数字、- 和 _，且不能是 local"))
 			return 2
 		}
 		if err := checkDirectURL(*nodeURL); err != nil {
-			fmt.Fprintln(os.Stderr, err)
+			fmt.Fprintln(os.Stderr, Tr(err.Error()))
 			return 2
 		}
 		n := config.NodeConfig{ID: id, Name: *name, URL: strings.TrimRight(*nodeURL, "/"), Token: *token}
@@ -526,14 +526,14 @@ func nodeMain(args []string) int {
 		}
 		v := probeNode(context.Background(), n, cliTransport(n, st))
 		if v.Online {
-			fmt.Printf("设备 %s 在线（%s）\n", n.Name, v.Version)
+			fmt.Print(T("设备 %s 在线（%s）\n", n.Name, v.Version))
 		} else {
-			fmt.Printf("警告：设备 %s 当前不可用：%s\n", n.Name, v.Error)
+			fmt.Print(T("警告：设备 %s 当前不可用：%s\n", n.Name, Tr(v.Error)))
 		}
 		return save()
 	case "remove":
 		if len(pos) != 1 {
-			fmt.Fprintln(os.Stderr, "用法: rymesh node remove <id>")
+			fmt.Fprintln(os.Stderr, T("用法: rymesh node remove <id>"))
 			return 2
 		}
 		kept := cfg.Nodes[:0]
@@ -543,23 +543,23 @@ func nodeMain(args []string) int {
 			}
 		}
 		if len(kept) == len(cfg.Nodes) {
-			fmt.Fprintln(os.Stderr, "没有这个设备:", pos[0])
+			fmt.Fprintln(os.Stderr, T("没有这个设备:"), pos[0])
 			return 1
 		}
 		cfg.Nodes = kept
 		return save()
 	case "list":
-		fmt.Printf("本机  %s\n", cfg.DisplayName())
+		fmt.Print(T("本机  %s\n", Tr(cfg.DisplayName())))
 		for _, n := range cfg.Nodes {
 			v := probeNode(context.Background(), n, cliTransport(n, st))
-			state := "在线 " + v.Version
+			state := T("在线 %s", v.Version)
 			if !v.Online {
-				state = "不可用：" + v.Error
+				state = T("不可用：%s", Tr(v.Error))
 			}
 			fmt.Printf("%-10s %-12s %-28s %s\n", n.ID, n.Name, n.URL, state)
 		}
 		return 0
 	}
-	fmt.Fprintln(os.Stderr, "未知子命令:", sub)
+	fmt.Fprintln(os.Stderr, T("未知子命令:"), sub)
 	return 2
 }

@@ -96,6 +96,9 @@ func StartEmbedded(dataDir string, vaultKey []byte) (*Embedded, error) {
 
 func (e *Embedded) Port() int { return e.port }
 
+// Language is the interface language chosen in Settings ("" = system).
+func (e *Embedded) Language() string { return e.srv.config().Language }
+
 // LoginURL opens the console logged in; each URL works once.
 func (e *Embedded) LoginURL() string {
 	e.srv.ticketMu.Lock()

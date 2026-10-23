@@ -284,7 +284,7 @@ func (s *Server) handleTermCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	t, err := s.terms.start(cwd, req.Cols, req.Rows)
 	if err != nil {
-		writeErr(w, 500, "无法打开终端: "+err.Error())
+		writeErr(w, 500, fmt.Sprintf("无法打开终端: %v", err))
 		return
 	}
 	writeJSON(w, 200, map[string]any{"id": t.id, "cwd": t.cwd})

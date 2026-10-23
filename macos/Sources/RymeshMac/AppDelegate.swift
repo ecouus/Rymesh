@@ -24,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     // MARK: Launch
 
     func applicationDidFinishLaunching(_ note: Notification) {
+        Lang.choice = Console.savedConfig()["language"] as? String ?? ""
         buildMainMenu()
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         status.button?.image = NSImage(systemSymbolName: "terminal", accessibilityDescription: "Rymesh")
@@ -35,7 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
 
         guard let c = Console() else {
-            fail("应用包里缺少 rymesh 程序，请重新下载。")
+            fail(L("应用包里缺少 rymesh 程序，请重新下载。"))
             return
         }
         console = c
@@ -60,11 +61,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 
     private func showServiceWarning(_ text: String) {
         let a = NSAlert()
-        a.messageText = "后台服务未能注册为系统服务"
+        a.messageText = L("后台服务未能注册为系统服务")
         a.informativeText = text
-        if text.contains("登录项") {
-            a.addButton(withTitle: "打开登录项设置")
-            a.addButton(withTitle: "稍后")
+        if text.contains("登录项") || text.contains("Login Items") {
+            a.addButton(withTitle: L("打开登录项设置"))
+            a.addButton(withTitle: L("稍后"))
             if a.runModal() == .alertFirstButtonReturn,
                let url = URL(string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension") {
                 NSWorkspace.shared.open(url)
@@ -76,7 +77,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 
     private func fail(_ message: String) {
         let a = NSAlert()
-        a.messageText = "Rymesh 无法启动"
+        a.messageText = L("Rymesh 无法启动")
         a.informativeText = message
         a.runModal()
         NSApp.terminate(nil)
@@ -103,6 +104,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             let cfg = WKWebViewConfiguration()
             cfg.websiteDataStore = .default()
             cfg.userContentController.add(self, name: "ac") // window.webkit.messageHandlers.ac
+            // The page follows the system language unless one is chosen in
+            // Settings; the web view would report the bundle's instead.
+            cfg.userContentController.addUserScript(WKUserScript(
+                source: "window.acSystemLang = \(jsString(Lang.system));",
+                injectionTime: .atDocumentStart, forMainFrameOnly: true))
             let wv = WKWebView(frame: .zero, configuration: cfg)
             wv.navigationDelegate = self
             wv.uiDelegate = self
@@ -180,6 +186,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         case "openDownload":
             if let id = body["id"] as? String { downloader.reveal(id: id) }
             return
+        case "lang":
+            // The page's language, chosen in Settings or the system's.
+            if let lang = body["lang"] as? String, lang != (Lang.isEnglish ? "en" : "zh") {
+                Lang.choice = lang
+                buildMainMenu()
+                rebuildStatusMenu()
+            }
+            return
         case "save":
             break
         default:
@@ -195,7 +209,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
                 try text.write(to: url, atomically: true, encoding: .utf8)
             } catch {
                 let a = NSAlert()
-                a.messageText = "保存失败"
+                a.messageText = L("保存失败")
                 a.informativeText = error.localizedDescription
                 a.runModal()
             }
@@ -276,10 +290,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 
     private func rebuildStatusMenu() {
         let m = NSMenu()
-        m.addItem(withTitle: "打开 Rymesh", action: #selector(showWindow), keyEquivalent: "o").target = self
+        m.addItem(withTitle: L("打开 Rymesh"), action: #selector(showWindow), keyEquivalent: "o").target = self
         m.addItem(.separator())
         if pending.isEmpty {
-            m.addItem(NSMenuItem(title: "没有待处理的请求", action: nil, keyEquivalent: ""))
+            m.addItem(NSMenuItem(title: L("没有待处理的请求"), action: nil, keyEquivalent: ""))
         } else {
             for (i, p) in pending.prefix(8).enumerated() {
                 let item = NSMenuItem(title: "\(p.heading) · \(p.nodeName) · \(p.title)",
@@ -290,7 +304,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             }
         }
         m.addItem(.separator())
-        m.addItem(withTitle: "退出（Agent 任务继续在后台运行）", action: #selector(NSApplication.terminate(_:)),
+        m.addItem(withTitle: L("退出（Agent 任务继续在后台运行）"), action: #selector(NSApplication.terminate(_:)),
                   keyEquivalent: "q")
         status.menu = m
     }
@@ -306,35 +320,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         let main = NSMenu()
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
-        appMenu.addItem(withTitle: "关于 Rymesh", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: L("关于 Rymesh"), action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "隐藏 Rymesh", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
-        appMenu.addItem(withTitle: "退出 Rymesh", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(withTitle: L("隐藏 Rymesh"), action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        appMenu.addItem(withTitle: L("退出 Rymesh"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
         main.addItem(appItem)
 
         let editItem = NSMenuItem()
-        let edit = NSMenu(title: "编辑")
-        edit.addItem(withTitle: "撤销", action: Selector(("undo:")), keyEquivalent: "z")
-        edit.addItem(withTitle: "重做", action: Selector(("redo:")), keyEquivalent: "Z")
+        let edit = NSMenu(title: L("编辑"))
+        edit.addItem(withTitle: L("撤销"), action: Selector(("undo:")), keyEquivalent: "z")
+        edit.addItem(withTitle: L("重做"), action: Selector(("redo:")), keyEquivalent: "Z")
         edit.addItem(.separator())
-        edit.addItem(withTitle: "剪切", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
-        edit.addItem(withTitle: "拷贝", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
-        edit.addItem(withTitle: "粘贴", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
-        edit.addItem(withTitle: "全选", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        edit.addItem(withTitle: L("剪切"), action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: L("拷贝"), action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: L("粘贴"), action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        edit.addItem(withTitle: L("全选"), action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         editItem.submenu = edit
         main.addItem(editItem)
 
         let viewItem = NSMenuItem()
-        let view = NSMenu(title: "显示")
-        view.addItem(withTitle: "重新载入", action: #selector(reload), keyEquivalent: "r").target = self
+        let view = NSMenu(title: L("显示"))
+        view.addItem(withTitle: L("重新载入"), action: #selector(reload), keyEquivalent: "r").target = self
         viewItem.submenu = view
         main.addItem(viewItem)
 
         let winItem = NSMenuItem()
-        let win = NSMenu(title: "窗口")
-        win.addItem(withTitle: "关闭", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
-        win.addItem(withTitle: "最小化", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        let win = NSMenu(title: L("窗口"))
+        win.addItem(withTitle: L("关闭"), action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        win.addItem(withTitle: L("最小化"), action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         winItem.submenu = win
         main.addItem(winItem)
         NSApp.mainMenu = main

@@ -244,7 +244,7 @@ func (c *codexSession) command(name, arg string) {
 		for _, l := range levels {
 			if arg == l {
 				c.w.state(map[string]any{"session_settings": map[string]any{"effort": arg}})
-				c.reply("推理强度已设为 " + arg)
+				c.reply(fmt.Sprintf("推理强度已设为 %s", arg))
 				c.finish(store.StatusCompleted, "")
 				return
 			}
@@ -253,16 +253,16 @@ func (c *codexSession) command(name, arg string) {
 			c.w.state(map[string]any{"session_settings": map[string]any{"effort": ""}})
 			c.reply("推理强度已恢复为模型默认值")
 		} else {
-			c.reply("用法：/effort <" + strings.Join(levels, "|") + "|default>")
+			c.reply(fmt.Sprintf("用法：/effort <%s|default>", strings.Join(levels, "|")))
 		}
 		c.finish(store.StatusCompleted, "")
 	case "status":
 		sandbox, approval, collab := codexModes(c.spec.Profile)
 		lines := []string{
-			"**模型**：" + OrDefault(c.spec.Model, "默认") + "　**推理强度**：" + OrDefault(c.spec.Effort, "默认"),
-			"**权限**：" + profileLabel("codex", c.spec.Profile) + "（sandbox " + sandbox + "，approval " + approval + "，" + collab + " 模式）",
-			"**目录**：`" + c.spec.Cwd + "`",
-			"**会话**：`" + OrDefault(c.spec.NativeID, "尚未开始") + "`",
+			fmt.Sprintf("**模型**：%s　**推理强度**：%s", OrDefault(c.spec.Model, "默认"), OrDefault(c.spec.Effort, "默认")),
+			fmt.Sprintf("**权限**：%s（sandbox %s，approval %s，%s 模式）", profileLabel("codex", c.spec.Profile), sandbox, approval, collab),
+			fmt.Sprintf("**目录**：`%s`", c.spec.Cwd),
+			fmt.Sprintf("**会话**：`%s`", OrDefault(c.spec.NativeID, "尚未开始")),
 		}
 		c.reply(strings.Join(lines, "\n\n"))
 		c.finish(store.StatusCompleted, "")
@@ -274,7 +274,7 @@ func (c *codexSession) command(name, arg string) {
 		}
 		c.openThread() // continues in threadCommand
 	default:
-		c.reply("未知指令 /" + name)
+		c.reply(fmt.Sprintf("未知指令 /%s", name))
 		c.finish(store.StatusCompleted, "")
 	}
 }
@@ -301,22 +301,22 @@ func (c *codexSession) modelCommand(result json.RawMessage) {
 	defer c.finish(store.StatusCompleted, "")
 	models, err := parseCodexModels(result)
 	if err != nil {
-		c.reply("读取模型列表失败：" + err.Error())
+		c.reply(fmt.Sprintf("读取模型列表失败：%v", err))
 		return
 	}
 	_, arg, _ := SlashCommand(c.spec.Prompt)
 	fields := strings.Fields(arg)
 	if len(fields) == 0 {
 		var b strings.Builder
-		b.WriteString("当前模型：**" + OrDefault(c.spec.Model, "默认") + "**，推理强度：**" + OrDefault(c.spec.Effort, "默认") + "**\n\n")
+		b.WriteString(fmt.Sprintf("当前模型：**%s**，推理强度：**%s**", OrDefault(c.spec.Model, "默认"), OrDefault(c.spec.Effort, "默认")) + "\n\n")
 		for _, m := range models {
-			mark := ""
+			line := "- `%s` %s · 强度：%s"
 			if m.Default {
-				mark = "（默认）"
+				line = "- `%s` %s（默认） · 强度：%s"
 			}
-			b.WriteString("- `" + m.ID + "` " + m.Label + mark + " · 强度：" + strings.Join(m.Efforts, "/") + "\n")
+			b.WriteString(fmt.Sprintf(line, m.ID, m.Label, strings.Join(m.Efforts, "/")) + "\n")
 		}
-		b.WriteString("\n用法：`/model <模型> [强度]`，`/model default` 恢复默认")
+		b.WriteString("\n" + "用法：`/model <模型> [强度]`，`/model default` 恢复默认")
 		c.reply(b.String())
 		return
 	}
@@ -330,24 +330,24 @@ func (c *codexSession) modelCommand(result json.RawMessage) {
 			continue
 		}
 		set := map[string]any{"model": m.ID}
-		msg := "已切换到 " + m.Label
+		msg := fmt.Sprintf("已切换到 %s", m.Label)
 		if len(fields) > 1 {
 			ok := false
 			for _, e := range m.Efforts {
 				ok = ok || e == fields[1]
 			}
 			if !ok {
-				c.reply(m.Label + " 不支持推理强度 " + fields[1] + "，可选：" + strings.Join(m.Efforts, "/"))
+				c.reply(fmt.Sprintf("%s 不支持推理强度 %s，可选：%s", m.Label, fields[1], strings.Join(m.Efforts, "/")))
 				return
 			}
 			set["effort"] = fields[1]
-			msg += "，推理强度 " + fields[1]
+			msg = fmt.Sprintf("已切换到 %s，推理强度 %s", m.Label, fields[1])
 		}
 		c.w.state(map[string]any{"session_settings": set})
 		c.reply(msg)
 		return
 	}
-	c.reply("没有模型 " + fields[0] + "。输入 /model 查看可用模型。")
+	c.reply(fmt.Sprintf("没有模型 %s。输入 /model 查看可用模型。", fields[0]))
 }
 
 // Only these notifications become transcript events; deltas and status noise

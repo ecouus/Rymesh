@@ -242,9 +242,9 @@ func hermesReadOnly(s *hermesSession, profile string) string {
 		from = firstNonEmpty(s.Source, "其他入口")
 	}
 	if profile != "" {
-		from += "（档案 " + profile + "）"
+		from = fmt.Sprintf("%s（档案 %s）", from, profile)
 	}
-	return "这段对话来自" + from + "。Hermes 只能接着聊通过 ACP 创建的对话，这里只能查看。"
+	return fmt.Sprintf("这段对话来自%s。Hermes 只能接着聊通过 ACP 创建的对话，这里只能查看。", from)
 }
 
 // hermesEvents converts a conversation's messages into console events.
@@ -313,13 +313,13 @@ func (im *Importer) importHermesChain(profile string, chain []*hermesSession, re
 	// Desktop group chats are titled by internal room ids; each bot's turn
 	// opens with `[Group chat: "<room>"] You are @<bot>, ...`.
 	if m := hermesGroupRe.FindStringSubmatch(firstUser); m != nil && (title == "" || strings.HasPrefix(title, "Group: ")) {
-		title = m[1] + " · 群聊（" + profileName(profile) + "）"
+		title = fmt.Sprintf("%s · 群聊（%s）", m[1], profileName(profile))
 	}
 	if title == "" {
 		title = store.TruncateTitle(firstUser, 72)
 	}
 	if title == "" {
-		title = "Hermes 会话 " + shortID(last.ID)
+		title = fmt.Sprintf("Hermes 会话 %s", shortID(last.ID))
 	}
 	created := firstTS(events)
 	updated := created

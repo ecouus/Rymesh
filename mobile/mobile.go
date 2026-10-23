@@ -30,6 +30,23 @@ func Start(dataDir string, vaultKey []byte) (string, error) {
 	return cur.LoginURL(), nil
 }
 
+// Language is the interface language chosen in Settings, "zh" or "en", or
+// "" to follow the system.
+func Language() string {
+	mu.Lock()
+	defer mu.Unlock()
+	if cur == nil {
+		return ""
+	}
+	return cur.Language()
+}
+
+// Translate puts one of the app's own messages (Chinese, the message id)
+// into English.
+func Translate(msg string) string {
+	return console.TranslateEN(msg)
+}
+
 // Stop shuts the console down; SSH connections close with it. Agents on the
 // servers keep running.
 func Stop() {

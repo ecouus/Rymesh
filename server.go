@@ -71,10 +71,10 @@ type Server struct {
 func newServer(cfg *config.Config, cfgPath string, st *store.Store, logger *log.Logger, bindAddrs []string) *Server {
 	// The device list lives in the database (vault.go).
 	if err := initVault(st, cfg, cfgPath); err != nil {
-		logger.Printf("密钥库初始化失败: %v", err)
+		logger.Printf("vault init: %v", err)
 	}
 	if err := st.SealStoredKeys(); err != nil {
-		logger.Printf("加密已保存的私钥失败（下次启动重试）: %v", err)
+		logger.Printf("sealing saved private keys failed (retried next start): %v", err)
 	}
 	s := &Server{
 		cfg: cfg, cfgPath: cfgPath, store: st, agents: agent.NewAgentSet(),
@@ -291,10 +291,12 @@ func (s *Server) staticHandler() http.Handler {
 
 func (s *Server) handleAuthState(w http.ResponseWriter, r *http.Request) {
 	if info, ok := s.auth.authenticate(r); ok {
-		writeJSON(w, 200, map[string]any{"authenticated": true, "csrf": info.CSRF, "version": util.Version})
+		writeJSON(w, 200, map[string]any{"authenticated": true, "csrf": info.CSRF, "version": util.Version,
+			"language": s.config().Language})
 		return
 	}
-	writeJSON(w, 200, map[string]any{"authenticated": false, "version": util.Version})
+	// The language is needed before login too, for the sign-in notice.
+	writeJSON(w, 200, map[string]any{"authenticated": false, "version": util.Version, "language": s.config().Language})
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -433,6 +435,7 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		DefaultCWD    *string `json:"default_cwd"`
 		MaxConcurrent *int    `json:"max_concurrent"`
+		Language      *string `json:"language"`
 	}
 	if err := decodeJSON(w, r, &req); err != nil {
 		return
@@ -465,14 +468,23 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		cfg.MaxConcurrent = n
 	}
+	if req.Language != nil {
+		switch *req.Language {
+		case "", "zh", "en":
+			cfg.Language = *req.Language
+		default:
+			writeErr(w, 400, "不支持的语言")
+			return
+		}
+	}
 	if err := config.SaveConfigFile(s.cfgPath, &cfg); err != nil {
-		writeErr(w, 500, "保存配置失败: "+err.Error())
+		writeErr(w, 500, fmt.Sprintf("保存配置失败: %v", err))
 		return
 	}
 	s.publishConfig(&cfg)
 	s.schedule()
 	writeJSON(w, 200, map[string]any{"ok": true, "config": map[string]any{
-		"default_cwd": cfg.DefaultCWD, "max_concurrent": cfg.MaxConcurrent}})
+		"default_cwd": cfg.DefaultCWD, "max_concurrent": cfg.MaxConcurrent, "language": cfg.Language}})
 }
 
 // handleAgentUpdateCheck reports the installed and latest published version of
@@ -505,7 +517,7 @@ func (s *Server) handleAgentUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err != nil {
-		writeErr(w, 500, "更新失败："+err.Error())
+		writeErr(w, 500, fmt.Sprintf("更新失败：%v", err))
 		return
 	}
 	writeJSON(w, 200, map[string]any{
@@ -633,7 +645,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 	agent, ok := s.agents.Get(req.Agent)
 	if !ok || !agent.Available {
-		writeErr(w, 400, "Agent 不可用: "+req.Agent)
+		writeErr(w, 400, fmt.Sprintf("Agent 不可用: %s", req.Agent))
 		return
 	}
 	cfg := s.config()
@@ -644,7 +656,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 	title := store.TruncateTitle(req.Title, 120)
 	if title == "" {
-		title = "新会话 · " + agent.Label
+		title = fmt.Sprintf("新会话 · %s", agent.Label)
 	}
 	sess := &store.Session{Agent: req.Agent, Cwd: cwd, Title: title, Source: "web"}
 	if err := s.store.CreateSession(sess); err != nil {
@@ -670,7 +682,7 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	// nothing changed, so this costs nothing on repeated opens.
 	if sess.NativeID != "" {
 		if err := s.imp.SyncSession(id); err != nil {
-			s.logger.Printf("同步原生会话 %s 失败: %v", id, err)
+			s.logger.Printf("sync native session %s: %v", id, err)
 		} else if fresh, err := s.store.GetSession(id); err == nil {
 			sess = fresh
 		}
@@ -742,7 +754,7 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	}
 	trashed, err := s.trashNative(sess)
 	if err != nil {
-		writeErr(w, 500, "移动原生会话失败: "+err.Error())
+		writeErr(w, 500, fmt.Sprintf("移动原生会话失败: %v", err))
 		return
 	}
 	if (sess.Agent == "hermes" || sess.Agent == "codex") && sess.NativeID != "" {
@@ -768,7 +780,7 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if err := os.RemoveAll(filepath.Join(s.config().DataDir, "tasks", t.ID)); err != nil {
-			s.logger.Printf("删除任务目录 %s 失败: %v", t.ID, err)
+			s.logger.Printf("remove task dir %s: %v", t.ID, err)
 		}
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "native_trashed": trashed})
@@ -838,7 +850,7 @@ func (s *Server) pruneTrash(now time.Time) {
 			continue
 		}
 		if err := os.RemoveAll(filepath.Join(root, e.Name())); err != nil {
-			s.logger.Printf("清理回收目录 %s 失败: %v", e.Name(), err)
+			s.logger.Printf("prune trash %s: %v", e.Name(), err)
 		}
 	}
 }
@@ -874,7 +886,7 @@ func (s *Server) autoImport(every time.Duration) {
 	for range t.C {
 		rep := s.runImport()
 		if rep.Imported > 0 || rep.Updated > 0 || rep.Errors > 0 {
-			s.logger.Printf("原生会话同步: imported=%d updated=%d errors=%d",
+			s.logger.Printf("native session sync: imported=%d updated=%d errors=%d",
 				rep.Imported, rep.Updated, rep.Errors)
 		}
 	}
@@ -912,7 +924,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	// history appended by the CLI was missing until some other request synced.
 	if sess, err := s.store.GetSession(id); err == nil && sess.NativeID != "" {
 		if err := s.imp.SyncSession(id); err != nil {
-			s.logger.Printf("同步原生会话 %s 失败: %v", id, err)
+			s.logger.Printf("sync native session %s: %v", id, err)
 		}
 	}
 	if v := q.Get("before"); v != "" {
@@ -1001,7 +1013,7 @@ func (s *Server) handleCreateMessage(w http.ResponseWriter, r *http.Request) {
 	// Pull in turns made in a terminal first, so they are ordered before the
 	// turn this message starts rather than after it.
 	if err := s.imp.SyncSession(id); err != nil {
-		s.logger.Printf("同步原生会话 %s 失败: %v", id, err)
+		s.logger.Printf("sync native session %s: %v", id, err)
 	}
 	if sess.ReadOnly != "" {
 		writeErr(w, 409, sess.ReadOnly)
@@ -1014,19 +1026,19 @@ func (s *Server) handleCreateMessage(w http.ResponseWriter, r *http.Request) {
 		req.Profile = agent.DefaultProfileFor(sess.Agent)
 	}
 	if !agent.ValidProfile(sess.Agent, req.Profile) {
-		writeErr(w, 400, "未知执行配置: "+req.Profile)
+		writeErr(w, 400, fmt.Sprintf("未知执行配置: %s", req.Profile))
 		return
 	}
 	agent, ok := s.agents.Get(sess.Agent)
 	if !ok || !agent.Available {
-		writeErr(w, 400, "Agent 不可用: "+sess.Agent)
+		writeErr(w, 400, fmt.Sprintf("Agent 不可用: %s", sess.Agent))
 		return
 	}
 	// Imported sessions take their cwd from the native transcript, which was
 	// never validated against allowed_roots. Re-check it here, otherwise a
 	// transcript recorded in /etc or /root would run the agent there.
 	if _, err := s.config().AllowedCWD(sess.Cwd); err != nil {
-		writeErr(w, 400, "会话目录不可用: "+err.Error())
+		writeErr(w, 400, fmt.Sprintf("会话目录不可用: %v", err))
 		return
 	}
 	if req.RequestID == "" {
@@ -1274,7 +1286,7 @@ func (s *Server) enqueueRetry(old *store.Task, note string) (*store.Task, error)
 	if err := s.store.CreateTask(t); err != nil {
 		return nil, err
 	}
-	nb, _ := json.Marshal(map[string]any{"text": note + "（原任务 " + old.ID + "）"})
+	nb, _ := json.Marshal(map[string]any{"text": fmt.Sprintf("%s（原任务 %s）", note, old.ID)})
 	_, _ = s.store.InsertEvent(&store.Event{SessionID: t.SessionID, TaskID: t.ID, TaskSeq: 0,
 		TS: util.NowRFC3339(), Kind: "notice", Payload: nb})
 	ub, _ := json.Marshal(map[string]any{"text": old.Prompt, "retry_of": old.ID})
@@ -1371,7 +1383,7 @@ func (s *Server) handleResolvePermission(w http.ResponseWriter, r *http.Request)
 		}
 		o, ok := detail.Option(req.Decision)
 		if !ok {
-			writeErr(w, 400, "无效的选项: "+req.Decision)
+			writeErr(w, 400, fmt.Sprintf("无效的选项: %s", req.Decision))
 			return
 		}
 		label, optDetail = o.Label, o.Detail
@@ -1610,7 +1622,7 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
-		writeErr(w, 400, "请求格式错误: "+err.Error())
+		writeErr(w, 400, fmt.Sprintf("请求格式错误: %v", err))
 		return err
 	}
 	return nil

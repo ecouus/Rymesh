@@ -6,6 +6,9 @@
   var $$ = function (sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); };
   var esc = window.MD.esc;
   var md = window.MD.render;
+  // T: the page's own text; TR: a finished message from a server (i18n.js).
+  var T = window.I18N.T;
+  var TR = window.I18N.TR;
 
   var LS = {
     get: function (k, d) { try { var v = localStorage.getItem("rymesh." + k); return v === null ? d : v; } catch (e) { return d; } },
@@ -63,6 +66,8 @@
     pageEvents: 400,
     olderEvents: 400,
     theme: LS.get("theme", "auto"),
+    // The language chosen in Settings ("" = the system's); set at start-up.
+    langPref: undefined,
     // Multi-device: the device whose agents the page shows ("local" = this
     // console's own machine), the device list, and approvals waiting on the
     // other devices.
@@ -102,10 +107,10 @@
     var d = new Date(iso);
     if (isNaN(d)) return "";
     var s = (Date.now() - d.getTime()) / 1000;
-    if (s < 45) return "刚刚";
-    if (s < 3600) return Math.floor(s / 60) + " 分钟前";
-    if (s < 86400) return Math.floor(s / 3600) + " 小时前";
-    if (s < 7 * 86400) return Math.floor(s / 86400) + " 天前";
+    if (s < 45) return T("刚刚");
+    if (s < 3600) return T("%d 分钟前", Math.floor(s / 60));
+    if (s < 86400) return T("%d 小时前", Math.floor(s / 3600));
+    if (s < 7 * 86400) return T("%d 天前", Math.floor(s / 86400));
     return d.getFullYear() + "/" + (d.getMonth() + 1) + "/" + d.getDate();
   }
 
@@ -113,7 +118,8 @@
     if (!iso) return "";
     var d = new Date(iso);
     if (isNaN(d)) return "";
-    return d.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    return d.toLocaleString(window.I18N.lang() === "en" ? "en-US" : "zh-CN",
+      { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
   }
 
   function dur(start, end) {
@@ -121,9 +127,9 @@
     var a = new Date(start).getTime();
     var b = end ? new Date(end).getTime() : Date.now();
     var s = Math.max(0, Math.round((b - a) / 1000));
-    if (s < 60) return s + " 秒";
-    if (s < 3600) return Math.floor(s / 60) + " 分 " + (s % 60) + " 秒";
-    return Math.floor(s / 3600) + " 小时 " + Math.floor((s % 3600) / 60) + " 分";
+    if (s < 60) return T("%d 秒", s);
+    if (s < 3600) return T("%d 分 %d 秒", Math.floor(s / 60), s % 60);
+    return T("%d 小时 %d 分", Math.floor(s / 3600), Math.floor((s % 3600) / 60));
   }
 
   function pretty(v) {
@@ -163,11 +169,11 @@
 
   function greeting() {
     var h = new Date().getHours();
-    if (h >= 5 && h < 11) return "早上好";
-    if (h >= 11 && h < 13) return "中午好";
-    if (h >= 13 && h < 18) return "下午好";
-    if (h >= 18 && h < 23) return "晚上好";
-    return "夜深了";
+    if (h >= 5 && h < 11) return T("早上好");
+    if (h >= 11 && h < 13) return T("中午好");
+    if (h >= 13 && h < 18) return T("下午好");
+    if (h >= 18 && h < 23) return T("晚上好");
+    return T("夜深了");
   }
 
   function dirName(p) {
@@ -176,11 +182,12 @@
 
   function statusLabel(st, ahead) {
     // "排队中" is only true when something is actually ahead of the task.
-    if (st === "pending") return ahead > 0 ? "排队中" : "启动中";
-    return ({
+    if (st === "pending") return ahead > 0 ? T("排队中") : T("启动中");
+    var label = ({
       running: "运行中", waiting_input: "等待审批",
       completed: "已完成", failed: "失败", cancelled: "已取消", interrupted: "已中断", idle: "空闲"
-    })[st] || st || "";
+    })[st];
+    return label ? T(label) : st || "";
   }
 
   var TOOL_LABELS = {
@@ -191,7 +198,7 @@
     web_search: "搜索网页", permissions: "额外权限", request_user_input: "提问", ExitPlanMode: "计划"
   };
 
-  function toolLabel(name) { return TOOL_LABELS[name] || name || "工具"; }
+  function toolLabel(name) { return TOOL_LABELS[name] ? T(TOOL_LABELS[name]) : name || T("工具"); }
 
   function toolSummary(p) {
     var input = p.input;
@@ -222,8 +229,8 @@
   function noDevice() { return S.hubOnly && S.node === "local"; }
 
   function nodeLabel(id) {
-    for (var i = 0; i < S.nodes.length; i++) if (S.nodes[i].id === id) return S.nodes[i].name;
-    return id === "local" ? "本机" : id;
+    for (var i = 0; i < S.nodes.length; i++) if (S.nodes[i].id === id) return T(S.nodes[i].name);
+    return id === "local" ? T("本机") : id;
   }
 
   function api(path, opts) {
@@ -245,11 +252,13 @@
       return (ct.indexOf("application/json") >= 0 ? res.json() : res.text()).then(function (data) {
         if (res.status === 401) {
           showLogin();
-          throw new Error("登录已过期");
+          throw new Error(T("登录已过期"));
         }
         if (!res.ok) {
           var msg = data && data.error ? data.error : "HTTP " + res.status;
-          var err = new Error(msg);
+          // The server's own text stays in err.raw for checks on it.
+          var err = new Error(TR(msg));
+          err.raw = msg;
           err.status = res.status;
           throw err;
         }
@@ -261,9 +270,11 @@
   // -------------------------------------------------------------------- toast
 
   var toastTimer = null;
+  // Text from a server is translated here too, so callers can pass an
+  // error or warning as it came.
   function toast(msg, isErr) {
     var t = $("#toast");
-    t.textContent = msg;
+    t.textContent = TR(msg);
     // Resetting the class also cancels a fade in progress: a toast already
     // showing takes the new text and a fresh timer; only a hidden one plays
     // its entrance again.
@@ -311,9 +322,9 @@
     return new Promise(function (resolve) {
       var body = openSheet(title, html +
         '<div class="row" style="margin-top:16px;gap:8px">' +
-        '<button class="btn ghost grow" data-act="no">取消</button>' +
+        '<button class="btn ghost grow" data-act="no">' + T("取消") + "</button>" +
         '<button class="btn ' + (danger ? "danger" : "primary") + ' grow" data-act="yes">' +
-        esc(okLabel || "确认") + "</button></div>");
+        esc(okLabel || T("确认")) + "</button></div>");
       body.addEventListener("click", function (e) {
         var b = e.target.closest("[data-act]");
         if (!b) return;
@@ -356,7 +367,7 @@
     S.nodeName = d.node_name || "";
     if (!cached) S.csrf = d.csrf || S.csrf;
     S.agents = d.agents || [];
-    S.profiles = d.profiles || {};
+    S.profiles = trProfiles(d.profiles || {});
     S.config = d.config || {};
     S.counts = d.counts || {};
     S.imports = d.import || {};
@@ -373,6 +384,21 @@
     }
   }
 
+  // Permission modes come from the device in its own wording.
+  function trProfiles(all) {
+    var out = {};
+    Object.keys(all).forEach(function (agent) {
+      out[agent] = (all[agent] || []).map(function (p) {
+        var c = {};
+        for (var k in p) c[k] = p[k];
+        c.label = TR(p.label);
+        c.detail = TR(p.detail);
+        return c;
+      });
+    });
+    return out;
+  }
+
   // Connection to the current device at start-up: "connecting", "failed"
   // or "ok". The welcome page shows it where recent conversations go.
   S.link = { state: "ok" };
@@ -383,7 +409,7 @@
     if (state === "connecting") {
       linkTimer = setInterval(function () {
         var el = $("#conn-elapsed");
-        if (el) el.textContent = Math.round((Date.now() - S.link.since) / 1000) + " 秒";
+        if (el) el.textContent = T("%d 秒", Math.round((Date.now() - S.link.since) / 1000));
       }, 1000);
     }
     if (S.route === "home" && S.booted) renderHome();
@@ -393,9 +419,9 @@
     var n = S.nodes.filter(function (x) { return x.id === S.node; })[0] || {};
     var name = esc(nodeLabel(S.node)), target = esc(n.target || "");
     if (S.link.state === "failed") {
-      return '<div class="conn-card failed"><div class="conn-title">无法连接 ' + name + "</div>" +
-        '<div class="conn-sub">' + esc(S.link.error || "连接失败") + "</div>" +
-        '<button class="btn sm" type="button" data-reboot="1">重试</button></div>';
+      return '<div class="conn-card failed"><div class="conn-title">' + T("无法连接 %s", name) + "</div>" +
+        '<div class="conn-sub">' + esc(TR(S.link.error) || T("连接失败")) + "</div>" +
+        '<button class="btn sm" type="button" data-reboot="1">' + T("重试") + "</button></div>";
     }
     var secs = Math.round((Date.now() - (S.link.since || Date.now())) / 1000);
     return '<div class="conn-card"><div class="conn-anim" aria-hidden="true">' +
@@ -403,8 +429,8 @@
       '<span class="conn-dots"><i></i><i></i><i></i></span>' +
       '<svg class="ico" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="7" rx="1.5"/><rect x="4" y="13" width="16" height="7" rx="1.5"/><path d="M8 7.5h.01M8 16.5h.01"/></svg>' +
       "</div>" +
-      '<div class="conn-title">正在连接 ' + name + "</div>" +
-      '<div class="conn-sub">通过 SSH' + (target ? " · " + target : "") + ' · <span id="conn-elapsed">' + secs + " 秒</span></div></div>";
+      '<div class="conn-title">' + T("正在连接 %s", name) + "</div>" +
+      '<div class="conn-sub">' + T("通过 SSH") + (target ? " · " + target : "") + ' · <span id="conn-elapsed">' + T("%d 秒", secs) + "</span></div></div>";
   }
 
   function boot() {
@@ -459,19 +485,19 @@
       // stays selected so the user can retry it or switch away.
       if (S.node !== "local" && shown) {
         setLink("failed", (err && err.message) || "");
-        if (S.route !== "home") toast("无法连接 " + nodeLabel(S.node), true);
+        if (S.route !== "home") toast(T("无法连接 %s", nodeLabel(S.node)), true);
         return;
       }
       setLink("ok");
       // An unreachable device must not lock the user out: fall back to this
       // console's own machine.
       if (S.node !== "local") {
-        toast((err && err.message) || "设备不可用", true);
+        toast((err && err.message) || T("设备不可用"), true);
         S.node = "local";
         LS.set("node", "local");
         return boot();
       }
-      showLogin(); toast(err.message || "无法连接服务", true);
+      showLogin(); toast(err.message || T("无法连接服务"), true);
     });
   }
   // Tell the hub which device is in use (it remembers it, and a retry
@@ -532,11 +558,11 @@
   function renderNodeSwitch() {
     var t = $("#sidebar-title");
     if (!t) return;
-    if (!multiNode()) { t.textContent = "对话"; return; }
+    if (!multiNode()) { t.textContent = T("对话"); return; }
     var cur = S.nodes.filter(function (n) { return n.id === S.node; })[0];
     t.innerHTML = '<button type="button" id="node-switch" class="node-switch" aria-haspopup="listbox" aria-expanded="false">' +
       '<span class="node-dot' + (cur && !cur.online ? " off" : "") + '"></span>' +
-      esc(cur ? cur.name : nodeLabel(S.node)) +
+      esc(cur ? T(cur.name) : nodeLabel(S.node)) +
       '<svg class="ico sm" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg></button>';
   }
 
@@ -544,11 +570,11 @@
     return S.nodes.map(function (n) {
       // An offline device can still be chosen: its welcome page says why it
       // cannot be reached and offers a retry.
-      var state = n.online ? (n.local ? "本机" : n.target || "") : n.checking ? "连接中…" : (n.error || "离线");
+      var state = n.online ? (n.local ? T("本机") : n.target || "") : n.checking ? T("连接中…") : (TR(n.error) || T("离线"));
       return '<button type="button" class="menu-item node-item' + (n.id === S.node ? " on" : "") +
         (n.online || n.checking ? "" : " offline") + '" data-node="' + esc(n.id) + '">' +
         '<span class="node-dot' + (n.online ? "" : " off") + '"></span>' +
-        '<span class="menu-text"><span class="menu-label">' + esc(n.name) + "</span>" +
+        '<span class="menu-text"><span class="menu-label">' + esc(T(n.name)) + "</span>" +
         '<span class="menu-detail">' + esc(state) + "</span></span>" +
         '<svg class="ico sm menu-check" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg></button>';
     }).join("");
@@ -556,11 +582,11 @@
 
   function settingsDeviceRows() {
     return S.nodes.map(function (n) {
-      var sub = n.local ? "本机" : (n.target || n.url || "");
+      var sub = n.local ? T("本机") : (n.target || n.url || "");
       return '<button type="button" class="g-row link" ' + (n.local ? 'data-node="local"' : 'data-device="' + esc(n.id) + '"') + ">" +
         '<span class="node-dot' + (n.online ? "" : " off") + '"></span>' +
-        '<span class="g-label">' + esc(n.name) + ' <span class="muted small">' + esc(sub) + "</span></span>" +
-        '<span class="g-value">' + esc(n.online ? (n.id === S.node ? "当前" : (n.version || "")) : (n.error || "离线")) + "</span></button>";
+        '<span class="g-label">' + esc(T(n.name)) + ' <span class="muted small">' + esc(sub) + "</span></span>" +
+        '<span class="g-value">' + esc(n.online ? (n.id === S.node ? T("当前") : (n.version || "")) : (TR(n.error) || T("离线"))) + "</span></button>";
     }).join("");
   }
 
@@ -590,7 +616,7 @@
   }
 
   function copyText(text, msg) {
-    writeClipboard(text).then(function (ok) { toast(ok ? msg || "已复制" : "复制失败", !ok); });
+    writeClipboard(text).then(function (ok) { toast(ok ? msg || T("已复制") : T("复制失败"), !ok); });
   }
 
   function canShare() { return !!(androidNative || navigator.share); }
@@ -676,8 +702,8 @@
         '<form class="ask-form"><label class="field"><span>' + esc(o.label || "") + "</span>" +
         '<input name="v" type="' + (o.type || "text") + '" value="' + esc(o.value || "") + '" placeholder="' + esc(o.placeholder || "") +
         '" autocomplete="off" autocapitalize="off" spellcheck="false"></label>' +
-        '<div class="row" style="gap:8px"><button type="button" class="btn ghost grow" data-ov-close="1">取消</button>' +
-        '<button type="submit" class="btn primary grow">' + esc(o.ok || "确定") + "</button></div></form>");
+        '<div class="row" style="gap:8px"><button type="button" class="btn ghost grow" data-ov-close="1">' + T("取消") + "</button>" +
+        '<button type="submit" class="btn primary grow">' + esc(o.ok || T("确定")) + "</button></div></form>");
       var out = null;
       ov.onClose(function () { resolve(out); });
       var input = ov.body.querySelector("input");
@@ -727,16 +753,16 @@
     var items = [];
     (d.keys || []).forEach(function (k) {
       items.push({ value: "id:" + k.id, label: k.name, sub: k.type.replace("ssh-", "") + " · " + shortFp(k.fingerprint) +
-        (k.used_by.length ? " · 用于 " + k.used_by.join("、") : ""), selected: current === "id:" + k.id });
+        (k.used_by.length ? " · " + T("用于 %s", k.used_by.join(T("、"))) : ""), selected: current === "id:" + k.id });
     });
     var files = (d.detected || []).filter(function (k) { return !k.imported; });
-    if (files.length) items.push({ section: "~/.ssh 中的密钥" });
+    if (files.length) items.push({ section: T("~/.ssh 中的密钥") });
     files.forEach(function (k) {
-      items.push({ value: "path:" + k.path, label: k.name, tag: k.encrypted ? "有密码短语" : "",
-        sub: shortFp(k.fingerprint) + (k.encrypted ? " · 使用前需导入" : ""), selected: current === "path:" + k.path });
+      items.push({ value: "path:" + k.path, label: k.name, tag: k.encrypted ? T("有密码短语") : "",
+        sub: shortFp(k.fingerprint) + (k.encrypted ? " · " + T("使用前需导入") : ""), selected: current === "path:" + k.path });
     });
-    if (d.agent) items.push({ value: "agent", label: "ssh-agent", sub: "使用 ssh-agent 里已加载的密钥", selected: current === "agent" });
-    if (withNew) items.push({ value: "new", label: "生成新密钥…", action: true });
+    if (d.agent) items.push({ value: "agent", label: "ssh-agent", sub: T("使用 ssh-agent 里已加载的密钥"), selected: current === "agent" });
+    if (withNew) items.push({ value: "new", label: T("生成新密钥…"), action: true });
     return items;
   }
 
@@ -746,7 +772,7 @@
     var k = (d.keys || []).filter(function (x) { return "id:" + x.id === v; })[0];
     if (k) return k.name;
     var f = (d.detected || []).filter(function (x) { return "path:" + x.path === v; })[0];
-    return f ? f.name + "（~/.ssh）" : "";
+    return f ? T("%s（~/.ssh）", f.name) : "";
   }
 
   function keyValueOf(dev) {
@@ -762,12 +788,12 @@
 
   // generateKeyFlow asks for a name and creates a key in the vault.
   function generateKeyFlow() {
-    var def = (S.nodeName || "设备") + "-" + new Date().toISOString().slice(5, 10).replace("-", "");
-    return askText("生成新密钥", { label: "名称（便于在服务器上认出它）", value: def, ok: "生成",
-      note: "生成一把 ed25519 密钥，私钥保存在本应用的数据库里。" }).then(function (name) {
+    var def = (S.nodeName ? T(S.nodeName) : T("设备")) + "-" + new Date().toISOString().slice(5, 10).replace("-", "");
+    return askText(T("生成新密钥"), { label: T("名称（便于在服务器上认出它）"), value: def, ok: T("生成"),
+      note: T("生成一把 ed25519 密钥，私钥保存在本应用的数据库里。") }).then(function (name) {
       if (name === null) return null;
       return api("/api/keys/generate", { method: "POST", body: { name: name.trim() }, hub: true }).then(function (d) {
-        toast("已生成密钥「" + d.key.name + "」");
+        toast(T("已生成密钥「%s」", d.key.name));
         return d.key;
       });
     }).catch(function (e) { toast(e.message, true); return null; });
@@ -778,10 +804,10 @@
   function importKeyFlow(k) {
     function go(pass) {
       return api("/api/keys/import", { method: "POST", hub: true, body: { path: k.path, passphrase: pass || "" } })
-        .then(function (d) { toast("已导入「" + d.key.name + "」"); return d.key; });
+        .then(function (d) { toast(T("已导入「%s」", d.key.name)); return d.key; });
     }
-    var first = k.encrypted ? askText("导入 " + k.name, { label: "密码短语", type: "password", ok: "导入",
-      note: "只用这一次：解开后由本应用保存，以后不再需要密码短语。" }).then(function (p) { return p === null ? null : go(p); }) : go("");
+    var first = k.encrypted ? askText(T("导入 %s", k.name), { label: T("密码短语"), type: "password", ok: T("导入"),
+      note: T("只用这一次：解开后由本应用保存，以后不再需要密码短语。") }).then(function (p) { return p === null ? null : go(p); }) : go("");
     return first.catch(function (e) { toast(e.message, true); return null; });
   }
 
@@ -789,16 +815,16 @@
   // key text (the add-server form, for a key the user already knows).
   function pubBox(pub, fresh, compact) {
     if (compact) {
-      return '<div class="key-card compact"><span class="small muted grow">公钥</span>' +
-        '<button type="button" class="btn sm" data-copy-text="' + esc(pub) + '">复制</button>' +
-        (canShare() ? '<button type="button" class="btn sm" data-share-text="' + esc(pub) + '">分享…</button>' : "") + "</div>";
+      return '<div class="key-card compact"><span class="small muted grow">' + T("公钥") + "</span>" +
+        '<button type="button" class="btn sm" data-copy-text="' + esc(pub) + '">' + T("复制") + "</button>" +
+        (canShare() ? '<button type="button" class="btn sm" data-share-text="' + esc(pub) + '">' + T("分享…") + "</button>" : "") + "</div>";
     }
     return '<div class="key-card' + (fresh ? " fresh" : "") + '">' +
-      (fresh ? '<div class="key-card-head">新密钥已生成</div>' : "") +
-      '<div class="small muted">公钥（可以公开）：</div><pre class="mono">' + esc(pub) + "</pre>" +
-      '<div class="row" style="gap:8px"><button type="button" class="btn sm grow" data-copy-text="' + esc(pub) + '">复制公钥</button>' +
-      (canShare() ? '<button type="button" class="btn sm grow" data-share-text="' + esc(pub) + '">分享…</button>' : "") +
-      "</div>" + (fresh ? '<div class="small muted" style="margin-top:8px">连接时可以用服务器密码自动安装它，或者手动加入服务器的 <code>~/.ssh/authorized_keys</code>。</div>' : "") +
+      (fresh ? '<div class="key-card-head">' + T("新密钥已生成") + "</div>" : "") +
+      '<div class="small muted">' + T("公钥（可以公开）：") + '</div><pre class="mono">' + esc(pub) + "</pre>" +
+      '<div class="row" style="gap:8px"><button type="button" class="btn sm grow" data-copy-text="' + esc(pub) + '">' + T("复制公钥") + "</button>" +
+      (canShare() ? '<button type="button" class="btn sm grow" data-share-text="' + esc(pub) + '">' + T("分享…") + "</button>" : "") +
+      "</div>" + (fresh ? '<div class="small muted" style="margin-top:8px">' + T("连接时可以用服务器密码自动安装它，或者手动加入服务器的 <code>~/.ssh/authorized_keys</code>。") + "</div>" : "") +
       "</div>";
   }
 
@@ -806,30 +832,30 @@
     var c = e.target.closest("[data-copy-text]");
     if (c) { copyText(c.getAttribute("data-copy-text")); return; }
     var s = e.target.closest("[data-share-text]");
-    if (s) shareText(s.getAttribute("data-share-text"), "公钥");
+    if (s) shareText(s.getAttribute("data-share-text"), T("公钥"));
   });
 
   function addDeviceSheet() {
-    var body = openSheet("添加服务器",
+    var body = openSheet(T("添加服务器"),
       '<div class="stack device-form">' +
-      '<button type="button" class="g-row link pick-btn" id="dev-import" hidden><span class="g-label">从 ~/.ssh/config 填入</span><span class="g-value"></span></button>' +
-      '<label class="field"><span>名称</span><input id="dev-name" placeholder="例如 生产服务器" maxlength="60"></label>' +
-      '<div class="row"><label class="field grow"><span>主机</span><input id="dev-host" class="mono" placeholder="IP 或域名" autocapitalize="off" spellcheck="false"></label>' +
-      '<label class="field" style="width:84px"><span>SSH 端口</span><input id="dev-port" class="mono" inputmode="numeric" value="22"></label></div>' +
-      '<label class="field"><span>用户</span><input id="dev-user" class="mono" value="root" autocapitalize="off" spellcheck="false"></label>' +
-      '<div class="field"><span>登录方式</span><span class="seg auth-seg" role="radiogroup">' +
-      '<button type="button" class="on" data-auth="key" role="radio" aria-checked="true">密钥</button>' +
-      '<button type="button" data-auth="password" role="radio" aria-checked="false">密码</button></span></div>' +
-      '<div class="field" id="dev-key-field"><span>认证密钥</span><button type="button" class="pick-btn input-like" id="dev-key"><span class="t"></span>' +
+      '<button type="button" class="g-row link pick-btn" id="dev-import" hidden><span class="g-label">' + T("从 ~/.ssh/config 填入") + '</span><span class="g-value"></span></button>' +
+      '<label class="field"><span>' + T("名称") + '</span><input id="dev-name" placeholder="' + esc(T("例如 生产服务器")) + '" maxlength="60"></label>' +
+      '<div class="row"><label class="field grow"><span>' + T("主机") + '</span><input id="dev-host" class="mono" placeholder="' + esc(T("IP 或域名")) + '" autocapitalize="off" spellcheck="false"></label>' +
+      '<label class="field" style="width:84px"><span>' + T("SSH 端口") + '</span><input id="dev-port" class="mono" inputmode="numeric" value="22"></label></div>' +
+      '<label class="field"><span>' + T("用户") + '</span><input id="dev-user" class="mono" value="root" autocapitalize="off" spellcheck="false"></label>' +
+      '<div class="field"><span>' + T("登录方式") + '</span><span class="seg auth-seg" role="radiogroup">' +
+      '<button type="button" class="on" data-auth="key" role="radio" aria-checked="true">' + T("密钥") + "</button>" +
+      '<button type="button" data-auth="password" role="radio" aria-checked="false">' + T("密码") + "</button></span></div>" +
+      '<div class="field" id="dev-key-field"><span>' + T("认证密钥") + '</span><button type="button" class="pick-btn input-like" id="dev-key"><span class="t"></span>' +
       '<svg class="ico sm" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg></button></div>' +
       '<div id="dev-pub"></div>' +
-      '<label class="field" id="dev-pw-field" hidden><span>服务器登录密码</span>' +
+      '<label class="field" id="dev-pw-field" hidden><span>' + T("服务器登录密码") + "</span>" +
       '<input id="dev-pw" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false"></label>' +
-      '<p class="small muted" id="dev-pw-note" hidden style="margin:0">适用于只允许密码登录的服务器。密码加密保存在本应用里，' +
-      '每次连接时使用，网页和导出文件之外的地方都看不到它。服务器支持密钥时，用密钥更安全。</p>' +
-      '<details class="fold"><summary>高级</summary><label class="field" style="margin-top:8px"><span>节点端口（服务器本机回环端口）</span>' +
+      '<p class="small muted" id="dev-pw-note" hidden style="margin:0">' +
+      T("适用于只允许密码登录的服务器。密码加密保存在本应用里，每次连接时使用，网页和导出文件之外的地方都看不到它。服务器支持密钥时，用密钥更安全。") + "</p>" +
+      '<details class="fold"><summary>' + T("高级") + '</summary><label class="field" style="margin-top:8px"><span>' + T("节点端口（服务器本机回环端口）") + "</span>" +
       '<input id="dev-rport" class="mono" inputmode="numeric" value="8899"></label></details>' +
-      '<button id="dev-save" class="btn primary block" type="button">连接</button>' +
+      '<button id="dev-save" class="btn primary block" type="button">' + T("连接") + "</button>" +
       '<div id="dev-flow"></div></div>');
     var keys = { keys: [], detected: [] }, chosen = "", fresh = "", auth = "key";
     body.querySelector(".auth-seg").addEventListener("click", function (e) {
@@ -848,7 +874,7 @@
     function renderKey() {
       var label = keyLabel(keys, chosen);
       var b = $("#dev-key");
-      b.querySelector(".t").textContent = label || "选择或生成密钥";
+      b.querySelector(".t").textContent = label || T("选择或生成密钥");
       b.classList.toggle("placeholder", !label);
       var k = (keys.keys || []).filter(function (x) { return "id:" + x.id === chosen; })[0] ||
         (keys.detected || []).filter(function (x) { return "path:" + x.path === chosen; })[0];
@@ -873,7 +899,7 @@
       if (hosts.length) $("#dev-import").hidden = false;
     }).catch(function () {});
     $("#dev-import").addEventListener("click", function () {
-      pickList("从 ~/.ssh/config 填入", hosts.map(function (h, i) {
+      pickList(T("从 ~/.ssh/config 填入"), hosts.map(function (h, i) {
         return { value: i, label: h.alias, sub: (h.user ? h.user + "@" : "") + h.host + (h.port && h.port !== 22 ? ":" + h.port : "") };
       })).then(function (i) {
         var h = hosts[i];
@@ -892,7 +918,7 @@
       });
     });
     $("#dev-key").addEventListener("click", function () {
-      pickList("认证密钥", keyChoices(keys, chosen, true)).then(function (v) {
+      pickList(T("认证密钥"), keyChoices(keys, chosen, true)).then(function (v) {
         if (v === "new") {
           return generateKeyFlow().then(function (k) {
             if (!k) return;
@@ -911,8 +937,8 @@
     });
     $("#dev-save").addEventListener("click", function () {
       var pw = $("#dev-pw").value;
-      if (auth === "key" && !chosen) { toast("请先选择或生成一把密钥", true); return; }
-      if (auth === "password" && !pw) { toast("请输入服务器登录密码", true); $("#dev-pw").focus(); return; }
+      if (auth === "key" && !chosen) { toast(T("请先选择或生成一把密钥"), true); return; }
+      if (auth === "password" && !pw) { toast(T("请输入服务器登录密码"), true); $("#dev-pw").focus(); return; }
       var req = Object.assign({
         transport: "ssh", name: $("#dev-name").value.trim(), ssh_host: $("#dev-host").value.trim(),
         ssh_port: parseInt($("#dev-port").value, 10) || 22, ssh_user: $("#dev-user").value.trim(),
@@ -933,15 +959,15 @@
   // inside a sheet.
   function deviceFlow(id, box) {
     var path = "/api/devices/" + encodeURIComponent(id);
-    box.innerHTML = '<div class="flow-step"><span class="spinner"></span> 正在连接…</div>';
+    box.innerHTML = '<div class="flow-step"><span class="spinner"></span> ' + T("正在连接…") + "</div>";
     api(path + "/test", { method: "POST", body: {}, hub: true }).then(function (r) {
       if (r.stage === "hostkey") {
         var hk = r.hostkey;
         box.innerHTML = '<div class="flow-step">' +
-          (hk.mismatch ? '<div class="error-block">警告：这台主机的密钥和 ~/.ssh/known_hosts 里记录的不一致。除非你确认服务器重装过，否则不要信任。</div>' : "") +
-          "<div>首次连接，请核对服务器的主机指纹：</div><pre class=\"mono fp\">" + esc(hk.fingerprint) + "</pre>" +
-          '<div class="small muted">可在服务器上运行 <code>ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</code> 对照。</div>' +
-          '<div class="row" style="margin-top:12px"><button class="btn primary grow" type="button" data-trust="1">信任并继续</button></div></div>';
+          (hk.mismatch ? '<div class="error-block">' + T("警告：这台主机的密钥和 ~/.ssh/known_hosts 里记录的不一致。除非你确认服务器重装过，否则不要信任。") + "</div>" : "") +
+          "<div>" + T("首次连接，请核对服务器的主机指纹：") + "</div><pre class=\"mono fp\">" + esc(hk.fingerprint) + "</pre>" +
+          '<div class="small muted">' + T("可在服务器上运行 <code>ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</code> 对照。") + "</div>" +
+          '<div class="row" style="margin-top:12px"><button class="btn primary grow" type="button" data-trust="1">' + T("信任并继续") + "</button></div></div>";
         box.querySelector("[data-trust]").addEventListener("click", function () {
           this.disabled = true;
           api(path + "/trust", { method: "POST", body: { key: hk.key }, hub: true })
@@ -955,19 +981,19 @@
         return;
       }
       if (r.stage === "error") {
-        box.innerHTML = '<div class="flow-step"><div class="error-block">' + esc(r.error) + "</div>" +
-          '<button class="btn block" type="button" data-retry="1">重试</button></div>';
+        box.innerHTML = '<div class="flow-step"><div class="error-block">' + esc(TR(r.error)) + "</div>" +
+          '<button class="btn block" type="button" data-retry="1">' + T("重试") + "</button></div>";
         box.querySelector("[data-retry]").addEventListener("click", function () { deviceFlow(id, box); });
         return;
       }
       var online = r.node && r.node.online;
       box.innerHTML = '<div class="flow-step"><div class="group">' +
-        '<div class="g-row"><span class="g-label">连接</span><span class="g-value">SSH 已连接 · ' + esc(r.platform || "") + "</span></div>" +
-        '<div class="g-row"><span class="g-label">节点</span><span class="g-value">' +
-        esc(r.installed ? r.installed + (online ? " · 运行中" : " · 未运行") : "未安装") + "</span></div></div>" +
+        '<div class="g-row"><span class="g-label">' + T("连接") + '</span><span class="g-value">' + T("SSH 已连接 · %s", esc(r.platform || "")) + "</span></div>" +
+        '<div class="g-row"><span class="g-label">' + T("节点") + '</span><span class="g-value">' +
+        esc(r.installed ? r.installed + " · " + (online ? T("运行中") : T("未运行")) : T("未安装")) + "</span></div></div>" +
         '<button class="btn ' + (online ? "" : "primary ") + 'block" type="button" data-deploy="1" style="margin-top:12px">' +
-        (r.installed ? "升级 / 重新部署节点" : "部署节点") + "</button>" +
-        (online && S.node !== id ? '<button class="btn primary block" type="button" data-use="1" style="margin-top:8px">切换到这台设备</button>' : "") +
+        (r.installed ? T("升级 / 重新部署节点") : T("部署节点")) + "</button>" +
+        (online && S.node !== id ? '<button class="btn primary block" type="button" data-use="1" style="margin-top:8px">' + T("切换到这台设备") + "</button>" : "") +
         '<pre class="deploy-log mono" hidden></pre></div>';
       var log = box.querySelector(".deploy-log");
       var use = box.querySelector("[data-use]");
@@ -975,9 +1001,9 @@
       box.querySelector("[data-deploy]").addEventListener("click", function () {
         var b = this; b.disabled = true; log.hidden = false; log.textContent = "";
         postStream(path + "/deploy", function (ev, d) {
-          if (ev === "progress") log.textContent += d.text + "\n";
-          else if (ev === "failed") { log.textContent += "✕ " + d.error + "\n"; b.disabled = false; }
-          else if (ev === "done") { log.textContent += "✓ 部署完成\n"; loadNodes().then(function () { deviceFlow(id, box); }); }
+          if (ev === "progress") log.textContent += TR(d.text) + "\n";
+          else if (ev === "failed") { log.textContent += "✕ " + TR(d.error) + "\n"; b.disabled = false; }
+          else if (ev === "done") { log.textContent += "✓ " + T("部署完成") + "\n"; loadNodes().then(function () { deviceFlow(id, box); }); }
         }).catch(function (e) { log.textContent += "✕ " + e.message + "\n"; b.disabled = false; });
       });
     }).catch(function (e) {
@@ -994,43 +1020,43 @@
       return;
     }
     if (!r.public) {
-      box.innerHTML = '<div class="flow-step"><div class="error-block">服务器不接受 ssh-agent 里的密钥。</div>' +
-        '<button class="btn block" type="button" data-retry="1">重试</button></div>';
+      box.innerHTML = '<div class="flow-step"><div class="error-block">' + T("服务器不接受 ssh-agent 里的密钥。") + "</div>" +
+        '<button class="btn block" type="button" data-retry="1">' + T("重试") + "</button></div>";
       box.querySelector("[data-retry]").addEventListener("click", function () { deviceFlow(id, box); });
       return;
     }
     var cmd = "mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '" + r.public + "' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys";
     box.innerHTML = '<div class="flow-step">' +
-      '<div class="notice">服务器还不认识这把密钥。用下面任一方式把公钥放到服务器上：</div>' +
-      '<div class="choice-card"><div class="choice-title">用服务器密码自动安装</div>' +
-      '<form data-install="1"><input class="input" type="password" name="pw" placeholder="服务器登录密码" autocomplete="off">' +
-      '<button class="btn primary block" type="submit" style="margin-top:8px">安装公钥并连接</button></form>' +
-      '<div class="small muted" style="margin-top:6px">密码只用于这一次连接，不会保存；需要服务器允许密码登录。</div></div>' +
-      '<div class="choice-card"><div class="choice-title">手动添加</div>' +
-      '<div class="small muted">在服务器上执行这条命令（或把公钥加入 <code>~/.ssh/authorized_keys</code>）：</div>' +
+      '<div class="notice">' + T("服务器还不认识这把密钥。用下面任一方式把公钥放到服务器上：") + "</div>" +
+      '<div class="choice-card"><div class="choice-title">' + T("用服务器密码自动安装") + "</div>" +
+      '<form data-install="1"><input class="input" type="password" name="pw" placeholder="' + esc(T("服务器登录密码")) + '" autocomplete="off">' +
+      '<button class="btn primary block" type="submit" style="margin-top:8px">' + T("安装公钥并连接") + "</button></form>" +
+      '<div class="small muted" style="margin-top:6px">' + T("密码只用于这一次连接，不会保存；需要服务器允许密码登录。") + "</div></div>" +
+      '<div class="choice-card"><div class="choice-title">' + T("手动添加") + "</div>" +
+      '<div class="small muted">' + T("在服务器上执行这条命令（或把公钥加入 <code>~/.ssh/authorized_keys</code>）：") + "</div>" +
       '<pre class="mono">' + esc(cmd) + "</pre>" +
-      '<div class="row" style="gap:8px"><button type="button" class="btn sm grow" data-copy-text="' + esc(cmd) + '">复制命令</button>' +
-      '<button type="button" class="btn sm grow" data-copy-text="' + esc(r.public) + '">复制公钥</button>' +
-      (canShare() ? '<button type="button" class="btn sm grow" data-share-text="' + esc(r.public) + '">分享…</button>' : "") + "</div>" +
-      '<button class="btn block" type="button" data-retry="1" style="margin-top:10px">已添加，重新连接</button></div>' +
-      '<div class="choice-card"><div class="choice-title">改用密码登录</div>' +
-      '<div class="small muted">服务器不允许密钥登录时选这个：密码加密保存在本应用里，每次连接时使用。</div>' +
-      '<button class="btn block" type="button" data-use-password="1" style="margin-top:8px">输入密码…</button></div></div>';
+      '<div class="row" style="gap:8px"><button type="button" class="btn sm grow" data-copy-text="' + esc(cmd) + '">' + T("复制命令") + "</button>" +
+      '<button type="button" class="btn sm grow" data-copy-text="' + esc(r.public) + '">' + T("复制公钥") + "</button>" +
+      (canShare() ? '<button type="button" class="btn sm grow" data-share-text="' + esc(r.public) + '">' + T("分享…") + "</button>" : "") + "</div>" +
+      '<button class="btn block" type="button" data-retry="1" style="margin-top:10px">' + T("已添加，重新连接") + "</button></div>" +
+      '<div class="choice-card"><div class="choice-title">' + T("改用密码登录") + "</div>" +
+      '<div class="small muted">' + T("服务器不允许密钥登录时选这个：密码加密保存在本应用里，每次连接时使用。") + "</div>" +
+      '<button class="btn block" type="button" data-use-password="1" style="margin-top:8px">' + T("输入密码…") + "</button></div></div>";
     box.querySelector("[data-retry]").addEventListener("click", function () { deviceFlow(id, box); });
     box.querySelector("[data-use-password]").addEventListener("click", function () { passwordStep(id, box, ""); });
     box.querySelector("[data-install]").addEventListener("submit", function (e) {
       e.preventDefault();
       var pw = this.pw.value, b = this.querySelector("button");
       if (!pw) { this.pw.focus(); return; }
-      b.disabled = true; b.textContent = "正在安装…";
+      b.disabled = true; b.textContent = T("正在安装…");
       var form = this;
       api(path + "/install-key", { method: "POST", hub: true, body: { password: pw } }).then(function () {
         form.pw.value = "";
-        toast("公钥已安装");
+        toast(T("公钥已安装"));
         deviceFlow(id, box);
       }).catch(function (err) {
         toast(err.message, true);
-        b.disabled = false; b.textContent = "安装公钥并连接";
+        b.disabled = false; b.textContent = T("安装公钥并连接");
       });
     });
   }
@@ -1040,39 +1066,39 @@
   function passwordStep(id, box, message) {
     var path = "/api/devices/" + encodeURIComponent(id);
     box.innerHTML = '<div class="flow-step">' +
-      (message ? '<div class="error-block">' + esc(message) + "</div>" : "") +
-      '<form data-password="1"><label class="field"><span>服务器登录密码</span>' +
+      (message ? '<div class="error-block">' + esc(TR(message)) + "</div>" : "") +
+      '<form data-password="1"><label class="field"><span>' + T("服务器登录密码") + "</span>" +
       '<input class="input" type="password" name="pw" autocomplete="new-password" autocapitalize="off" spellcheck="false"></label>' +
-      '<button class="btn primary block" type="submit" style="margin-top:8px">保存并连接</button></form>' +
-      '<div class="small muted" style="margin-top:6px">密码加密保存在本应用里，用于以后每次连接。</div></div>';
+      '<button class="btn primary block" type="submit" style="margin-top:8px">' + T("保存并连接") + "</button></form>" +
+      '<div class="small muted" style="margin-top:6px">' + T("密码加密保存在本应用里，用于以后每次连接。") + "</div></div>";
     var form = box.querySelector("[data-password]");
     setTimeout(function () { form.pw.focus(); }, 30);
     form.addEventListener("submit", function (e) {
       e.preventDefault();
       var pw = form.pw.value, b = form.querySelector("button");
       if (!pw) { form.pw.focus(); return; }
-      b.disabled = true; b.textContent = "正在连接…";
+      b.disabled = true; b.textContent = T("正在连接…");
       api(path, { method: "PATCH", hub: true, body: { password: pw } }).then(function () {
         form.pw.value = "";
         deviceFlow(id, box);
       }).catch(function (err) {
         toast(err.message, true);
-        b.disabled = false; b.textContent = "保存并连接";
+        b.disabled = false; b.textContent = T("保存并连接");
       });
     });
   }
 
   function deviceSheet(id) {
     var n = S.nodes.filter(function (x) { return x.id === id; })[0] || { id: id, name: id };
-    var body = openSheet(n.name,
+    var body = openSheet(T(n.name),
       '<div class="stack"><div class="group">' +
-      '<div class="g-row"><span class="g-label">地址</span><span class="g-value mono">' + esc(n.target || n.url || "") + "</span></div>" +
-      '<div class="g-row"><span class="g-label">状态</span><span class="g-value">' + esc(n.online ? "在线 " + (n.version || "") : (n.error || "离线")) + "</span></div>" +
-      '<button type="button" class="g-row link" data-dev-key="1" hidden><span class="g-label">认证密钥</span><span class="g-value"></span></button>' +
-      '<button type="button" class="g-row link" data-dev-pw="1" hidden><span class="g-label">登录密码</span><span class="g-value"></span></button></div>' +
+      '<div class="g-row"><span class="g-label">' + T("地址") + '</span><span class="g-value mono">' + esc(n.target || n.url || "") + "</span></div>" +
+      '<div class="g-row"><span class="g-label">' + T("状态") + '</span><span class="g-value">' + esc(n.online ? T("在线 %s", n.version || "") : (TR(n.error) || T("离线"))) + "</span></div>" +
+      '<button type="button" class="g-row link" data-dev-key="1" hidden><span class="g-label">' + T("认证密钥") + '</span><span class="g-value"></span></button>' +
+      '<button type="button" class="g-row link" data-dev-pw="1" hidden><span class="g-label">' + T("登录密码") + '</span><span class="g-value"></span></button></div>' +
       '<div id="dev-flow"></div>' +
-      '<button class="btn danger block" type="button" data-del-device="1">删除设备</button>' +
-      '<p class="small muted">删除只移除本客户端里的记录，不会卸载服务器上的节点。</p></div>');
+      '<button class="btn danger block" type="button" data-del-device="1">' + T("删除设备") + "</button>" +
+      '<p class="small muted">' + T("删除只移除本客户端里的记录，不会卸载服务器上的节点。") + "</p></div>");
     deviceFlow(id, $("#dev-flow"));
     Promise.all([api("/api/devices", { hub: true }), api("/api/keys", { hub: true })]).then(function (res) {
       var dev = (res[0].devices || []).filter(function (x) { return x.id === id; })[0];
@@ -1080,31 +1106,31 @@
       if (!dev || dev.transport !== "ssh" || !row) return;
       var cur = keyValueOf(dev);
       row.hidden = false;
-      row.querySelector(".g-value").textContent = keyLabel(keys, cur) || "未设置";
+      row.querySelector(".g-value").textContent = keyLabel(keys, cur) || T("未设置");
       var pwRow = body.querySelector("[data-dev-pw]");
       pwRow.hidden = false;
-      pwRow.querySelector(".g-value").textContent = dev.password_auth ? "已保存" : "未使用";
+      pwRow.querySelector(".g-value").textContent = dev.password_auth ? T("已保存") : T("未使用");
       pwRow.addEventListener("click", function () {
         var choice = dev.password_auth
-          ? pickList("登录密码", [{ value: "change", label: "更换密码…" }].concat(cur
-            ? [{ value: "off", label: "不再使用密码", sub: "只用密钥登录，并删除保存的密码" }] : []))
+          ? pickList(T("登录密码"), [{ value: "change", label: T("更换密码…") }].concat(cur
+            ? [{ value: "off", label: T("不再使用密码"), sub: T("只用密钥登录，并删除保存的密码") }] : []))
           : Promise.resolve("change");
         choice.then(function (v) {
           if (v === "off") {
             return api("/api/devices/" + encodeURIComponent(id), { method: "PATCH", hub: true, body: { password_auth: false } })
-              .then(function () { toast("已删除保存的密码"); deviceSheet(id); });
+              .then(function () { toast(T("已删除保存的密码")); deviceSheet(id); });
           }
           if (v !== "change") return;
-          return askText(dev.password_auth ? "更换登录密码" : "使用密码登录", { label: "服务器登录密码", type: "password", ok: "保存",
-            note: "密码加密保存在本应用里，每次连接时使用；有密钥时先用密钥。" }).then(function (pw) {
+          return askText(dev.password_auth ? T("更换登录密码") : T("使用密码登录"), { label: T("服务器登录密码"), type: "password", ok: T("保存"),
+            note: T("密码加密保存在本应用里，每次连接时使用；有密钥时先用密钥。") }).then(function (pw) {
             if (!pw) return;
             return api("/api/devices/" + encodeURIComponent(id), { method: "PATCH", hub: true, body: { password: pw } })
-              .then(function () { toast("已保存密码"); deviceSheet(id); });
+              .then(function () { toast(T("已保存密码")); deviceSheet(id); });
           });
         }).catch(function (e) { toast(e.message, true); });
       });
       row.addEventListener("click", function () {
-        pickList("认证密钥", keyChoices(keys, cur, true)).then(function (v) {
+        pickList(T("认证密钥"), keyChoices(keys, cur, true)).then(function (v) {
           if (v === "new") return generateKeyFlow().then(function (k) { return k && "id:" + k.id; });
           var f = (keys.detected || []).filter(function (x) { return "path:" + x.path === v; })[0];
           if (f && f.encrypted) return importKeyFlow(f).then(function (k) { return k && "id:" + k.id; });
@@ -1112,17 +1138,17 @@
         }).then(function (v) {
           if (!v || v === cur) return;
           return api("/api/devices/" + encodeURIComponent(id), { method: "PATCH", hub: true, body: keyFields(v) })
-            .then(function () { toast("已更换密钥"); deviceSheet(id); });
+            .then(function () { toast(T("已更换密钥")); deviceSheet(id); });
         }).catch(function (e) { toast(e.message, true); });
       });
     }).catch(function () {});
     body.querySelector("[data-del-device]").addEventListener("click", function () {
-      confirmSheet("删除设备「" + n.name + "」？", "<p>之后可以重新添加；服务器上的节点和会话不受影响。</p>", "删除", true).then(function (ok) {
+      confirmSheet(T("删除设备「%s」？", T(n.name)), "<p>" + T("之后可以重新添加；服务器上的节点和会话不受影响。") + "</p>", T("删除"), true).then(function (ok) {
         if (!ok) return;
         api("/api/devices/" + encodeURIComponent(id), { method: "DELETE", body: {}, hub: true }).then(function () {
           if (S.node === id) switchNode("local");
           loadNodes().then(function () { if (S.route === "settings") renderSettings(); });
-          toast("已删除");
+          toast(T("已删除"));
         }).catch(function (e) { toast(e.message, true); });
       });
     });
@@ -1131,24 +1157,24 @@
   // ------------------------------------------------------- keys and transfer
 
   function keysSheet() {
-    var body = openSheet("密钥", '<div class="empty"><span class="spinner"></span></div>');
+    var body = openSheet(T("密钥"), '<div class="empty"><span class="spinner"></span></div>');
     api("/api/keys", { hub: true }).then(function (d) {
       var mine = (d.keys || []).map(function (k) {
         return '<button type="button" class="g-row link" data-key="' + esc(k.id) + '"><span class="g-label">' + esc(k.name) +
           '<span class="g-sub">' + esc(k.type.replace("ssh-", "") + " · " + shortFp(k.fingerprint)) +
-          (k.used_by.length ? " · 用于 " + esc(k.used_by.join("、")) : "") + "</span></span></button>";
+          (k.used_by.length ? " · " + esc(T("用于 %s", k.used_by.join(T("、")))) : "") + "</span></span></button>";
       }).join("");
       var files = (d.detected || []).filter(function (k) { return !k.imported; }).map(function (k, i) {
         return '<div class="g-row"><span class="g-label">' + esc(k.name) + '<span class="g-sub">' + esc(shortFp(k.fingerprint)) +
-          (k.encrypted ? " · 有密码短语" : "") + (k.used_by.length ? " · 用于 " + esc(k.used_by.join("、")) : "") + "</span></span>" +
-          '<button type="button" class="btn sm" data-import-key="' + i + '">导入</button></div>';
+          (k.encrypted ? " · " + T("有密码短语") : "") + (k.used_by.length ? " · " + esc(T("用于 %s", k.used_by.join(T("、")))) : "") + "</span></span>" +
+          '<button type="button" class="btn sm" data-import-key="' + i + '">' + T("导入") + "</button></div>";
       }).join("");
       var detected = (d.detected || []).filter(function (k) { return !k.imported; });
       body.innerHTML = '<div class="stack">' +
-        (mine ? '<div class="group">' + mine + "</div>" : '<p class="muted small">还没有密钥。</p>') +
-        '<button type="button" class="btn block" data-gen-key="1">生成新密钥</button>' +
-        (files ? '<div><div class="section-title">在 ~/.ssh 中发现</div><div class="group">' + files + "</div>" +
-          '<div class="g-note">导入后私钥保存在本应用的数据库里，可以随设备一起导出到其它客户端；原文件不受影响。</div></div>' : "") +
+        (mine ? '<div class="group">' + mine + "</div>" : '<p class="muted small">' + T("还没有密钥。") + "</p>") +
+        '<button type="button" class="btn block" data-gen-key="1">' + T("生成新密钥") + "</button>" +
+        (files ? '<div><div class="section-title">' + T("在 ~/.ssh 中发现") + '</div><div class="group">' + files + "</div>" +
+          '<div class="g-note">' + T("导入后私钥保存在本应用的数据库里，可以随设备一起导出到其它客户端；原文件不受影响。") + "</div></div>" : "") +
         "</div>";
       body.addEventListener("click", function (e) {
         var k = e.target.closest("[data-key]");
@@ -1163,51 +1189,51 @@
   function keyDetailSheet(k) {
     if (!k) return;
     var body = openSheet(k.name, '<div class="stack">' + pubBox(k.public, false) +
-      '<div class="group"><div class="g-row"><span class="g-label fixed">类型</span><span class="g-value">' + esc(k.type) + "</span></div>" +
-      '<div class="g-row"><span class="g-label fixed">指纹</span><span class="g-value mono">' + esc(k.fingerprint) + "</span></div>" +
-      '<div class="g-row"><span class="g-label fixed">用于</span><span class="g-value">' + esc(k.used_by.join("、") || "—") + "</span></div></div>" +
-      '<div class="row" style="gap:8px"><button type="button" class="btn grow" data-rename="1">重命名</button>' +
-      '<button type="button" class="btn danger grow" data-delete="1">删除</button></div>' +
-      '<button type="button" class="btn ghost block" data-back="1">返回密钥列表</button></div>');
+      '<div class="group"><div class="g-row"><span class="g-label fixed">' + T("类型") + '</span><span class="g-value">' + esc(k.type) + "</span></div>" +
+      '<div class="g-row"><span class="g-label fixed">' + T("指纹") + '</span><span class="g-value mono">' + esc(k.fingerprint) + "</span></div>" +
+      '<div class="g-row"><span class="g-label fixed">' + T("用于") + '</span><span class="g-value">' + esc(k.used_by.join(T("、")) || "—") + "</span></div></div>" +
+      '<div class="row" style="gap:8px"><button type="button" class="btn grow" data-rename="1">' + T("重命名") + "</button>" +
+      '<button type="button" class="btn danger grow" data-delete="1">' + T("删除") + "</button></div>" +
+      '<button type="button" class="btn ghost block" data-back="1">' + T("返回密钥列表") + "</button></div>");
     body.addEventListener("click", function (e) {
       if (e.target.closest("[data-back]")) { keysSheet(); return; }
       if (e.target.closest("[data-rename]")) {
-        askText("重命名密钥", { label: "名称", value: k.name, ok: "保存" }).then(function (name) {
+        askText(T("重命名密钥"), { label: T("名称"), value: k.name, ok: T("保存") }).then(function (name) {
           if (name === null || !name.trim() || name.trim() === k.name) return;
           return api("/api/keys/" + encodeURIComponent(k.id), { method: "PATCH", hub: true, body: { name: name.trim() } })
-            .then(function () { toast("已重命名"); keysSheet(); });
+            .then(function () { toast(T("已重命名")); keysSheet(); });
         }).catch(function (err) { toast(err.message, true); });
         return;
       }
       if (e.target.closest("[data-delete]")) {
-        confirmSheet("删除密钥「" + k.name + "」？", "<p>私钥会从本应用中删除且无法恢复。已经加到服务器上的公钥不受影响，需要时请自行从 <code>authorized_keys</code> 中移除。</p>", "删除", true)
+        confirmSheet(T("删除密钥「%s」？", k.name), "<p>" + T("私钥会从本应用中删除且无法恢复。已经加到服务器上的公钥不受影响，需要时请自行从 <code>authorized_keys</code> 中移除。") + "</p>", T("删除"), true)
           .then(function (ok) {
             if (!ok) { keyDetailSheet(k); return; }
             return api("/api/keys/" + encodeURIComponent(k.id), { method: "DELETE", hub: true, body: {} })
-              .then(function () { toast("已删除"); keysSheet(); });
+              .then(function () { toast(T("已删除")); keysSheet(); });
           }).catch(function (err) { toast(err.message, true); keysSheet(); });
       }
     });
   }
 
   function exportSheet() {
-    var body = openSheet("导出设备", '<div class="empty"><span class="spinner"></span></div>');
+    var body = openSheet(T("导出设备"), '<div class="empty"><span class="spinner"></span></div>');
     api("/api/devices", { hub: true }).then(function (d) {
       var devs = d.devices || [];
-      if (!devs.length) { body.innerHTML = '<p class="muted">还没有可以导出的设备。</p>'; return; }
-      body.innerHTML = '<div class="stack"><p class="small muted" style="margin:0">把选中的服务器连同它们的密钥、登录密码、主机指纹和节点令牌加密导出，在另一台设备（例如手机）上导入即可直接使用。</p>' +
+      if (!devs.length) { body.innerHTML = '<p class="muted">' + T("还没有可以导出的设备。") + "</p>"; return; }
+      body.innerHTML = '<div class="stack"><p class="small muted" style="margin:0">' + T("把选中的服务器连同它们的密钥、登录密码、主机指纹和节点令牌加密导出，在另一台设备（例如手机）上导入即可直接使用。") + "</p>" +
         '<div class="group">' + devs.map(function (n) {
           return '<label class="g-row check-row"><input type="checkbox" value="' + esc(n.id) + '" checked>' +
-            '<span class="g-label">' + esc(n.name) + '<span class="g-sub">' + esc(n.ssh_user ? n.ssh_user + "@" + n.ssh_host : n.url || "") + "</span></span></label>";
+            '<span class="g-label">' + esc(T(n.name)) + '<span class="g-sub">' + esc(n.ssh_user ? n.ssh_user + "@" + n.ssh_host : n.url || "") + "</span></span></label>";
         }).join("") + "</div>" +
-        '<button type="button" class="btn primary block" data-do-export="qr">显示二维码</button>' +
-        '<button type="button" class="btn block" data-do-export="file">导出为文件</button>' +
-        '<p class="small muted" style="margin:0">二维码给手机扫描用：先在手机上点 导入设备 → 扫描二维码，手机会显示一个配对码。</p></div>';
+        '<button type="button" class="btn primary block" data-do-export="qr">' + T("显示二维码") + "</button>" +
+        '<button type="button" class="btn block" data-do-export="file">' + T("导出为文件") + "</button>" +
+        '<p class="small muted" style="margin:0">' + T("二维码给手机扫描用：先在手机上点 导入设备 → 扫描二维码，手机会显示一个配对码。") + "</p></div>";
       body.addEventListener("click", function (e) {
         var b = e.target.closest("[data-do-export]");
         if (!b) return;
         var ids = $$("input[type=checkbox]:checked", body).map(function (c) { return c.value; });
-        if (!ids.length) { toast("请至少选择一台设备", true); return; }
+        if (!ids.length) { toast(T("请至少选择一台设备"), true); return; }
         if (b.getAttribute("data-do-export") === "qr") { exportQRPairing(body, ids); return; }
         $$("[data-do-export]", body).forEach(function (x) { x.disabled = true; });
         api("/api/vault/export", { method: "POST", hub: true, body: { devices: ids } }).then(function (r) {
@@ -1222,13 +1248,22 @@
 
   function exportResult(body, r) {
     body.innerHTML = '<div class="stack">' +
-      '<div class="code-card"><div class="small muted">解密码</div><div class="code-big mono">' + esc(r.code) + "</div>" +
-      '<button type="button" class="btn sm" data-copy-text="' + esc(r.code) + '">复制解密码</button></div>' +
-      '<div class="notice">解密码只显示这一次。请把它和文件<b>分开</b>传递（例如文件用 AirDrop 或数据线，解密码手动输入）。</div>' +
-      (r.warnings.length ? '<div class="error-block">' + r.warnings.map(esc).join("\n") + "</div>" : "") +
-      '<button type="button" class="btn primary block" data-save="1">保存文件</button>' +
+      '<div class="code-card"><div class="small muted">' + T("解密码") + '</div><div class="code-big mono">' + esc(r.code) + "</div>" +
+      '<button type="button" class="btn sm" data-copy-text="' + esc(r.code) + '">' + T("复制解密码") + "</button></div>" +
+      '<div class="notice">' + T("解密码只显示这一次。请把它和文件<b>分开</b>传递（例如文件用 AirDrop 或数据线，解密码手动输入）。") + "</div>" +
+      warningsBlock(r.warnings) +
+      '<button type="button" class="btn primary block" data-save="1">' + T("保存文件") + "</button>" +
       '<p class="small muted" style="margin:0">' + esc(r.filename) + "</p></div>";
     body.querySelector("[data-save]").addEventListener("click", function () { saveTextFile(r.filename, r.bundle); });
+  }
+
+  function warningsBlock(w) {
+    return w && w.length ? '<div class="error-block">' + w.map(function (x) { return esc(TR(x)); }).join("\n") + "</div>" : "";
+  }
+
+  function importedToast(r) {
+    var n = r.added + r.updated;
+    toast(r.keys ? T("已导入 %d 台设备、%d 把密钥", n, r.keys) : T("已导入 %d 台设备", n));
   }
 
   // exportQRPairing asks for the pairing code the phone shows, then shows the
@@ -1236,16 +1271,16 @@
   // never displayed here: a photo of this screen opens nothing.
   function exportQRPairing(body, ids) {
     body.innerHTML = '<form class="stack" data-pair="1">' +
-      '<p class="small muted" style="margin:0">在手机上打开 Rymesh → 设置 → 导入设备 → 扫描二维码，把手机上显示的配对码输入到这里。</p>' +
-      '<label class="field"><span>手机上的配对码</span><input name="code" class="mono" placeholder="XXXX-XXXX-XXXX-XXXX" ' +
+      '<p class="small muted" style="margin:0">' + T("在手机上打开 Rymesh → 设置 → 导入设备 → 扫描二维码，把手机上显示的配对码输入到这里。") + "</p>" +
+      '<label class="field"><span>' + T("手机上的配对码") + '</span><input name="code" class="mono" placeholder="XXXX-XXXX-XXXX-XXXX" ' +
       'autocomplete="off" autocapitalize="characters" spellcheck="false"></label>' +
-      '<button type="submit" class="btn primary block">生成二维码</button></form>';
+      '<button type="submit" class="btn primary block">' + T("生成二维码") + "</button></form>";
     var form = body.querySelector("form");
     setTimeout(function () { form.code.focus(); }, 30);
     form.addEventListener("submit", function (e) {
       e.preventDefault();
       var code = form.code.value.toUpperCase().replace(/[^23456789A-HJ-NP-Z]/g, "");
-      if (code.length !== 16) { toast("配对码应为 16 位", true); form.code.focus(); return; }
+      if (code.length !== 16) { toast(T("配对码应为 16 位"), true); form.code.focus(); return; }
       var b = form.querySelector("button"); b.disabled = true;
       api("/api/vault/export", { method: "POST", hub: true, body: { devices: ids, qr: true, code: code } }).then(function (r) {
         form.code.value = "";
@@ -1257,27 +1292,27 @@
   // exportQR shows the QR code for two minutes.
   function exportQR(body, r) {
     if (!r.qr_svg) {
-      body.innerHTML = '<div class="stack"><div class="error-block">' + esc(r.qr_error || "无法生成二维码") + "</div>" +
-        '<button type="button" class="btn block" data-done="1">关闭</button></div>';
+      body.innerHTML = '<div class="stack"><div class="error-block">' + esc(TR(r.qr_error) || T("无法生成二维码")) + "</div>" +
+        '<button type="button" class="btn block" data-done="1">' + T("关闭") + "</button></div>";
       body.querySelector("[data-done]").addEventListener("click", closeSheet);
       return;
     }
     body.innerHTML = '<div class="stack">' +
       '<div class="qr-card"><div class="qr-img">' + r.qr_svg + "</div>" +
       '<div class="small muted" data-qr-left></div></div>' +
-      '<div class="notice">用刚才显示配对码的那台手机扫描。二维码只能用那个配对码解开，这个屏幕上不显示任何密码。</div>' +
-      (r.warnings.length ? '<div class="error-block">' + r.warnings.map(esc).join("\n") + "</div>" : "") +
-      '<button type="button" class="btn block" data-done="1">完成</button></div>';
+      '<div class="notice">' + T("用刚才显示配对码的那台手机扫描。二维码只能用那个配对码解开，这个屏幕上不显示任何密码。") + "</div>" +
+      warningsBlock(r.warnings) +
+      '<button type="button" class="btn block" data-done="1">' + T("完成") + "</button></div>";
     var left = 120, label = body.querySelector("[data-qr-left]");
     function tick() {
       if (!body.isConnected) { clearInterval(timer); return; }
       if (left <= 0) {
         clearInterval(timer);
-        body.querySelector(".qr-img").innerHTML = '<div class="qr-gone">二维码已隐藏</div>';
-        label.textContent = "需要时请重新导出";
+        body.querySelector(".qr-img").innerHTML = '<div class="qr-gone">' + T("二维码已隐藏") + "</div>";
+        label.textContent = T("需要时请重新导出");
         return;
       }
-      label.textContent = left + " 秒后隐藏";
+      label.textContent = T("%d 秒后隐藏", left);
       left--;
     }
     var timer = setInterval(tick, 1000);
@@ -1300,27 +1335,27 @@
   function importByQR(body) {
     var code = pairingCode();
     body.innerHTML = '<div class="stack">' +
-      '<p class="small muted" style="margin:0">在电脑的 Rymesh 里：设置 → 导出设备 → 显示二维码，输入下面的配对码。</p>' +
-      '<button type="button" class="code-card copyable" data-copy-text="' + esc(code) + '" aria-label="复制配对码">' +
-      '<div class="small muted">配对码 · 点按复制</div><div class="code-big mono">' + esc(code) + "</div></button>" +
-      '<button type="button" class="btn primary block" data-scan="1">电脑上已显示二维码，开始扫描</button>' +
-      '<button type="button" class="btn ghost block" data-back="1">返回</button></div>';
+      '<p class="small muted" style="margin:0">' + T("在电脑的 Rymesh 里：设置 → 导出设备 → 显示二维码，输入下面的配对码。") + "</p>" +
+      '<button type="button" class="code-card copyable" data-copy-text="' + esc(code) + '" aria-label="' + esc(T("复制配对码")) + '">' +
+      '<div class="small muted">' + T("配对码 · 点按复制") + '</div><div class="code-big mono">' + esc(code) + "</div></button>" +
+      '<button type="button" class="btn primary block" data-scan="1">' + T("电脑上已显示二维码，开始扫描") + "</button>" +
+      '<button type="button" class="btn ghost block" data-back="1">' + T("返回") + "</button></div>";
     body.querySelector("[data-back]").addEventListener("click", function () { code = ""; importSheet(); });
     body.querySelector("[data-scan]").addEventListener("click", function () {
       var b = this;
       window.acScanResult = function (text) {
         window.acScanResult = null;
         if (!text) return;
-        if (text.indexOf("RYMESH1:") !== 0) { toast("这不是 Rymesh 导出的二维码", true); return; }
-        b.disabled = true; b.textContent = "正在导入…";
+        if (text.indexOf("RYMESH1:") !== 0) { toast(T("这不是 Rymesh 导出的二维码"), true); return; }
+        b.disabled = true; b.textContent = T("正在导入…");
         api("/api/vault/import", { method: "POST", hub: true, body: { qr: text, code: code } }).then(function (r) {
           code = "";
           closeSheet();
-          toast("已导入 " + (r.added + r.updated) + " 台设备" + (r.keys ? "、" + r.keys + " 把密钥" : ""));
+          importedToast(r);
           loadNodes().then(function () { if (S.hubOnly && S.node === "local") boot(); else if (S.route === "settings") renderSettings(); });
         }).catch(function (err) {
-          toast(/解密码/.test(err.message) ? "二维码不是用这个配对码生成的，请在电脑上重新输入配对码" : err.message, true);
-          b.disabled = false; b.textContent = "电脑上已显示二维码，开始扫描";
+          toast(/解密码/.test(err.raw || "") ? T("二维码不是用这个配对码生成的，请在电脑上重新输入配对码") : err.message, true);
+          b.disabled = false; b.textContent = T("电脑上已显示二维码，开始扫描");
         });
       };
       window.RymeshNative.scanQR();
@@ -1329,16 +1364,17 @@
 
   function importSheet() {
     var canScan = !!(window.RymeshNative && window.RymeshNative.scanQR);
-    var body = openSheet("导入设备",
+    var body = openSheet(T("导入设备"),
       '<form class="stack" data-import-form="1">' +
-      (canScan ? '<button type="button" class="btn primary block" data-scan-start="1">扫描二维码</button>' : "") +
-      '<p class="small muted" style="margin:0">' + (canScan ? "或选择" : "选择") +
-      '从另一台设备导出的 <code>.rymesh</code> 文件，并输入导出时显示的解密码。</p>' +
+      (canScan ? '<button type="button" class="btn primary block" data-scan-start="1">' + T("扫描二维码") + "</button>" : "") +
+      '<p class="small muted" style="margin:0">' + (canScan
+        ? T("或选择从另一台设备导出的 <code>.rymesh</code> 文件，并输入导出时显示的解密码。")
+        : T("选择从另一台设备导出的 <code>.rymesh</code> 文件，并输入导出时显示的解密码。")) + "</p>" +
       '<label class="file-pick"><input type="file" name="file" accept=".rymesh,.acbundle,application/json,application/octet-stream,*/*">' +
-      '<span class="file-pick-label">选择文件…</span></label>' +
-      '<details class="fold"><summary>或粘贴文件内容</summary><textarea name="text" class="input mono" rows="4" style="margin-top:8px"></textarea></details>' +
-      '<label class="field"><span>解密码</span><input name="code" class="mono" placeholder="XXXX-XXXX-XXXX-XXXX" autocomplete="off" autocapitalize="characters" spellcheck="false"></label>' +
-      '<button type="submit" class="btn primary block">导入</button></form>');
+      '<span class="file-pick-label">' + T("选择文件…") + "</span></label>" +
+      '<details class="fold"><summary>' + T("或粘贴文件内容") + '</summary><textarea name="text" class="input mono" rows="4" style="margin-top:8px"></textarea></details>' +
+      '<label class="field"><span>' + T("解密码") + '</span><input name="code" class="mono" placeholder="XXXX-XXXX-XXXX-XXXX" autocomplete="off" autocapitalize="characters" spellcheck="false"></label>' +
+      '<button type="submit" class="btn primary block">' + T("导入") + "</button></form>");
     var form = body.querySelector("form"), bundle = "";
     if (canScan) body.querySelector("[data-scan-start]").addEventListener("click", function () { importByQR(body); });
     form.file.addEventListener("change", function () {
@@ -1351,14 +1387,14 @@
     form.addEventListener("submit", function (e) {
       e.preventDefault();
       var data = bundle || form.text.value.trim();
-      if (!data) { toast("请选择文件", true); return; }
+      if (!data) { toast(T("请选择文件"), true); return; }
       if (!form.code.value.trim()) { form.code.focus(); return; }
-      var b = form.querySelector("[type=submit]"); b.disabled = true; b.textContent = "正在导入…";
+      var b = form.querySelector("[type=submit]"); b.disabled = true; b.textContent = T("正在导入…");
       api("/api/vault/import", { method: "POST", hub: true, body: { bundle: data, code: form.code.value } }).then(function (r) {
         closeSheet();
-        toast("已导入 " + (r.added + r.updated) + " 台设备" + (r.keys ? "、" + r.keys + " 把密钥" : ""));
+        importedToast(r);
         loadNodes().then(function () { if (S.hubOnly && S.node === "local") boot(); else if (S.route === "settings") renderSettings(); });
-      }).catch(function (err) { toast(err.message, true); b.disabled = false; b.textContent = "导入"; });
+      }).catch(function (err) { toast(err.message, true); b.disabled = false; b.textContent = T("导入"); });
     });
   }
 
@@ -1397,10 +1433,10 @@
       $(".sidebar-head").appendChild(menu);
     }
     function draw() {
-      menu.innerHTML = '<div class="menu-section">切换设备</div>' + nodeRows() +
+      menu.innerHTML = '<div class="menu-section">' + T("切换设备") + "</div>" + nodeRows() +
         '<div class="menu-sep"></div>' +
-        '<button type="button" class="menu-item" data-add-device="1"><span class="menu-text"><span class="menu-label">添加服务器…</span></span></button>' +
-        '<button type="button" class="menu-item" data-manage-devices="1"><span class="menu-text"><span class="menu-label">管理设备</span></span></button>';
+        '<button type="button" class="menu-item" data-add-device="1"><span class="menu-text"><span class="menu-label">' + T("添加服务器…") + "</span></span></button>" +
+        '<button type="button" class="menu-item" data-manage-devices="1"><span class="menu-text"><span class="menu-label">' + T("管理设备") + "</span></span></button>";
     }
     draw();
     menu.hidden = false;
@@ -1555,7 +1591,7 @@
     sub.classList.add("cwd-entry");
     sub.addEventListener("click", function () {
       if (S.route !== "home" && S.route !== "chat") return;
-      if (S.session) toast("会话目录已固定：" + S.session.cwd);
+      if (S.session) toast(T("会话目录已固定：%s", S.session.cwd));
       else cwdSheet();
     });
   }
@@ -1564,7 +1600,7 @@
     S.conn = state;
     var d = $("#conn-dot");
     d.className = "conn-dot" + (state === "on" ? " on" : state === "off" ? " off" : state === "wait" ? " wait" : "");
-    d.title = state === "on" ? "实时连接正常" : state === "wait" ? "正在连接…" : "连接已断开，正在重连";
+    d.title = state === "on" ? T("实时连接正常") : state === "wait" ? T("正在连接…") : T("连接已断开，正在重连");
   }
 
   // ----------------------------------------------------------------- sessions
@@ -1587,16 +1623,16 @@
     var sel = $("#agent-select");
     if (!sel) return;
     if (!S.agents.length) {
-      sel.innerHTML = '<option>无 Agent</option>';
+      sel.innerHTML = "<option>" + T("无 Agent") + "</option>";
       sel.disabled = true;
-      $("#agent-label").textContent = "无 Agent";
+      $("#agent-label").textContent = T("无 Agent");
       $("#agent-btn").disabled = true;
       return;
     }
     var current = S.session ? S.session.agent : S.draftAgent;
     sel.innerHTML = S.agents.map(function (a) {
       return '<option value="' + esc(a.name) + '"' + (a.available ? "" : " disabled") + ">" +
-        esc(a.label || a.name) + (a.available ? "" : "（不可用）") + "</option>";
+        esc(a.label || a.name) + (a.available ? "" : T("（不可用）")) + "</option>";
     }).join("");
     var exists = S.agents.some(function (a) { return a.name === current; });
     sel.value = exists ? current : (S.agents[0] || {}).name || "";
@@ -1631,7 +1667,7 @@
       return '<button type="button" role="option" class="menu-item' + (on ? " on" : "") + '" aria-selected="' + on +
         '" data-agent="' + esc(a.name) + '"' + (a.available ? "" : " disabled") + ">" +
         '<span class="menu-text"><span class="menu-label">' + esc(a.label || a.name) + "</span>" +
-        '<span class="menu-detail">' + esc(a.available ? (shortVersion(a.version) ? "版本 " + shortVersion(a.version) : "") : "不可用") + "</span></span>" +
+        '<span class="menu-detail">' + esc(a.available ? (shortVersion(a.version) ? T("版本 %s", shortVersion(a.version)) : "") : T("不可用")) + "</span></span>" +
         '<svg class="ico sm menu-check" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg></button>';
     }).join("");
     $("#agent-menu").hidden = false;
@@ -1681,7 +1717,7 @@
     var sel = $("#profile-select"), btn = $("#profile-btn");
     if (!sel || !btn) return;
     var meta = profileMeta(currentAgentName(), sel.value);
-    $("#profile-label").textContent = meta ? meta.label : "权限";
+    $("#profile-label").textContent = meta ? meta.label : T("权限");
     btn.classList.toggle("danger", !!(meta && meta.dangerous));
     btn.disabled = sel.disabled;
   }
@@ -1742,6 +1778,27 @@
   // The name, large and faint, fills the space above the greeting.
   var HOME_HERO = '<div class="home-hero" aria-hidden="true"><span>Rymesh</span></div>';
 
+  // A conversation's title as shown: titles the server made up ("Codex 会话
+  // 1a2b3c4d", "新会话 · Codex") are translated, the user's own stay.
+  function titleOf(s, fallback) {
+    return s && s.title ? trTitle(s.title) : fallback || T("未命名会话");
+  }
+  function trTitle(t) {
+    return /^(Codex|Claude|Hermes) 会话 |^新会话 · | · 群聊（/.test(t || "") ? TR(t) : t;
+  }
+
+  // Where a new conversation will run, with the directory as a button.
+  function homeWhere() {
+    var node = multiNode() ? esc(nodeLabel(S.node)) : "";
+    if (!S.draftCwd) return node ? T("新对话将在 %s 上运行", node) : T("新对话将在默认目录中运行");
+    var chip = '<button type="button" class="cwd-chip" data-home-cwd="1" title="' + esc(T("更改工作目录：%s", S.draftCwd)) + '">' +
+      '<svg class="ico sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></svg>' +
+      '<span class="t">' + esc(shortPath(S.draftCwd, 32)) + "</span>" +
+      '<svg class="ico sm chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>' +
+      "</button>";
+    return node ? T("新对话将在 %s 的 %s 中运行", node, chip) : T("新对话将在 %s 中运行", chip);
+  }
+
   function renderHome() {
     S.route = "home";
     closeStream();
@@ -1775,35 +1832,30 @@
       $("#composer-wrap").hidden = true;
       document.body.classList.remove("has-composer");
       $("#main").innerHTML = '<div class="home-empty onboarding">' + HOME_HERO +
-        '<div class="home-title">欢迎</div>' +
-        '<div class="home-sub">添加一台服务器开始使用：通过 SSH 连接，并在服务器上自动部署节点。服务器只需开放 SSH。</div>' +
-        '<button class="btn primary block" type="button" data-add-device="1" style="margin-top:24px">添加服务器</button>' +
-        '<button class="btn block" type="button" data-import="1" style="margin-top:10px">从其它设备导入</button></div>';
+        '<div class="home-title">' + T("欢迎") + "</div>" +
+        '<div class="home-sub">' + T("添加一台服务器开始使用：通过 SSH 连接，并在服务器上自动部署节点。服务器只需开放 SSH。") + "</div>" +
+        '<button class="btn primary block" type="button" data-add-device="1" style="margin-top:24px">' + T("添加服务器") + "</button>" +
+        '<button class="btn block" type="button" data-import="1" style="margin-top:10px">' + T("从其它设备导入") + "</button></div>";
       return;
     }
     var a = agentMeta(S.draftAgent);
     // The directory is shown (and changed) in the greeting, so the top bar
     // stays a plain title here.
-    setTop("新对话", "");
-    $("#prompt").placeholder = S.agents.length && S.draftAgent ? "给 " + (a.label || a.name) + " 发消息…" : "给 Agent 发消息…";
+    setTop(T("新对话"), "");
+    $("#prompt").placeholder = S.agents.length && S.draftAgent ? T("给 %s 发消息…", a.label || a.name) : T("给 Agent 发消息…");
     var recent = S.sessions.slice(0, 3).map(function (s) {
       return '<button type="button" class="recent-card" data-recent="' + esc(s.id) + '">' +
         agentIcon(s.agent) +
-        '<span class="recent-main"><span class="recent-title" style="display:block">' + esc(s.title || "未命名会话") + "</span>" +
+        '<span class="recent-main"><span class="recent-title" style="display:block">' + esc(titleOf(s)) + "</span>" +
         '<span class="recent-sub" style="display:block">' + esc(dirName(s.cwd)) + "</span></span>" +
         '<span class="recent-time">' + esc(rel(s.last_message_at || s.updated_at)) + "</span></button>";
     }).join("");
     $("#main").innerHTML =
       '<div class="home-empty">' + HOME_HERO +
       '<div class="home-title">' + esc(greeting()) + "</div>" +
-      '<div class="home-sub">新对话将在 ' + (multiNode() ? esc(nodeLabel(S.node)) + (S.draftCwd ? " 的 " : " 上") : "") +
-      (S.draftCwd ? '<button type="button" class="cwd-chip" data-home-cwd="1" title="更改工作目录：' + esc(S.draftCwd) + '">' +
-      '<svg class="ico sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></svg>' +
-      '<span class="t">' + esc(shortPath(S.draftCwd, 32)) + "</span>" +
-      '<svg class="ico sm chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>' +
-      "</button> 中" : "") + "运行</div>" +
+      '<div class="home-sub">' + homeWhere() + "</div>" +
       (S.link.state !== "ok" ? '<div class="home-recent">' + connCard() + "</div>" :
-      recent ? '<div class="home-recent"><div class="home-recent-label">继续最近的对话</div>' + recent + "</div>" : "") +
+      recent ? '<div class="home-recent"><div class="home-recent-label">' + T("继续最近的对话") + "</div>" + recent + "</div>" : "") +
       "</div>";
     renderAgentSelect();
     updateComposerMeta();
@@ -1901,7 +1953,7 @@
     if (!several) closeAgentFilterMenu();
     tag.hidden = !on;
     tag.innerHTML = on
-      ? '<button type="button" class="chip active filter-tag" data-agent-filter="all" title="显示全部">' +
+      ? '<button type="button" class="chip active filter-tag" data-agent-filter="all" title="' + esc(T("显示全部")) + '">' +
         esc(agentMeta(S.agentFilter).label || S.agentFilter) +
         '<svg class="ico sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>'
       : "";
@@ -1921,7 +1973,7 @@
     };
     $("#agent-filter-menu").innerHTML =
       row("all", '<svg class="ico agent-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>',
-        "全部", S.sessions.length) +
+        T("全部"), S.sessions.length) +
       '<div class="menu-sep"></div>' +
       names.map(function (n) { return row(n, agentIcon(n), agentMeta(n).label || n, counts[n]); }).join("");
   }
@@ -1961,7 +2013,7 @@
     var list = filteredSessions();
     if (!list.length) {
       box.innerHTML = '<div class="empty" style="padding:32px 12px">' +
-        ((S.sessionQuery || S.agentFilter !== "all") ? "没有匹配的对话。" : "还没有对话。点击上方新建，或输入消息开始。") + "</div>";
+        ((S.sessionQuery || S.agentFilter !== "all") ? T("没有匹配的对话。") : T("还没有对话。点击上方新建，或输入消息开始。")) + "</div>";
       return;
     }
     var lastGroup = "";
@@ -1976,12 +2028,12 @@
         '<button class="side-item' + (active ? " active" : "") + '" type="button" ' +
         'data-side-session="' + esc(s.id) + '" title="' + esc((s.cwd || "") + (when ? " · " + rel(when) : "")) + '">' +
         agentIcon(s.agent) +
-        '<span class="side-title" data-side-title="' + esc(s.id) + '">' + esc(s.title || "未命名会话") + "</span>" +
+        '<span class="side-title" data-side-title="' + esc(s.id) + '">' + esc(titleOf(s)) + "</span>" +
         '<span class="badge status' + (act ? " " + esc(act.status) : "") + '" data-side-badge="' + esc(s.id) + '"' +
         (act ? "" : " hidden") + ">" + (act ? esc(statusLabel(act.status, act.queue_ahead)) : "") + "</span>" +
         "</button>" +
         '<button class="side-more" type="button" data-side-menu="' + esc(s.id) +
-        '" aria-label="对话操作" aria-haspopup="dialog">⋯</button>' +
+        '" aria-label="' + esc(T("对话操作")) + '" aria-haspopup="dialog">⋯</button>' +
         "</div>";
     }).join("");
   }
@@ -1989,14 +2041,14 @@
   // Sessions arrive newest first, so a heading is emitted whenever the bucket changes.
   function dayGroup(iso) {
     var d = new Date(iso || 0);
-    if (isNaN(d) || !iso) return "更早";
+    if (isNaN(d) || !iso) return T("更早");
     var today = new Date(); today.setHours(0, 0, 0, 0);
     var days = Math.floor((today - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 86400000);
-    if (days <= 0) return "今天";
-    if (days === 1) return "昨天";
-    if (days < 7) return "近 7 天";
-    if (days < 30) return "近 30 天";
-    return "更早";
+    if (days <= 0) return T("今天");
+    if (days === 1) return T("昨天");
+    if (days < 7) return T("近 7 天");
+    if (days < 30) return T("近 30 天");
+    return T("更早");
   }
 
   function updateSessionBadges() {
@@ -2076,25 +2128,25 @@
     groups.slice(3).forEach(function (g) { hiddenItems += g.items.length; });
     box.innerHTML = groups.slice(0, 3).map(function (g) {
       var s = g.node ? null : sessionById(g.sid);
-      var title = s && s.title ? s.title : (g.first.session_title || "会话 " + String(g.sid || "").slice(0, 8));
+      var title = s && s.title ? trTitle(s.title) : (trTitle(g.first.session_title) || T("会话 %s", String(g.sid || "").slice(0, 8)));
       if (g.node) title = nodeLabel(g.node) + " · " + title;
       var tools = [];
       g.items.forEach(function (p) {
-        var label = p.kind === "question" ? "Agent 在提问" : p.kind === "plan" ? "计划待批准" : toolLabel(p.tool_name);
+        var label = p.kind === "question" ? T("Agent 在提问") : p.kind === "plan" ? T("计划待批准") : toolLabel(p.tool_name);
         if (tools.indexOf(label) < 0) tools.push(label);
       });
-      var toolText = tools.slice(0, 2).join("、") + (tools.length > 2 ? " 等" : "");
+      var toolText = tools.length > 2 ? T("%s 等", tools.slice(0, 2).join(T("、"))) : tools.join(T("、"));
       return '<button type="button" class="approval-toast" data-approval-node="' + esc(g.node) +
         '" data-approval-sid="' + esc(g.sid) +
         '" data-approval-pid="' + esc(g.first.id) + '">' +
         '<div class="approval-top"><span class="approval-dot"></span>' +
-        '<span class="approval-title">' + (g.first.kind === "question" ? "Agent 在提问" : g.first.kind === "plan" ? "计划待批准" : "需要审批") + "</span>" +
-        (g.items.length > 1 ? '<span class="approval-count">' + g.items.length + " 项</span>" : "") +
+        '<span class="approval-title">' + (g.first.kind === "question" ? T("Agent 在提问") : g.first.kind === "plan" ? T("计划待批准") : T("需要审批")) + "</span>" +
+        (g.items.length > 1 ? '<span class="approval-count">' + T("%d 项", g.items.length) + "</span>" : "") +
         "</div>" +
         '<div class="approval-session">' + esc(truncate(title, 48)) + "</div>" +
-        '<div class="approval-tool">' + esc(toolText) + " · 点击前往处理</div></button>";
+        '<div class="approval-tool">' + esc(T("%s · 点击前往处理", toolText)) + "</div></button>";
     }).join("") +
-      (hiddenItems ? '<div class="approval-more">另有 ' + hiddenItems + " 项待审批</div>" : "");
+      (hiddenItems ? '<div class="approval-more">' + T("另有 %d 项待审批", hiddenItems) + "</div>" : "");
     var keys = pend.map(function (p) { return p.id; }).sort().join(",");
     // While the open conversation has its own card waiting, popping other
     // conversations' requests over it hides the thing to act on; the badge
@@ -2180,11 +2232,11 @@
   });
 
   function sessionMenu(s) {
-    var body = openSheet("对话操作",
+    var body = openSheet(T("对话操作"),
       '<div class="stack">' +
-      '<button class="btn block" data-a="rename">重命名对话</button>' +
-      '<button class="btn block danger" data-a="delete">删除对话</button>' +
-      '<p class="small muted">删除对话会同步移除控制台记录，并将该 Agent 的原生会话文件移动到服务端回收目录。此操作不可从界面撤销。</p>' +
+      '<button class="btn block" data-a="rename">' + T("重命名对话") + "</button>" +
+      '<button class="btn block danger" data-a="delete">' + T("删除对话") + "</button>" +
+      '<p class="small muted">' + T("删除对话会同步移除控制台记录，并将该 Agent 的原生会话文件移动到服务端回收目录。此操作不可从界面撤销。") + "</p>" +
       "</div>");
     body.addEventListener("click", function (e) {
       var b = e.target.closest("[data-a]");
@@ -2197,28 +2249,28 @@
   }
 
   function renameSession(s) {
-    var body = openSheet("重命名会话",
-      '<label class="field"><span>标题</span><input id="rename-input" value="' + esc(s.title || "") + '"></label>' +
-      '<button id="rename-ok" class="btn primary block">保存</button>');
+    var body = openSheet(T("重命名会话"),
+      '<label class="field"><span>' + T("标题") + '</span><input id="rename-input" value="' + esc(s.title || "") + '"></label>' +
+      '<button id="rename-ok" class="btn primary block">' + T("保存") + "</button>");
     $("#rename-ok").addEventListener("click", function () {
       var v = $("#rename-input").value.trim();
       api("/api/sessions/" + encodeURIComponent(s.id), { method: "PATCH", body: { title: v } })
         .then(function () {
-          s.title = v || "未命名会话";
+          s.title = v || "";
           if (S.session && S.session.id === s.id) S.session.title = s.title;
-          closeSheet(); renderSidebar(); updateChatChrome(); toast("已重命名");
+          closeSheet(); renderSidebar(); updateChatChrome(); toast(T("已重命名"));
         }).catch(function (e) { toast(e.message, true); });
     });
   }
 
   function deleteNativeFlow(s) {
-    confirmSheet("删除对话？",
-      '<p>将删除「' + esc(truncate(s.title || "未命名会话", 60)) + '」，并同步处理磁盘文件：</p>' +
+    confirmSheet(T("删除对话？"),
+      "<p>" + T("将删除「%s」，并同步处理磁盘文件：", esc(truncate(titleOf(s), 60))) + "</p>" +
       '<ul style="padding-left:20px;color:var(--text-dim);font-size:13px">' +
-      "<li>该 Agent 的原生会话文件会移动到服务端回收目录</li>" +
-      "<li>控制台中的会话、消息与审批记录会被移除</li></ul>" +
-      '<p class="small muted">无法从界面恢复，不影响其他对话。</p>',
-      "删除", true).then(function (ok) {
+      "<li>" + T("该 Agent 的原生会话文件会移动到服务端回收目录") + "</li>" +
+      "<li>" + T("控制台中的会话、消息与审批记录会被移除") + "</li></ul>" +
+      '<p class="small muted">' + T("无法从界面恢复，不影响其他对话。") + "</p>",
+      T("删除"), true).then(function (ok) {
       if (!ok) return;
       api("/api/sessions/" + encodeURIComponent(s.id) + "?confirm=" + encodeURIComponent(s.id), { method: "DELETE" })
         .then(function (d) {
@@ -2227,7 +2279,7 @@
             S.session = null;
             go("#/");
           } else renderSidebar();
-          toast(d.native_trashed ? "对话已删除，原生文件已移入回收目录" : "对话已删除（未找到原生文件）");
+          toast(d.native_trashed ? T("对话已删除，原生文件已移入回收目录") : T("对话已删除（未找到原生文件）"));
         }).catch(function (e) { toast(e.message, true); });
     });
   }
@@ -2248,7 +2300,7 @@
   }
 
   function cwdSheet() {
-    if (S.session) { toast("会话目录已固定：" + S.session.cwd); return; }
+    if (S.session) { toast(T("会话目录已固定：%s", S.session.cwd)); return; }
     if (noDevice()) return;
     openFolderPicker(S.draftCwd || S.config.default_cwd || "");
   }
@@ -2256,24 +2308,24 @@
   // cwdInputSheet sets the directory by typing it.
   function cwdInputSheet() {
     var cur = S.draftCwd || S.config.default_cwd || "";
-    var body = openSheet("工作目录",
+    var body = openSheet(T("工作目录"),
       '<div class="stack">' +
-      '<label class="field"><span>新对话使用的服务器绝对路径</span>' +
+      '<label class="field"><span>' + T("新对话使用的服务器绝对路径") + "</span>" +
       '<input id="cwd-input" class="mono" value="' + esc(cur) + '" spellcheck="false" autocomplete="off"></label>' +
-      '<div class="row"><button id="cwd-check" class="btn sm" type="button">检查目录</button>' +
-      '<button id="cwd-reset" class="btn sm ghost" type="button">恢复默认</button>' +
+      '<div class="row"><button id="cwd-check" class="btn sm" type="button">' + T("检查目录") + "</button>" +
+      '<button id="cwd-reset" class="btn sm ghost" type="button">' + T("恢复默认") + "</button>" +
       '<span id="cwd-result" class="small muted"></span></div>' +
-      '<button id="cwd-save" class="btn primary block">保存</button>' +
-      '<p class="small muted">目录必须在允许根目录内。不同对话可以使用不同目录；同一目录并发运行时会给出提示。</p>' +
+      '<button id="cwd-save" class="btn primary block">' + T("保存") + "</button>" +
+      '<p class="small muted">' + T("目录必须在允许根目录内。不同对话可以使用不同目录；同一目录并发运行时会给出提示。") + "</p>" +
       "</div>");
     $("#cwd-check").addEventListener("click", function () {
-      var out = $("#cwd-result"); out.textContent = "检查中…";
+      var out = $("#cwd-result"); out.textContent = T("检查中…");
       api("/api/cwd/check", { method: "POST", body: { path: $("#cwd-input").value.trim() } })
         .then(function (d) {
-          if (!d.ok) { out.textContent = d.error; out.style.color = "var(--red)"; return; }
+          if (!d.ok) { out.textContent = TR(d.error); out.style.color = "var(--red)"; return; }
           out.style.color = "var(--text-dim)";
-          out.textContent = "✓ " + d.cwd + (d.git_root ? " · git 仓库" : "") +
-            (d.active_tasks ? " · " + d.active_tasks + " 个任务运行中" : "");
+          out.textContent = "✓ " + d.cwd + (d.git_root ? " · " + T("git 仓库") : "") +
+            (d.active_tasks ? " · " + T("%d 个任务运行中", d.active_tasks) : "");
           if (d.warning) toast(d.warning, true);
         }).catch(function (e) { out.textContent = e.message; out.style.color = "var(--red)"; });
     });
@@ -2283,13 +2335,13 @@
     });
     $("#cwd-save").addEventListener("click", function () {
       var v = $("#cwd-input").value.trim();
-      if (!v) { toast("目录不能为空", true); return; }
+      if (!v) { toast(T("目录不能为空"), true); return; }
       S.draftCwd = v;
       LS.set("draftCwd", v);
       closeSheet();
       if (S.route === "home") renderHome();
       else updateComposerMeta();
-      toast("工作目录已保存");
+      toast(T("工作目录已保存"));
     });
   }
 
@@ -2325,10 +2377,10 @@
     main.innerHTML =
       '<div class="chat-wrap"><div id="perm-banner"></div>' +
       '<div id="events" class="events"><div class="events-inner" id="events-inner">' +
-      '<div class="empty"><span class="spinner"></span> 正在加载会话…</div>' +
+      '<div class="empty"><span class="spinner"></span> ' + T("正在加载会话…") + "</div>" +
       '</div><div id="activity" class="activity" aria-live="polite" hidden></div></div>' +
       '<div id="readonly-note" class="readonly-note" hidden></div></div>';
-    setTop("会话", "");
+    setTop(T("会话"), "");
     setConn("wait");
 
     Promise.all([
@@ -2369,7 +2421,7 @@
       renderApprovalNotifications();
       scrollBottom(true);
       connectStream();
-      setTop(S.session.title || "会话", sessionSub(), sessionState());
+      setTop(titleOf(S.session, T("会话")), sessionSub(), sessionState());
       if (S.focusPermission) {
         var pid = S.focusPermission;
         setTimeout(function () { focusPermissionCard(pid); }, 90);
@@ -2383,12 +2435,12 @@
       // overwrite the page they are looking at now.
       if (token !== S.openToken || S.route !== "chat") return;
       if (e.status === 404) {
-        toast("会话不存在或已删除", true);
+        toast(T("会话不存在或已删除"), true);
         go("#/");
         return;
       }
       toast(e.message, true);
-      $("#events-inner").innerHTML = '<div class="empty">加载失败：' + esc(e.message) + "</div>";
+      $("#events-inner").innerHTML = '<div class="empty">' + esc(T("加载失败：%s", e.message)) + "</div>";
     });
   }
 
@@ -2411,13 +2463,13 @@
     renderAgentSelect();
     setAgentPicker(false);
     updateComposerMeta();
-    $("#prompt").placeholder = "给 " + (agentMeta(S.session.agent).label || S.session.agent) + " 发消息…";
-    setTop(S.session.title || "会话", sessionSub(), sessionState());
+    $("#prompt").placeholder = T("给 %s 发消息…", agentMeta(S.session.agent).label || S.session.agent);
+    setTop(titleOf(S.session, T("会话")), sessionSub(), sessionState());
     // A conversation the agent cannot continue (a Hermes bot's WeChat chat)
     // is shown without a composer, with the reason in its place.
     var ro = S.session.read_only || "";
     var note = $("#readonly-note");
-    if (note) { note.hidden = !ro; note.textContent = ro; }
+    if (note) { note.hidden = !ro; note.textContent = TR(ro); }
     $("#composer-wrap").hidden = !!ro;
     document.body.classList.toggle("has-composer", !ro);
     // Only show a hint while something is actually happening. The idle state
@@ -2425,14 +2477,14 @@
     var act = activeOnSession();
     var hint = "";
     if (act) {
-      if (act.status === "waiting_input") hint = "Agent 正在等待审批，请处理上方请求";
-      else if (act.status === "running") hint = "任务运行中 · 新消息将排队执行";
+      if (act.status === "waiting_input") hint = T("Agent 正在等待审批，请处理上方请求");
+      else if (act.status === "running") hint = T("任务运行中 · 新消息将排队执行");
       else if (act.status === "pending") {
         // Only say "queued" when something really is ahead. A task that is
         // first in line is about to start, not waiting behind itself.
         hint = act.queue_ahead > 0
-          ? "排队中 · 前面还有 " + act.queue_ahead + " 个任务，结束后自动执行"
-          : "正在启动…";
+          ? T("排队中 · 前面还有 %d 个任务，结束后自动执行", act.queue_ahead)
+          : T("正在启动…");
       }
     }
     $("#composer-hint").textContent = hint;
@@ -2455,8 +2507,8 @@
     if (!box) return;
     var pend = (S.sessionPerms || []).filter(function (p) { return p.status === "pending"; });
     if (!pend.length) { box.innerHTML = ""; return; }
-    box.innerHTML = '<div class="permission-banner">' + pend.length +
-      ' 项等待你处理 <button class="btn sm" type="button" data-scroll-perm="1">查看</button></div>';
+    box.innerHTML = '<div class="permission-banner">' + T("%d 项等待你处理", pend.length) +
+      ' <button class="btn sm" type="button" data-scroll-perm="1">' + T("查看") + "</button></div>";
   }
   document.addEventListener("click", function (e) {
     if (e.target.closest("[data-scroll-perm]")) {
@@ -2480,7 +2532,7 @@
     b.id = "load-older";
     b.className = "btn sm ghost load-older";
     b.type = "button";
-    b.textContent = "加载更早的消息";
+    b.textContent = T("加载更早的消息");
     b.addEventListener("click", loadOlder);
     inner.prepend(b);
     if (olderObserver) olderObserver.observe(b);
@@ -2499,7 +2551,7 @@
     if (!S.session || !S.oldestSeq || S.loadingOlder) return;
     S.loadingOlder = true;
     var btn = $("#load-older");
-    if (btn) { btn.disabled = true; btn.textContent = "加载中…"; }
+    if (btn) { btn.disabled = true; btn.textContent = T("加载中…"); }
     var inner = $("#events-inner");
     var prevH = inner.scrollHeight;
     var sid = S.session.id;
@@ -2556,7 +2608,7 @@
         var note = $("#trim-note");
         if (note) note.remove();
         if (btn) {
-          btn.disabled = false; btn.textContent = "加载更早的消息";
+          btn.disabled = false; btn.textContent = T("加载更早的消息");
           if (!S.hasOlder) btn.remove();
         }
         groupTurns();
@@ -2584,7 +2636,7 @@
         // next scroll back up, or the button, tries again.
         S.loadingOlder = false;
         toast(e.message, true);
-        if (btn) { btn.disabled = false; btn.textContent = "加载更早的消息"; }
+        if (btn) { btn.disabled = false; btn.textContent = T("加载更早的消息"); }
       });
   }
 
@@ -2657,17 +2709,17 @@
   }
 
   function activityText(act) {
-    if (act.status === "pending") return act.queue_ahead > 0 ? "排队中" : "正在启动…";
-    if (act.status === "waiting_input") return "等待你的确认";
+    if (act.status === "pending") return act.queue_ahead > 0 ? T("排队中") : T("正在启动…");
+    if (act.status === "waiting_input") return T("等待你的确认");
     var ev = S.lastEv;
     if (ev && ev.task_id === act.id && ev.kind === "tool") {
       var p = ev.payload || {};
       if (p.status === "running" || p.status === "in_progress") {
         var what = truncate(String(toolSummary(p) || "").split("\n")[0], 60);
-        return "正在执行 " + toolLabel(p.name) + (what ? " · " + what : "");
+        return T("正在执行 %s", toolLabel(p.name)) + (what ? " · " + what : "");
       }
     }
-    return "正在思考…";
+    return T("正在思考…");
   }
 
   // Between a user message and the final assistant answer, collapse thinking,
@@ -2752,7 +2804,7 @@
       d.className = "steps";
       d.open = wasOpen;
       var sum = document.createElement("summary");
-      sum.textContent = "执行过程 · " + fold.length + " 步";
+      sum.textContent = T("执行过程 · %d 步", fold.length);
       var body = document.createElement("div");
       body.className = "steps-body";
       fold.forEach(function (n) {
@@ -2798,7 +2850,7 @@
       var left = d.querySelectorAll(".steps-body > .ev").length;
       if (!left) { d.remove(); return; }
       var s = d.querySelector("summary");
-      if (s) s.textContent = "执行过程 · " + left + " 步";
+      if (s) s.textContent = T("执行过程 · %d 步", left);
     });
     // The trim note promises that the removed range can be loaded again. Make
     // that true: move the older cursor up to the first node still on the page
@@ -2823,7 +2875,7 @@
       var n = document.createElement("div");
       n.id = "trim-note";
       n.className = "notice";
-      n.textContent = "为保持流畅，较早的消息已从页面移除；继续向上滑动即可重新加载。";
+      n.textContent = T("为保持流畅，较早的消息已从页面移除；继续向上滑动即可重新加载。");
       inner.prepend(n);
     }
   }
@@ -2848,10 +2900,12 @@
         break;
       }
       case "assistant":
-        wrap.innerHTML = '<div class="msg assistant"><div class="bubble">' + md(p.text || "") + "</div></div>";
+        // A reply the console wrote itself (a slash command's answer) is
+        // translated; the model's own words never are.
+        wrap.innerHTML = '<div class="msg assistant"><div class="bubble">' + md(p.console ? TR(p.text || "") : p.text || "") + "</div></div>";
         break;
       case "thinking":
-        wrap.innerHTML = '<details class="thinking"><summary>已思考</summary><div class="thinking-body" data-lazy-text></div></details>';
+        wrap.innerHTML = '<details class="thinking"><summary>' + T("已思考") + '</summary><div class="thinking-body" data-lazy-text></div></details>';
         setLazy(wrap.querySelector("[data-lazy-text]"), p.text || "", "pre");
         break;
       case "tool":
@@ -2863,7 +2917,7 @@
         return wrap;
       case "tool_result": {
         if (mergeToolResult(p)) return null;
-        wrap.innerHTML = '<details class="thinking tool-result"><summary>工具结果 · ' +
+        wrap.innerHTML = '<details class="thinking tool-result"><summary>' + T("工具结果") + " · " +
           esc(summarize(p.output, 70)) + '</summary><div class="tool-result-body"><pre data-lazy-text></pre></div></details>';
         setLazy(wrap.querySelector("[data-lazy-text]"), p.output, "pre");
         break;
@@ -2896,15 +2950,15 @@
       case "plan": {
         // Codex plan mode ends the turn with a plan; running it is a new turn
         // outside plan mode, as with "Implement plan" in the Codex CLI.
-        wrap.innerHTML = '<div class="permission-card kind-plan codex-plan"><div class="permission-title"><span class="dot"></span>计划</div>' +
+        wrap.innerHTML = '<div class="permission-card kind-plan codex-plan"><div class="permission-title"><span class="dot"></span>' + T("计划") + "</div>" +
           '<div class="plan-body bubble">' + md(p.text || "") + "</div>" +
-          '<div class="perm-opts"><button class="perm-opt primary" type="button" data-run-plan="1"><span class="perm-opt-label">按此计划执行</span>' +
-          '<span class="perm-opt-detail">切换到「自动」模式并开始执行</span></button></div></div>';
+          '<div class="perm-opts"><button class="perm-opt primary" type="button" data-run-plan="1"><span class="perm-opt-label">' + T("按此计划执行") + "</span>" +
+          '<span class="perm-opt-detail">' + T("切换到「自动」模式并开始执行") + "</span></button></div></div>";
         break;
       }
       case "status": {
         var st = p.status || "";
-        wrap.innerHTML = '<div class="status-line">任务结束 · ' + esc(statusLabel(st)) +
+        wrap.innerHTML = '<div class="status-line">' + T("任务结束") + " · " + esc(statusLabel(st)) +
           (p.reason && p.reason !== "exited" ? " · " + esc(reasonLabel(p.reason)) : "") + "</div>";
         break;
       }
@@ -2913,25 +2967,25 @@
         // status line below says the same.
         if (/^任务结束：/.test(p.text || "")) return null;
         if (/^已为这个对话保存/.test(p.text || "")) refreshSessionSettings();
-        wrap.innerHTML = '<div class="notice">' + esc(p.text || "") + "</div>";
+        wrap.innerHTML = '<div class="notice">' + esc(TR(p.text || "")) + "</div>";
         break;
       case "stderr":
         wrap.innerHTML = '<details class="notice stderr"><summary>Agent stderr</summary>' +
           "<div>" + esc(p.text || "") + "</div></details>";
         break;
       case "error":
-        wrap.innerHTML = '<div class="error-block">' + esc(p.text || "错误") + "</div>";
+        wrap.innerHTML = '<div class="error-block">' + esc(TR(p.text) || T("错误")) + "</div>";
         break;
       case "permission_denied":
-        wrap.innerHTML = '<div class="notice">权限被拒绝：' + esc(p.tool_name || "") +
-          (p.message ? " · " + esc(p.message) : "") + "</div>";
+        wrap.innerHTML = '<div class="notice">' + esc(T("权限被拒绝：%s", p.tool_name || "")) +
+          (p.message ? " · " + esc(TR(p.message)) : "") + "</div>";
         break;
       case "usage": {
         var u = p.usage || {};
         var bits = [];
-        if (u.input_tokens) bits.push("输入 " + u.input_tokens);
-        if (u.output_tokens) bits.push("输出 " + u.output_tokens);
-        if (u.cached_input_tokens) bits.push("缓存 " + u.cached_input_tokens);
+        if (u.input_tokens) bits.push(T("输入 %d", u.input_tokens));
+        if (u.output_tokens) bits.push(T("输出 %d", u.output_tokens));
+        if (u.cached_input_tokens) bits.push(T("缓存 %d", u.cached_input_tokens));
         if (!bits.length) return null;
         wrap.innerHTML = '<div class="meta-line">' + esc(bits.join(" · ")) + "</div>";
         break;
@@ -2940,7 +2994,7 @@
         var meta = [];
         if (p.duration_ms) meta.push((p.duration_ms / 1000).toFixed(1) + "s");
         if (p.cost_usd !== undefined && p.cost_usd !== null) meta.push("$" + Number(p.cost_usd).toFixed(4));
-        if (p.num_turns) meta.push(p.num_turns + " 轮");
+        if (p.num_turns) meta.push(T("%d 轮", p.num_turns));
         if (!meta.length) return null;
         wrap.innerHTML = '<div class="meta-line">' + esc(meta.join(" · ")) + "</div>";
         break;
@@ -2956,26 +3010,27 @@
   }
 
   function reasonLabel(r) {
-    return ({ cancelled: "用户取消", signaled: "Agent 进程异常退出", exited: "正常退出", lost: "进程丢失" })[r] || r;
+    var label = ({ cancelled: "用户取消", signaled: "Agent 进程异常退出", exited: "正常退出", lost: "进程丢失" })[r];
+    return label ? T(label) : r;
   }
 
   function toolNode(p) {
     var node = document.createElement("div");
     node.className = "tool";
     node.setAttribute("data-tool-id", p.id || "");
-    var statusText = p.status === "running" || p.status === "in_progress" ? "运行中" :
-      p.status === "failed" || p.status === "error" ? "失败" : p.status === "completed" ? "完成" : "";
-    var isErr = statusText === "失败";
+    var isErr = p.status === "failed" || p.status === "error";
+    var statusText = p.status === "running" || p.status === "in_progress" ? T("运行中") :
+      isErr ? T("失败") : p.status === "completed" ? T("完成") : "";
     var hasOut = p.output !== undefined && p.output !== null && p.output !== "";
     node.innerHTML =
       '<div class="tool-head"><span class="tool-name">' + esc(toolLabel(p.name)) + "</span>" +
       '<span class="tool-summary">' + esc(toolSummary(p)) + "</span>" +
       '<span class="tool-state' + (isErr ? " err" : "") + '">' + esc(statusText) + "</span></div>" +
       '<div class="tool-body"><div class="tool-body-in">' +
-      '<div class="tool-block"><div class="tool-label">输入</div><pre class="tool-input" data-lazy-text></pre></div>' +
+      '<div class="tool-block"><div class="tool-label">' + T("输入") + '</div><pre class="tool-input" data-lazy-text></pre></div>' +
       (hasOut
-        ? '<div class="tool-block"><div class="tool-label">输出</div><pre class="tool-output" data-lazy-text></pre></div>'
-        : '<div class="tool-block tool-out-block" hidden><div class="tool-label">输出</div><pre class="tool-output" data-lazy-text></pre></div>') +
+        ? '<div class="tool-block"><div class="tool-label">' + T("输出") + '</div><pre class="tool-output" data-lazy-text></pre></div>'
+        : '<div class="tool-block tool-out-block" hidden><div class="tool-label">' + T("输出") + '</div><pre class="tool-output" data-lazy-text></pre></div>') +
       (p.exit_code !== undefined && p.exit_code !== null && p.exit_code !== 0
         ? '<div class="small" style="color:var(--red)">exit ' + esc(String(p.exit_code)) + "</div>" : "") +
       "</div></div>";
@@ -2999,8 +3054,8 @@
     var state = node.querySelector(".tool-state");
     if (state) {
       var failed = p.status === "failed" || p.status === "error";
-      state.textContent = p.status === "running" || p.status === "in_progress" ? "运行中" :
-        failed ? "失败" : p.status === "completed" ? "完成" : "";
+      state.textContent = p.status === "running" || p.status === "in_progress" ? T("运行中") :
+        failed ? T("失败") : p.status === "completed" ? T("完成") : "";
       state.className = "tool-state" + (failed ? " err" : "");
     }
     var hasOut = p.output !== undefined && p.output !== null && p.output !== "";
@@ -3062,7 +3117,7 @@
       if (d.mode === "md" && typeof full === "string") el.innerHTML = md(full);
       else el.textContent = typeof full === "string" ? full : pretty(full);
     }).catch(function (e) {
-      el.textContent = c.preview + "\n…（完整内容加载失败：" + e.message + "）";
+      el.textContent = c.preview + "\n…" + T("（完整内容加载失败：%s）", e.message);
       d.filled = false;
     });
   }
@@ -3076,7 +3131,7 @@
     if (typeof v === "object") {
       if (Array.isArray(v)) {
         var first = v.length ? summarize(v[0], n) : "";
-        return truncate("[" + v.length + " 项] " + first, n);
+        return truncate(T("[%d 项] ", v.length) + first, n);
       }
       var keys = Object.keys(v);
       var bits = [];
@@ -3086,7 +3141,7 @@
           bits.push(keys[i] + "=" + truncate(String(val), 40));
         }
       }
-      return truncate(bits.length ? "{ " + bits.join(", ") + " }" : "{" + keys.length + " 个字段}", n);
+      return truncate(bits.length ? "{ " + bits.join(", ") + " }" : "{" + T("%d 个字段", keys.length) + "}", n);
     }
     return truncate(String(v), n);
   }
@@ -3113,10 +3168,10 @@
     if (!out) return false;
     if (block) block.hidden = false;
     if (isClipped(p.output)) setLazy(out, p.output, "pre");
-    else setLazyText(out, pretty(p.output) || "(无输出)", true);
+    else setLazyText(out, pretty(p.output) || T("(无输出)"), true);
     var state = node.querySelector(".tool-state");
     if (state) {
-      state.textContent = p.is_error ? "失败" : "完成";
+      state.textContent = p.is_error ? T("失败") : T("完成");
       state.className = "tool-state" + (p.is_error ? " err" : "");
     }
     return true;
@@ -3131,11 +3186,22 @@
       id: src.id || src.permission_id, tool_name: src.tool_name, input: src.input,
       task_id: src.task_id, session_id: src.session_id, status: src.status || "pending",
       kind: src.kind || "permission",
-      description: src.description || d.description || "",
-      options: (src.options && src.options.length ? src.options : d.options) || null,
+      description: TR(src.description || d.description || ""),
+      options: trOptions((src.options && src.options.length ? src.options : d.options) || null),
       questions: (src.questions && src.questions.length ? src.questions : d.questions) || [],
       plan: src.plan || d.plan || ""
     };
+  }
+
+  // The options a server offers on a permission card are its own text.
+  function trOptions(list) {
+    return list && list.map(function (o) {
+      var c = {};
+      for (var k in o) c[k] = o[k];
+      c.label = TR(o.label);
+      if (o.detail) c.detail = TR(o.detail);
+      return c;
+    });
   }
 
   var DEFAULT_OPTIONS = [{ id: "allow", label: "允许" }, { id: "deny", label: "拒绝" }];
@@ -3144,7 +3210,7 @@
     var cls = o.id === "allow" || o.id === "approve_accept_edits" ? "primary" :
       (o.id === "deny" || o.id === "deny_stop") ? "danger" : "";
     return '<button class="perm-opt ' + cls + '" type="button" data-perm-opt="' + esc(o.id) + '">' +
-      '<span class="perm-opt-label">' + esc(o.label) + "</span>" +
+      '<span class="perm-opt-label">' + esc(TR(o.label)) + "</span>" +
       (o.detail ? '<span class="perm-opt-detail">' + esc(o.detail) + "</span>" : "") + "</button>";
   }
 
@@ -3155,39 +3221,39 @@
     node.setAttribute("data-permission-id", perm.id);
     var body = "";
     if (perm.kind === "question") {
-      body = '<div class="permission-title"><span class="dot"></span>Agent 在提问</div>' +
+      body = '<div class="permission-title"><span class="dot"></span>' + T("Agent 在提问") + "</div>" +
         perm.questions.map(function (q, qi) {
           return '<div class="q-block" data-q="' + qi + '">' +
             (q.header ? '<div class="q-header">' + esc(q.header) + "</div>" : "") +
-            '<div class="q-text">' + esc(q.question) + (q.multi ? ' <span class="muted small">（可多选）</span>' : "") + "</div>" +
+            '<div class="q-text">' + esc(q.question) + (q.multi ? ' <span class="muted small">' + T("（可多选）") + "</span>" : "") + "</div>" +
             '<div class="q-options">' + (q.options || []).map(function (o, oi) {
               return '<button type="button" class="q-opt" data-q-opt="' + oi + '">' +
                 '<span class="perm-opt-label">' + esc(o.label) + "</span>" +
                 (o.description ? '<span class="perm-opt-detail">' + esc(o.description) + "</span>" : "") + "</button>";
             }).join("") + "</div>" +
             (q.other ? '<input class="q-other" type="' + (q.secret ? "password" : "text") +
-              '" placeholder="' + ((q.options || []).length ? "其它（自己输入）" : "输入你的回答") + '" maxlength="2000">' : "") +
+              '" placeholder="' + esc((q.options || []).length ? T("其它（自己输入）") : T("输入你的回答")) + '" maxlength="2000">' : "") +
             "</div>";
         }).join("") +
-        '<div class="permission-actions"><button class="btn primary sm" type="button" data-perm="submit" disabled>提交回答</button>' +
-        '<button class="btn sm ghost" type="button" data-perm="skip">跳过</button></div>';
+        '<div class="permission-actions"><button class="btn primary sm" type="button" data-perm="submit" disabled>' + T("提交回答") + "</button>" +
+        '<button class="btn sm ghost" type="button" data-perm="skip">' + T("跳过") + "</button></div>";
     } else if (perm.kind === "plan") {
-      body = '<div class="permission-title"><span class="dot"></span>计划待批准</div>' +
+      body = '<div class="permission-title"><span class="dot"></span>' + T("计划待批准") + "</div>" +
         '<div class="plan-body bubble">' + md(perm.plan || "") + "</div>" +
         '<div class="perm-opts">' + (perm.options || []).map(optionButton).join("") + "</div>" +
-        '<div class="permission-reason" hidden><textarea rows="3" placeholder="希望怎么调整计划？（可选）" maxlength="2000"></textarea>' +
-        '<div class="row" style="margin-top:7px;gap:7px"><button class="btn sm ghost grow" type="button" data-perm="reason-cancel">取消</button>' +
-        '<button class="btn sm grow" type="button" data-perm="reason-confirm">继续规划</button></div></div>';
+        '<div class="permission-reason" hidden><textarea rows="3" placeholder="' + esc(T("希望怎么调整计划？（可选）")) + '" maxlength="2000"></textarea>' +
+        '<div class="row" style="margin-top:7px;gap:7px"><button class="btn sm ghost grow" type="button" data-perm="reason-cancel">' + T("取消") + "</button>" +
+        '<button class="btn sm grow" type="button" data-perm="reason-confirm">' + T("继续规划") + "</button></div></div>";
     } else {
       // A command reads best as the command itself (Bash, Codex shell).
       var input = perm.input && typeof perm.input.command === "string" ? perm.input.command : pretty(perm.input);
-      body = '<div class="permission-title"><span class="dot"></span>需要批准：' + esc(toolLabel(perm.tool_name)) + "</div>" +
+      body = '<div class="permission-title"><span class="dot"></span>' + esc(T("需要批准：%s", toolLabel(perm.tool_name))) + "</div>" +
         (perm.description ? '<div class="permission-desc">' + esc(perm.description) + "</div>" : "") +
         (input ? '<div class="permission-input"><pre>' + esc(input) + "</pre></div>" : "") +
         '<div class="perm-opts">' + (perm.options || DEFAULT_OPTIONS).map(optionButton).join("") + "</div>" +
-        '<div class="permission-reason" hidden><input type="text" placeholder="拒绝原因（可选，会告诉 Agent）" maxlength="300">' +
-        '<div class="row" style="margin-top:7px;gap:7px"><button class="btn sm ghost grow" type="button" data-perm="reason-cancel">取消</button>' +
-        '<button class="btn sm danger grow" type="button" data-perm="reason-confirm">确认拒绝</button></div></div>';
+        '<div class="permission-reason" hidden><input type="text" placeholder="' + esc(T("拒绝原因（可选，会告诉 Agent）")) + '" maxlength="300">' +
+        '<div class="row" style="margin-top:7px;gap:7px"><button class="btn sm ghost grow" type="button" data-perm="reason-cancel">' + T("取消") + "</button>" +
+        '<button class="btn sm danger grow" type="button" data-perm="reason-confirm">' + T("确认拒绝") + "</button></div></div>";
     }
     node.innerHTML = body + '<div class="permission-result" hidden></div>';
 
@@ -3253,7 +3319,7 @@
       // Approving a plan also decides how the next messages run, as in the CLI.
       if (body.decision === "approve_accept_edits") setProfile("acceptEdits");
       else if (body.decision === "approve_default") setProfile("manual");
-      toast(r.label || "已处理");
+      toast(r.label || T("已处理"));
     }).catch(function (e) {
       toast(e.message, true);
       $$("button", node).forEach(function (b) { b.disabled = false; });
@@ -3296,10 +3362,10 @@
         res.hidden = false;
         var ok = decision === "allowed" || decision === "allow" || decision === "answered";
         if (info && info.label) {
-          res.textContent = (ok ? "✓ " : "✕ ") + info.label + (info.detail ? " · " + info.detail : "");
+          res.textContent = (ok ? "✓ " : "✕ ") + TR(info.label) + (info.detail ? " · " + TR(info.detail) : "");
         } else {
-          res.textContent = decision === "allowed" || decision === "allow" ? "✓ 已允许" :
-            decision === "answered" ? "✓ 已回答" : decision === "expired" ? "已超时" : decision ? "✕ 已拒绝" : "已处理";
+          res.textContent = decision === "allowed" || decision === "allow" ? "✓ " + T("已允许") :
+            decision === "answered" ? "✓ " + T("已回答") : decision === "expired" ? T("已超时") : decision ? "✕ " + T("已拒绝") : T("已处理");
         }
       }
     }
@@ -3444,7 +3510,7 @@
     var agent = currentAgentName();
     var d = S.models[cacheKey(agent)];
     var m = d && (d.models || []).filter(function (x) { return x.id === (st.model || ""); })[0];
-    var label = st.model ? (m ? m.label : st.model) : "默认模型";
+    var label = st.model ? (m ? m.label : st.model) : T("默认模型");
     $("#model-label").textContent = label + (st.effort ? " · " + st.effort : "");
   }
 
@@ -3488,7 +3554,7 @@
     menu.hidden = false;
     $("#model-btn").setAttribute("aria-expanded", "true");
     if (cached) renderModelMenu(cached, refresh !== false);
-    else menu.innerHTML = '<div class="menu-item"><span class="spinner"></span> 正在向 ' + esc(nodeLabel(S.node)) + " 查询模型列表…</div>";
+    else menu.innerHTML = '<div class="menu-item"><span class="spinner"></span> ' + esc(T("正在向 %s 查询模型列表…", nodeLabel(S.node))) + "</div>";
     if (refresh === false && cached) return;
     loadModels(agent).then(function (d) {
       if (request !== modelMenuRequest || key !== cacheKey(currentAgentName())) return;
@@ -3499,7 +3565,7 @@
       if (request !== modelMenuRequest || key !== cacheKey(currentAgentName())) return;
       if (cached) { renderModelMenu(cached, false, e.message); return; }
       menu.innerHTML = '<div class="menu-item menu-error">' + esc(e.message) +
-        '<div class="menu-detail">仍可直接输入 <code>/model 模型名</code> 切换。</div></div>';
+        '<div class="menu-detail">' + T("仍可直接输入 <code>/model 模型名</code> 切换。") + "</div></div>";
     });
   }
 
@@ -3518,19 +3584,19 @@
     var searchable = (d.models || []).length > 8;
     menu.innerHTML = (searchable ? '<div class="model-search"><svg class="ico sm" viewBox="0 0 24 24" aria-hidden="true">' +
       '<circle cx="11" cy="11" r="6"/><path d="m20 20-4.5-4.5"/></svg>' +
-      '<input type="search" placeholder="搜索模型" autocomplete="off" autocapitalize="off" spellcheck="false" value="' +
+      '<input type="search" placeholder="' + esc(T("搜索模型")) + '" autocomplete="off" autocapitalize="off" spellcheck="false" value="' +
       esc(S.modelQuery || "") + '"></div>' : "") +
-      '<div class="menu-section">模型' +
-      (refreshing ? ' <span class="spinner sm"></span>' : failed ? ' <span class="menu-stale" title="' + esc(failed) + '">（未能刷新，显示上次的列表）</span>' : "") +
+      '<div class="menu-section">' + T("模型") +
+      (refreshing ? ' <span class="spinner sm"></span>' : failed ? ' <span class="menu-stale" title="' + esc(failed) + '">' + T("（未能刷新，显示上次的列表）") + "</span>" : "") +
       "</div>" + models.map(function (m) {
       var on = (st.model || "") === m.id || (!st.model && !m.id);
       return '<button type="button" class="menu-item' + (on ? " on" : "") + '" data-model="' + esc(m.id) + '" data-find="' +
         esc((m.label + " " + m.id).toLowerCase()) + '">' +
-        '<span class="menu-text"><span class="menu-label">' + esc(m.label) + (m.default && m.id ? "（默认）" : "") + "</span>" +
+        '<span class="menu-text"><span class="menu-label">' + esc(TR(m.label)) + (m.default && m.id ? T("（默认）") : "") + "</span>" +
         (m.id ? '<span class="menu-detail mono">' + esc(m.id) + "</span>" : "") + "</span>" +
         '<svg class="ico sm menu-check" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg></button>';
-    }).join("") + (efforts.length ? '<div class="menu-section">推理强度</div><div class="effort-row">' +
-      ['<button type="button" class="chip' + (!st.effort ? " active" : "") + '" data-effort="">默认</button>']
+    }).join("") + (efforts.length ? '<div class="menu-section">' + T("推理强度") + '</div><div class="effort-row">' +
+      ['<button type="button" class="chip' + (!st.effort ? " active" : "") + '" data-effort="">' + T("默认") + "</button>"]
         .concat(efforts.map(function (e) {
           return '<button type="button" class="chip' + (st.effort === e ? " active" : "") + '" data-effort="' + esc(e) + '">' + esc(e) + "</button>";
         })).join("") + "</div>" : "");
@@ -3538,7 +3604,7 @@
     if (!input) return;
     var empty = document.createElement("div");
     empty.className = "menu-item model-none";
-    empty.textContent = "没有匹配的模型";
+    empty.textContent = T("没有匹配的模型");
     var items = $$("[data-model]", menu);
     if (items.length) items[items.length - 1].after(empty);
     filterModels(input.value);
@@ -3584,14 +3650,14 @@
     var m = e.target.closest("[data-model]");
     if (m) {
       var next = { model: m.getAttribute("data-model"), effort: st.effort || "" };
-      saveSettings(next).then(function () { toast("模型：" + $("#model-label").textContent); openModelMenu(false); })
+      saveSettings(next).then(function () { toast(T("模型：%s", $("#model-label").textContent)); openModelMenu(false); })
         .catch(function (err) { toast(err.message, true); });
       return;
     }
     var ef = e.target.closest("[data-effort]");
     if (ef) {
       saveSettings({ model: st.model || "", effort: ef.getAttribute("data-effort") })
-        .then(function () { closeModelMenu(); toast("推理强度：" + (ef.getAttribute("data-effort") || "默认")); })
+        .then(function () { closeModelMenu(); toast(T("推理强度：%s", ef.getAttribute("data-effort") || T("默认"))); })
         .catch(function (err) { toast(err.message, true); });
     }
   });
@@ -3630,7 +3696,7 @@
       return '<button type="button" class="menu-item' + (i === S.slashIdx ? " on hl" : "") + '" data-slash="' + i + '">' +
         '<span class="menu-text"><span class="menu-label mono">/' + esc(c.name) +
         (c.args ? ' <span class="muted">' + esc(c.args) + "</span>" : "") + "</span>" +
-        (c.description ? '<span class="menu-detail">' + esc(c.description) + "</span>" : "") + "</span></button>";
+        (c.description ? '<span class="menu-detail">' + esc(TR(c.description)) + "</span>" : "") + "</span></button>";
     }).join("");
     m.hidden = false;
   }
@@ -3706,7 +3772,7 @@
     var text = ta.value.trim();
     if (!text || S.sending) return;
     if (S.link.state !== "ok") {
-      toast(S.link.state === "failed" ? "无法连接 " + nodeLabel(S.node) + "，请重试" : "正在连接 " + nodeLabel(S.node) + "，请稍候");
+      toast(S.link.state === "failed" ? T("无法连接 %s，请重试", nodeLabel(S.node)) : T("正在连接 %s，请稍候", nodeLabel(S.node)));
       return;
     }
     // A bare /model or /effort opens the picker, as in the interactive CLI;
@@ -3735,7 +3801,7 @@
     optimistic.className = "ev msg user pending";
     optimistic.setAttribute("data-kind", "user");
     optimistic.setAttribute("data-pending-text", text);
-    optimistic.title = "发送中…";
+    optimistic.title = T("发送中…");
     optimistic.innerHTML = '<div class="bubble">' + esc(text) + "</div>";
     var inner = $("#events-inner");
     if (inner) { inner.appendChild(optimistic); scrollBottom(false); }
@@ -3756,7 +3822,7 @@
         optimistic.remove();
         if (d.session) {
           S.sessions.unshift(d.session);
-          toast("已开始新对话");
+          toast(T("已开始新对话"));
           go("#/session/" + encodeURIComponent(d.session.id));
         } else {
           catchUp();
@@ -3778,7 +3844,7 @@
       }
       updateChatChrome();
       refreshActive().catch(function () {});
-      if (d.queue_ahead > 0) toast("已排队，前面还有 " + d.queue_ahead + " 个任务");
+      if (d.queue_ahead > 0) toast(T("已排队，前面还有 %d 个任务", d.queue_ahead));
     }).catch(function (err) {
       optimistic.remove();
       if (!S.session || S.session.id !== sid) { toast(err.message, true); return; }
@@ -3793,7 +3859,7 @@
   function sendNewChat(text) {
     ensureDraftAgent();
     var agent = agentMeta(S.draftAgent);
-    if (!agent || !agent.name || !agent.available) { toast("请先选择可用的 Agent", true); return; }
+    if (!agent || !agent.name || !agent.available) { toast(T("请先选择可用的 Agent"), true); return; }
     var profile = selectedProfile();
     var cwd = S.draftCwd || S.config.default_cwd || "";
     // A retry after a lost response must not queue the same message twice.
@@ -3804,7 +3870,7 @@
     var sid = "";
     S.sending = true;
     $("#send-btn").disabled = true;
-    $("#composer-hint").textContent = "正在创建对话…";
+    $("#composer-hint").textContent = T("正在创建对话…");
 
     api("/api/sessions", { method: "POST", body: { agent: agent.name, cwd: cwd, title: "", settings: S.draftSettings } })
       .then(function (d) {
@@ -3820,7 +3886,7 @@
         ta.style.height = "auto";
         hideSlashMenu();
         go("#/session/" + encodeURIComponent(d.local && d.session ? d.session.id : sid));
-        if (d.queue_ahead > 0) toast("已排队，前面还有 " + d.queue_ahead + " 个任务");
+        if (d.queue_ahead > 0) toast(T("已排队，前面还有 %d 个任务", d.queue_ahead));
       }).catch(function (err) {
         toast(err.message, true);
         if (sid) go("#/session/" + encodeURIComponent(sid));
@@ -3845,12 +3911,12 @@
     var act = activeOnSession();
     if (!act) return;
     var btn = this;
-    confirmSheet("停止任务？", "<p>将向 Agent 发送终止信号，正在执行的命令可能被中断。排在后面的消息会继续执行。</p>", "停止", true)
+    confirmSheet(T("停止任务？"), "<p>" + T("将向 Agent 发送终止信号，正在执行的命令可能被中断。排在后面的消息会继续执行。") + "</p>", T("停止"), true)
       .then(function (ok) {
         if (!ok) return;
         btn.disabled = true;
         api("/api/tasks/" + encodeURIComponent(act.id) + "/cancel", { method: "POST", body: {} })
-          .then(function () { toast("正在停止…"); refreshActive().catch(function () {}); })
+          .then(function () { toast(T("正在停止…")); refreshActive().catch(function () {}); })
           .catch(function (err) { toast(err.message, true); btn.disabled = false; });
       });
   });
@@ -3861,17 +3927,32 @@
     LS.set("profile." + agent, this.value);
     this.title = meta ? meta.detail : "";
     syncProfileBtn();
-    if (meta && meta.dangerous) toast("Agent 将拥有完整权限，请谨慎使用", true);
+    if (meta && meta.dangerous) toast(T("Agent 将拥有完整权限，请谨慎使用"), true);
   });
 
-  // ------------------------------------------------------------ theme choice
+  // ------------------------------------------------------- theme and language
 
   $("#main").addEventListener("click", function (e) {
     var themeChoice = e.target.closest("[data-theme-choice]");
-    if (!themeChoice) return;
-    applyTheme(themeChoice.getAttribute("data-theme-choice"));
-    if (S.route === "settings") renderSettings();
+    if (themeChoice) {
+      applyTheme(themeChoice.getAttribute("data-theme-choice"));
+      if (S.route === "settings") renderSettings();
+      return;
+    }
+    var langChoice = e.target.closest("[data-lang-choice]");
+    if (langChoice) setLanguage(langChoice.getAttribute("data-lang-choice"));
   });
+
+  // The language belongs to this app (the hub), not to the device being
+  // shown: the Mac and Android apps read it for their own menus and
+  // notifications too. The page reloads to redraw everything in it.
+  function setLanguage(lang) {
+    if (lang === S.langPref) return;
+    api("/api/settings", { method: "PATCH", hub: true, body: { language: lang } }).then(function () {
+      S.langPref = lang;
+      location.reload();
+    }).catch(function (e) { toast(e.message, true); });
+  }
 
   // ----------------------------------------------------------------- settings
 
@@ -3890,13 +3971,13 @@
     $("#settings-btn").classList.add("active");
     setBackButton(true);
     setAgentPicker(false);
-    setTop("系统设置", "");
+    setTop(T("系统设置"), "");
     renderApprovalNotifications();
     var node = S.node;
     var cached = S.settingsCache[node];
     S.settingsPainted = "";
     if (cached) paintSettings(cached);
-    else $("#main").innerHTML = '<div class="pad"><div class="empty"><span class="spinner"></span> 加载中…</div></div>';
+    else $("#main").innerHTML = '<div class="pad"><div class="empty"><span class="spinner"></span> ' + T("加载中…") + "</div></div>";
     Promise.all([api("/api/settings"), loadNodes(true)]).then(function (res) {
       var d = res[0];
       S.settingsCache[node] = d;
@@ -3908,7 +3989,7 @@
       paintSettings(d);
     }).catch(function (e) {
       if (S.route !== "settings" || S.node !== node || cached) return;
-      $("#main").innerHTML = '<div class="empty">加载失败：' + esc(e.message) + "</div>";
+      $("#main").innerHTML = '<div class="empty">' + esc(T("加载失败：%s", e.message)) + "</div>";
     });
     // Fresh online states for the device rows.
     loadNodes().then(function () {
@@ -3921,7 +4002,7 @@
   // open sections and scroll position; it leaves the page alone while the
   // user is typing in it.
   function paintSettings(d) {
-    var sig = JSON.stringify([d, S.nodes, S.hubOnly, S.theme]);
+    var sig = JSON.stringify([d, S.nodes, S.hubOnly, S.theme, S.langPref]);
     if (sig === S.settingsPainted) return;
     var main = $("#main");
     var focus = document.activeElement;
@@ -3942,7 +4023,7 @@
     var b = $("#menu-btn");
     if (b.classList.contains("back") === on) return;
     b.classList.toggle("back", on);
-    b.setAttribute("aria-label", on ? "返回" : "打开对话列表");
+    b.setAttribute("aria-label", on ? T("返回") : T("打开对话列表"));
     b.querySelector("path").setAttribute("d", on ? "M15 5l-7 7 7 7" : "M4 8h16M4 16h10");
   }
 
@@ -3962,8 +4043,8 @@
     var order = [["completed", "已完成"], ["running", "运行中"], ["waiting_input", "等待审批"],
       ["pending", "启动中"], ["failed", "失败"], ["interrupted", "中断"], ["cancelled", "取消"]];
     var out = order.filter(function (x) { return c && c[x[0]]; })
-      .map(function (x) { return x[1] + " " + c[x[0]]; });
-    return out.join(" · ") || "暂无任务";
+      .map(function (x) { return T(x[1]) + " " + c[x[0]]; });
+    return out.join(" · ") || T("暂无任务");
   }
 
   function renderSettingsData(d) {
@@ -3971,7 +4052,7 @@
     // Agent rows expand in place; the summary line shows name, version and state.
     var agents = (d.agents || []).map(function (a) {
       var n = esc(a.name);
-      var state = a.available ? (a.authenticated ? "可用" : "未认证") : "不可用";
+      var state = a.available ? (a.authenticated ? T("可用") : T("未认证")) : T("不可用");
       return '<details><summary>' +
         '<span class="agent-head">' + agentIcon(a.name) +
         '<span class="agent-name">' + esc(a.label || a.name) + "</span>" +
@@ -3979,16 +4060,16 @@
         '<span class="badge ' + (a.available && a.authenticated ? "status completed" : a.available ? "status pending" : "status failed") + '">' +
         state + "</span></summary>" +
         '<div class="g-body"><dl class="agent-meta">' +
-        "<dt>版本</dt><dd>" + esc(a.version || "—") + "</dd>" +
-        "<dt>路径</dt><dd class=\"mono\">" + esc(a.binary || "—") + "</dd>" +
-        "<dt>认证</dt><dd>" + esc(a.auth_detail || "—") + "</dd>" +
-        "<dt>会话续接</dt><dd>" + (a.supports_resume ? "支持" : "不支持") + "</dd>" +
-        "<dt>权限交互</dt><dd>" + (a.supports_permissions ? "支持网页审批" : "不支持（使用沙箱限制）") + "</dd>" +
-        "<dt>说明</dt><dd>" + esc(a.permission_detail || "") + "</dd>" +
+        "<dt>" + T("版本") + "</dt><dd>" + esc(a.version || "—") + "</dd>" +
+        "<dt>" + T("路径") + "</dt><dd class=\"mono\">" + esc(a.binary || "—") + "</dd>" +
+        "<dt>" + T("认证") + "</dt><dd>" + esc(TR(a.auth_detail || a.error) || "—") + "</dd>" +
+        "<dt>" + T("会话续接") + "</dt><dd>" + (a.supports_resume ? T("支持") : T("不支持")) + "</dd>" +
+        "<dt>" + T("权限交互") + "</dt><dd>" + (a.supports_permissions ? T("支持网页审批") : T("不支持（使用沙箱限制）")) + "</dd>" +
+        "<dt>" + T("说明") + "</dt><dd>" + esc(TR(a.permission_detail || "")) + "</dd>" +
         "</dl>" +
         '<div class="agent-actions">' +
-        '<button type="button" class="btn sm" data-agent-check="' + n + '" title="向 npm 查询最新版本">检查更新</button>' +
-        '<button type="button" class="btn sm" data-agent-restart="' + n + '" title="重新检测配置，并重启该 Agent 正在运行的任务">重启 Agent</button>' +
+        '<button type="button" class="btn sm" data-agent-check="' + n + '" title="' + esc(T("向 npm 查询最新版本")) + '">' + T("检查更新") + "</button>" +
+        '<button type="button" class="btn sm" data-agent-restart="' + n + '" title="' + esc(T("重新检测配置，并重启该 Agent 正在运行的任务")) + '">' + T("重启 Agent") + "</button>" +
         "</div>" +
         '<div class="agent-update small muted" data-agent-update="' + n + '"></div>' +
         "</div></details>";
@@ -3997,49 +4078,56 @@
     var counts = d.counts || {};
     var addr = "http://" + (cfg.easytier_ip || location.hostname) + ":" + (cfg.port || "");
 
-    var devices = '<div><div class="section-title">设备</div><div class="group">' + settingsDeviceRows() +
-      '<button type="button" class="g-row link" data-add-device="1"><span class="g-label">添加服务器</span>' +
-      '<span class="g-value">通过 SSH</span></button></div>' +
-      '<div class="g-note">客户端通过 SSH 连接服务器并自动部署节点；服务器只需开放 SSH。' +
-      (multiNode() ? "下面的 Agent、通用与服务设置属于当前设备「" + esc(nodeLabel(S.node)) + "」。" : "") + "</div></div>" +
-      '<div><div class="section-title">密钥与迁移</div><div class="group">' +
-      '<button type="button" class="g-row link" data-keys="1"><span class="g-label">密钥</span><span class="g-value">SSH 密钥库</span></button>' +
-      '<button type="button" class="g-row link" data-export="1"><span class="g-label">导出设备</span><span class="g-value">二维码或文件</span></button>' +
-      '<button type="button" class="g-row link" data-import="1"><span class="g-label">导入设备</span></button></div>' +
-      '<div class="g-note">二维码用手机上生成的配对码加密，文件用随机生成的解密码加密，可以把电脑上的服务器配置快速迁到手机。只包含 SSH 与节点凭据，不含任何 Agent 账号。</div></div>';
+    var devices = '<div><div class="section-title">' + T("设备") + '</div><div class="group">' + settingsDeviceRows() +
+      '<button type="button" class="g-row link" data-add-device="1"><span class="g-label">' + T("添加服务器") + "</span>" +
+      '<span class="g-value">' + T("通过 SSH") + "</span></button></div>" +
+      '<div class="g-note">' + T("客户端通过 SSH 连接服务器并自动部署节点；服务器只需开放 SSH。") +
+      (multiNode() ? T("下面的 Agent、通用与服务设置属于当前设备「%s」。", esc(nodeLabel(S.node))) : "") + "</div></div>" +
+      '<div><div class="section-title">' + T("密钥与迁移") + '</div><div class="group">' +
+      '<button type="button" class="g-row link" data-keys="1"><span class="g-label">' + T("密钥") + '</span><span class="g-value">' + T("SSH 密钥库") + "</span></button>" +
+      '<button type="button" class="g-row link" data-export="1"><span class="g-label">' + T("导出设备") + '</span><span class="g-value">' + T("二维码或文件") + "</span></button>" +
+      '<button type="button" class="g-row link" data-import="1"><span class="g-label">' + T("导入设备") + "</span></button></div>" +
+      '<div class="g-note">' + T("二维码用手机上生成的配对码加密，文件用随机生成的解密码加密，可以把电脑上的服务器配置快速迁到手机。只包含 SSH 与节点凭据，不含任何 Agent 账号。") + "</div></div>";
+    // Appearance and language belong to this app, whichever device is shown.
+    var langs = [["", T("跟随系统")], ["zh", "中文"], ["en", "English"]];
+    var look = '<div><div class="section-title">' + T("界面") + '</div><div class="group">' +
+      '<div class="g-row"><span class="g-label">' + T("外观") + '</span><span class="seg">' +
+      ["auto", "light", "dark"].map(function (t) {
+        return '<button type="button" class="' + (S.theme === t ? "on" : "") + '" data-theme-choice="' + t + '">' +
+          T(({ auto: "自动", dark: "深色", light: "浅色" })[t]) + "</button>";
+      }).join("") + "</span></div>" +
+      '<div class="g-row"><span class="g-label">' + T("语言") + '</span><span class="seg">' +
+      langs.map(function (l) {
+        return '<button type="button" class="' + ((S.langPref || "") === l[0] ? "on" : "") + '" data-lang-choice="' + l[0] + '">' +
+          esc(l[1]) + "</button>";
+      }).join("") + "</span></div></div></div>";
     $("#main").innerHTML = '<div class="pad stack settings">' + devices + (noDevice() ? "" :
       '<div><div class="section-title">Agent</div><div class="group">' + agents + "</div></div>") +
 
-      '<div><div class="section-title">通用</div><div class="group">' +
-      '<div class="g-row"><span class="g-label">外观</span><span class="seg">' +
-      ["auto", "light", "dark"].map(function (t) {
-        return '<button type="button" class="' + (S.theme === t ? "on" : "") + '" data-theme-choice="' + t + '">' +
-          ({ auto: "自动", dark: "深色", light: "浅色" })[t] + "</button>";
-      }).join("") + "</span></div>" + (noDevice() ? "</div></div>" :
-      '<label class="g-row"><span class="g-label">默认工作目录</span>' +
+      look + (noDevice() ? "" :
+      '<div><div class="section-title">' + T("通用") + '</div><div class="group">' +
+      '<label class="g-row"><span class="g-label">' + T("默认工作目录") + "</span>" +
       '<input id="set-cwd" class="g-input mono" value="' + esc(cfg.default_cwd || "") + '" spellcheck="false" autocomplete="off"></label>' +
-      '<label class="g-row"><span class="g-label">最大并发任务</span>' +
+      '<label class="g-row"><span class="g-label">' + T("最大并发任务") + "</span>" +
       '<input id="set-max" class="g-input num" type="number" inputmode="numeric" min="1" max="32" value="' + esc(String(cfg.max_concurrent || "")) + '"></label>' +
-      '</div><div class="g-note">修改后自动保存。并发上限 1–32。</div></div>' +
+      '</div><div class="g-note">' + T("修改后自动保存。并发上限 1–32。") + "</div></div>" +
 
-      '<div><div class="section-title">服务</div><div class="group">' +
-      '<div class="g-row"><span class="g-label">访问地址</span><span class="g-value mono">' + esc(addr) + "</span></div>" +
-      '<div class="g-row"><span class="g-label">版本</span><span class="g-value">' + esc(d.version || "") + " · 已运行 " + esc(dur(d.started_at)) + "</span></div>" +
-      '<details><summary><span class="g-label">运行信息</span></summary><div class="g-body"><dl class="kv">' +
-      "<dt>绑定</dt><dd class=\"mono\">" + esc((cfg.bind_addrs || []).join("  ")) + "</dd>" +
+      '<div><div class="section-title">' + T("服务") + '</div><div class="group">' +
+      '<div class="g-row"><span class="g-label">' + T("访问地址") + '</span><span class="g-value mono">' + esc(addr) + "</span></div>" +
+      '<div class="g-row"><span class="g-label">' + T("版本") + '</span><span class="g-value">' + esc(d.version || "") + " · " + esc(T("已运行 %s", dur(d.started_at))) + "</span></div>" +
+      '<details><summary><span class="g-label">' + T("运行信息") + '</span></summary><div class="g-body"><dl class="kv">' +
+      "<dt>" + T("绑定") + "</dt><dd class=\"mono\">" + esc((cfg.bind_addrs || []).join("  ")) + "</dd>" +
       "<dt>PID</dt><dd>" + esc(String((d.status || {}).pid || "")) + "</dd>" +
-      "<dt>数据目录</dt><dd class=\"mono\">" + esc(cfg.data_dir || "") + "</dd>" +
-      "<dt>数据库</dt><dd class=\"mono\">" + esc(cfg.db_path || "") + "</dd>" +
-      "<dt>日志目录</dt><dd class=\"mono\">" + esc(cfg.log_dir || "") + "</dd>" +
-      "<dt>允许根目录</dt><dd class=\"mono\">" + esc((cfg.allowed_roots || []).join("  ")) + "</dd>" +
-      "<dt>任务</dt><dd>" + esc(countsSummary(counts)) + "</dd>" +
+      "<dt>" + T("数据目录") + "</dt><dd class=\"mono\">" + esc(cfg.data_dir || "") + "</dd>" +
+      "<dt>" + T("数据库") + "</dt><dd class=\"mono\">" + esc(cfg.db_path || "") + "</dd>" +
+      "<dt>" + T("日志目录") + "</dt><dd class=\"mono\">" + esc(cfg.log_dir || "") + "</dd>" +
+      "<dt>" + T("允许根目录") + "</dt><dd class=\"mono\">" + esc((cfg.allowed_roots || []).join("  ")) + "</dd>" +
+      "<dt>" + T("任务") + "</dt><dd>" + esc(countsSummary(counts)) + "</dd>" +
       "</dl></div></details>" +
-      "</div></div>" +
+      "</div></div>") +
 
-      "") +
-
-      '<div class="about">Rymesh ' + esc(d.version || "") +
-      " · Agent 在各自的服务器上运行，关闭页面或应用不会中断任务；需要审批或回答的问题会出现在对话里。</div>" +
+      '<div class="about">Rymesh ' + esc(d.version || "") + " · " +
+      T("Agent 在各自的服务器上运行，关闭页面或应用不会中断任务；需要审批或回答的问题会出现在对话里。") + "</div>" +
       "</div>";
 
     var agentLabels = {};
@@ -4056,19 +4144,19 @@
       var box = agentUpdateBox(u.name);
       if (!box) return;
       if (u.error) {
-        box.innerHTML = '<span class="error-text">' + esc(u.error) + "</span>";
+        box.innerHTML = '<span class="error-text">' + esc(TR(u.error)) + "</span>";
         return;
       }
-      var head = "当前 " + (u.installed || "未安装") + " · 最新 " + (u.latest || "—");
+      var head = esc(T("当前 %s · 最新 %s", u.installed || T("未安装"), u.latest || "—"));
       if (u.available) {
-        box.innerHTML = head + ' · <span style="color:var(--amber)">有更新</span>' +
+        box.innerHTML = head + ' · <span style="color:var(--amber)">' + T("有更新") + "</span>" +
           '<div style="margin-top:8px"><button type="button" class="btn primary sm" data-agent-apply="' +
-          esc(u.name) + '">' + (u.installed ? "更新到 " : "安装 ") + esc(u.latest || "") + "</button></div>" +
+          esc(u.name) + '">' + esc(u.installed ? T("更新到 %s", u.latest || "") : T("安装 %s", u.latest || "")) + "</button></div>" +
           (u.command ? '<div class="mono agent-cmd">' + esc(u.command) + "</div>" : "");
         var b = box.querySelector("[data-agent-apply]");
         if (b) b.addEventListener("click", function () { applyAgentUpdate(u, b); });
       } else {
-        box.innerHTML = head + " · 已是最新" +
+        box.innerHTML = head + " · " + T("已是最新") +
           (u.command ? '<div class="mono agent-cmd">' + esc(u.command) + "</div>" : "");
       }
     }
@@ -4076,24 +4164,24 @@
     function applyAgentUpdate(u, btn) {
       var label = agentLabels[u.name] || u.name;
       var cmd = u.command || "";
-      confirmSheet("更新 " + label + "？",
-        '<p>将执行：</p><pre class="mono agent-cmd">' + esc(cmd) + "</pre>" +
-        "<p>安装期间不会中断正在运行的任务；新任务会使用新版本。</p>", "更新")
+      confirmSheet(T("更新 %s？", label),
+        "<p>" + T("将执行：") + '</p><pre class="mono agent-cmd">' + esc(cmd) + "</pre>" +
+        "<p>" + T("安装期间不会中断正在运行的任务；新任务会使用新版本。") + "</p>", T("更新"))
         .then(function (ok) {
           if (!ok) return;
-          btn.disabled = true; btn.textContent = "更新中…";
+          btn.disabled = true; btn.textContent = T("更新中…");
           var box = agentUpdateBox(u.name);
-          if (box) box.innerHTML = "<span>正在执行 " + esc(cmd) + "，请稍候…</span>";
+          if (box) box.innerHTML = "<span>" + esc(T("正在执行 %s，请稍候…", cmd)) + "</span>";
           api("/api/agents/" + encodeURIComponent(u.name) + "/update", { method: "POST", body: {} })
             .then(function (r) {
               var v = (r.agent && r.agent.version) || r.version || "";
-              toast(v ? "已更新：" + v : "更新完成");
+              toast(v ? T("已更新：%s", v) : T("更新完成"));
               renderSettings();
             })
             .catch(function (e) {
-              toast("更新失败", true);
+              toast(T("更新失败"), true);
               if (box) box.innerHTML = '<span class="error-text">' + esc(e.message) + "</span>";
-              btn.disabled = false; btn.textContent = "重试更新";
+              btn.disabled = false; btn.textContent = T("重试更新");
             });
         });
     }
@@ -4107,27 +4195,26 @@
         var queued = mine.length - running.length;
         var html;
         if (!running.length) {
-          html = "<p>" + esc(label) + " 当前没有正在运行的任务。</p>" +
-            "<p>点击后会重新检测版本、认证与模型。新消息本来就会读取最新的 config/settings，无需重启。</p>";
+          html = "<p>" + T("%s 当前没有正在运行的任务。", esc(label)) + "</p>" +
+            "<p>" + T("点击后会重新检测版本、认证与模型。新消息本来就会读取最新的 config/settings，无需重启。") + "</p>";
         } else {
-          html = "<p>将结束并用相同内容重新运行 <b>" + running.length + "</b> 个正在运行或等待审批的任务，" +
-            "新进程会读取最新的 config/settings。已经执行过的步骤可能重复执行。</p>" +
-            (queued ? "<p>另有 " + queued + " 个排队任务不会被中断，它们启动时本就会使用新配置。</p>" : "");
+          html = "<p>" + T("将结束并用相同内容重新运行 <b>%d</b> 个正在运行或等待审批的任务，新进程会读取最新的 config/settings。已经执行过的步骤可能重复执行。", running.length) + "</p>" +
+            (queued ? "<p>" + T("另有 %d 个排队任务不会被中断，它们启动时本就会使用新配置。", queued) + "</p>" : "");
         }
-        return confirmSheet("重启 " + label + "？", html, "重启").then(function (ok) {
+        return confirmSheet(T("重启 %s？", label), html, T("重启")).then(function (ok) {
           if (!ok) return;
-          btn.disabled = true; btn.textContent = "重启中…";
+          btn.disabled = true; btn.textContent = T("重启中…");
           return api("/api/agents/" + encodeURIComponent(name) + "/restart", { method: "POST", body: {} })
             .then(function (res) {
-              if (res.restarted) toast("正在重启 " + res.restarted + " 个任务…");
-              else toast("已重新检测 " + label + " 配置");
+              if (res.restarted) toast(T("正在重启 %d 个任务…", res.restarted));
+              else toast(T("已重新检测 %s 配置", label));
               renderSettings();
             });
         });
       }).catch(function (e) {
         toast(e.message, true);
       }).then(function () {
-        btn.disabled = false; btn.textContent = "重启 Agent";
+        btn.disabled = false; btn.textContent = T("重启 Agent");
       });
     }
 
@@ -4135,16 +4222,16 @@
       btn.addEventListener("click", function () {
         var name = btn.getAttribute("data-agent-check");
         var box = agentUpdateBox(name);
-        btn.disabled = true; btn.textContent = "检查中…";
-        if (box) box.innerHTML = "<span>正在向 npm 查询最新版本…</span>";
+        btn.disabled = true; btn.textContent = T("检查中…");
+        if (box) box.innerHTML = "<span>" + T("正在向 npm 查询最新版本…") + "</span>";
         api("/api/agents/updates").then(function (r) {
           var u = (r.updates || []).filter(function (x) { return x.name === name; })[0];
           if (u) renderAgentUpdate(u);
-          else if (box) box.innerHTML = "未返回该 Agent 的版本信息";
+          else if (box) box.innerHTML = T("未返回该 Agent 的版本信息");
         }).catch(function (e) {
           if (box) box.innerHTML = '<span class="error-text">' + esc(e.message) + "</span>";
         }).then(function () {
-          btn.disabled = false; btn.textContent = "检查更新";
+          btn.disabled = false; btn.textContent = T("检查更新");
         });
       });
     });
@@ -4162,7 +4249,7 @@
         var c = r.config || {};
         if (c.default_cwd !== undefined) S.config.default_cwd = c.default_cwd;
         if (c.max_concurrent !== undefined) S.config.max_concurrent = c.max_concurrent;
-        toast("已保存");
+        toast(T("已保存"));
       }).catch(function (e) {
         toast(e.message, true);
         input.value = input.name === "max" ? S.config.max_concurrent : S.config.default_cwd;
@@ -4235,7 +4322,7 @@
     S.draftAgent = name;
     LS.set("draftAgent", name);
     S.draftSettings = {}; // models differ per agent
-    if (S.route !== "home") toast("已选择 " + (a.label || name) + "，开始新对话");
+    if (S.route !== "home") toast(T("已选择 %s，开始新对话", a.label || name));
     newChat(name);
   });
 
@@ -4272,7 +4359,7 @@
     closeSidebar();
     if (S.session && S.session.id === sid && S.route === "chat") {
       ensurePermissionCards();
-      if (!focusPermissionCard(pid)) toast("审批请求已失效");
+      if (!focusPermissionCard(pid)) toast(T("审批请求已失效"));
     } else go("#/session/" + encodeURIComponent(sid));
   });
 
@@ -4303,7 +4390,7 @@
     var b = e.target.closest("[data-run-plan]");
     if (!b || !S.session) return;
     if (currentAgentName() === "codex") setProfile("workspace-write");
-    $("#prompt").value = "请按上面的计划执行。";
+    $("#prompt").value = T("请按上面的计划执行。");
     b.disabled = true;
     sendMessage();
   });
@@ -4340,7 +4427,7 @@
         var s = document.createElement("script");
         s.src = src;
         s.onload = ok;
-        s.onerror = function () { fail(new Error("无法加载终端组件")); };
+        s.onerror = function () { fail(new Error(T("无法加载终端组件"))); };
         document.head.appendChild(s);
       });
     }
@@ -4451,7 +4538,7 @@
     }).catch(function (e) {
       if (TERM.key !== key) return;
       TERM.ended = true;
-      TERM.xterm.write("\r\n\x1b[31m无法打开终端：" + e.message + "\x1b[0m\r\n");
+      TERM.xterm.write("\r\n\x1b[31m" + T("无法打开终端：%s", e.message) + "\x1b[0m\r\n");
     });
   }
 
@@ -4494,7 +4581,7 @@
       TERM.es = null;
       TERM.ended = true;
       LS.del(TERM.key);
-      TERM.xterm.write("\r\n\x1b[2m[已退出 · 按任意键重新打开]\x1b[0m\r\n");
+      TERM.xterm.write("\r\n\x1b[2m" + T("[已退出 · 按任意键重新打开]") + "\x1b[0m\r\n");
     });
     // EventSource cannot see a 404 and would retry a finished terminal
     // forever. Reconnect by hand, after asking whether it still exists (a
@@ -4511,7 +4598,7 @@
         }).catch(function (e) {
           if (TERM.id !== id) return;
           if (e.status === 404) {
-            TERM.xterm.write("\r\n\x1b[2m[终端已结束，已重新打开]\x1b[0m\r\n");
+            TERM.xterm.write("\r\n\x1b[2m" + T("[终端已结束，已重新打开]") + "\x1b[0m\r\n");
             reopenTerm();
           } else {
             setTimeout(function () { if (TERM.id === id && !TERM.es) connectTerm(); }, 2000);
@@ -4530,7 +4617,7 @@
     TERM.queue = "";
     TERM.sending = true;
     api("/api/terminals/" + id + "/input", { method: "POST", node: TERM.node, body: { data: chunk } })
-      .catch(function (e) { if (e.status === 404 || e.status === 410) toast("终端已结束", true); })
+      .catch(function (e) { if (e.status === 404 || e.status === 410) toast(T("终端已结束"), true); })
       .then(function () {
         TERM.sending = false;
         if (TERM.queue) termSend("");
@@ -4613,7 +4700,7 @@
     TERM.key = "";
     closeTerminalView();
     if (id) api("/api/terminals/" + id, { method: "DELETE", node: node }).catch(function () {});
-    toast("终端已结束");
+    toast(T("终端已结束"));
   });
 
   // -------------------------------------------------------------------- files
@@ -4647,7 +4734,7 @@
     FILES.pick = on;
     $("#files").classList.toggle("picking", on);
     $("#files-pick").hidden = !on;
-    $("#files-title").textContent = on ? "选择工作目录" : "文件";
+    $("#files-title").textContent = on ? T("选择工作目录") : T("文件");
   }
 
   function openFolderPicker(start) {
@@ -4671,7 +4758,7 @@
       closeFilesView();
       if (S.route === "home") renderHome();
       else updateComposerMeta();
-      toast("新对话将在 " + (d.cwd.length > 40 ? "…" + d.cwd.slice(-39) : d.cwd) + " 中运行");
+      toast(T("新对话将在 %s 中运行", d.cwd.length > 40 ? "…" + d.cwd.slice(-39) : d.cwd));
       if (d.warning) toast(d.warning, true);
     }).catch(function (e) { toast(e.message, true); })
       .then(function () { btn.disabled = false; });
@@ -4708,8 +4795,8 @@
     }).catch(function (e) {
       if (tok !== FILES.token) return;
       $("#files-sub").textContent = path;
-      $("#files-list").innerHTML = '<div class="empty">无法打开：' + esc(e.message) +
-        (FILES.path && FILES.path !== path ? '<div><button type="button" class="btn sm" data-dir="' + esc(FILES.path) + '">返回</button></div>' : "") + "</div>";
+      $("#files-list").innerHTML = '<div class="empty">' + esc(T("无法打开：%s", e.message)) +
+        (FILES.path && FILES.path !== path ? '<div><button type="button" class="btn sm" data-dir="' + esc(FILES.path) + '">' + T("返回") + "</button></div>" : "") + "</div>";
     });
   }
 
@@ -4731,7 +4818,7 @@
     if (FILES.parent) {
       rows.push('<button type="button" class="file-row up" data-dir="' + esc(FILES.parent) + '">' +
         '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4.5 9.5 9 5M5 9.5h9a5.5 5.5 0 0 1 0 11h-2"/></svg>' +
-        '<span class="file-name">上一级</span></button>');
+        '<span class="file-name">' + T("上一级") + "</span></button>");
     }
     shown.forEach(function (e) {
       var full = joinPath(FILES.path, e.name);
@@ -4744,7 +4831,7 @@
       var ico = e.dir
         ? '<path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>'
         : '<path d="M7 3.5h6.5L18 8v12.5H7z"/><path d="M13 3.5V8h5"/>';
-      var meta = (e.dir ? "" : fmtSize(e.size) + " · ") + rel(e.mtime) + (e.link ? " · 链接" : "");
+      var meta = (e.dir ? "" : fmtSize(e.size) + " · ") + rel(e.mtime) + (e.link ? " · " + T("链接") : "");
       rows.push('<button type="button" class="file-row' + (e.dir ? " dir" : "") + '" data-entry="' + esc(full) + '" data-name="' + esc(e.name) + '" ' +
         (e.dir ? 'data-dir="' + esc(full) + '"' : 'data-file="' + esc(full) + '" data-size="' + e.size + '"') + ">" +
         '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true">' + ico + "</svg>" +
@@ -4754,9 +4841,9 @@
     });
     if (!shown.length) {
       var hiddenN = FILES.entries.length - shown.length;
-      rows.push('<div class="empty">' + (hiddenN ? "只有 " + hiddenN + " 个隐藏项" : "空文件夹") + "</div>");
+      rows.push('<div class="empty">' + (hiddenN ? T("只有 %d 个隐藏项", hiddenN) : T("空文件夹")) + "</div>");
     }
-    if (FILES.truncated) rows.push('<div class="empty">只显示了前 5000 项</div>');
+    if (FILES.truncated) rows.push('<div class="empty">' + T("只显示了前 5000 项") + "</div>");
     $("#files-list").innerHTML = rows.join("");
     $("#files-pick-path").textContent = FILES.path;
   }
@@ -4773,14 +4860,14 @@
     var box = $("#files-jobs");
     box.innerHTML = FILES.jobs.map(function (j) {
       var pct = j.total > 0 ? Math.min(100, Math.round(j.done / j.total * 100)) : 0;
-      var verb = j.kind === "up" ? "上传" : "下载";
+      var up = j.kind === "up";
       var status = j.state === "done"
-        ? (j.kind === "up" ? "已上传" : "已保存到" + (j.info ? " " + j.info : ""))
-        : j.state === "error" ? verb + "失败：" + j.info
-        : j.state === "browser" ? "已交给浏览器下载"
-        : (j.total > 0 ? pct + "% · " + fmtSize(j.done) + " / " + fmtSize(j.total) : verb + "中… " + (j.done ? fmtSize(j.done) : ""));
+        ? (up ? T("已上传") : j.info ? T("已保存到 %s", TR(j.info)) : T("已保存"))
+        : j.state === "error" ? (up ? T("上传失败：%s", TR(j.info)) : T("下载失败：%s", TR(j.info)))
+        : j.state === "browser" ? T("已交给浏览器下载")
+        : (j.total > 0 ? pct + "% · " + fmtSize(j.done) + " / " + fmtSize(j.total) : (up ? T("上传中…") : T("下载中…")) + " " + (j.done ? fmtSize(j.done) : ""));
       var open = j.kind === "down" && j.state === "done" && (androidNative || macNative)
-        ? '<button type="button" class="btn sm" data-open-dl="' + esc(j.id) + '">' + (macNative ? "在访达中显示" : "打开") + "</button>" : "";
+        ? '<button type="button" class="btn sm" data-open-dl="' + esc(j.id) + '">' + (macNative ? T("在访达中显示") : T("打开")) + "</button>" : "";
       return '<div class="file-job ' + esc(j.state || "run") + '">' +
         '<div class="file-job-text"><span class="file-name">' + esc(j.name) + '</span><span class="file-meta">' + esc(status) + "</span></div>" +
         open + (j.state ? "" : '<div class="file-job-bar"><i style="width:' + pct + '%"></i></div>') + "</div>";
@@ -4795,7 +4882,7 @@
     if (total > 0) j.total = total;
     if (state) { j.state = state; j.info = info || ""; }
     renderJobs();
-    if (state === "error") toast(j.name + " 下载失败", true);
+    if (state === "error") toast(T("%s 下载失败", j.name), true);
   };
 
   function downloadFile(path, name, size) {
@@ -4845,7 +4932,7 @@
       }
       renderJobs();
     };
-    xhr.onerror = function () { job.state = "error"; job.info = "连接中断"; renderJobs(); };
+    xhr.onerror = function () { job.state = "error"; job.info = T("连接中断"); renderJobs(); };
     xhr.send(file);
   }
 
@@ -4873,9 +4960,9 @@
     var path = row.getAttribute("data-entry"), name = row.getAttribute("data-name");
     var isDir = row.hasAttribute("data-dir");
     var items = isDir
-      ? [{ label: "打开", value: "open" }]
-      : [{ label: "下载", value: "download", sub: fmtSize(+row.getAttribute("data-size")) }];
-    items.push({ label: "重命名", value: "rename" }, { label: "删除", value: "delete", danger: true });
+      ? [{ label: T("打开"), value: "open" }]
+      : [{ label: T("下载"), value: "download", sub: fmtSize(+row.getAttribute("data-size")) }];
+    items.push({ label: T("重命名"), value: "rename" }, { label: T("删除"), value: "delete", danger: true });
     pickList(name, items).then(function (a) {
       if (a === "open") loadDir(path);
       else if (a === "download") downloadFile(path, name, +row.getAttribute("data-size"));
@@ -4886,11 +4973,11 @@
 
   function renameFile(path, name) {
     var dir = FILES.path, node = FILES.node;
-    askText("重命名", { label: "新名称", value: name, ok: "确认重命名" }).then(function (v) {
+    askText(T("重命名"), { label: T("新名称"), value: name, ok: T("确认重命名") }).then(function (v) {
       v = (v || "").trim();
       if (!v || v === name) return;
       api("/api/files/rename", { method: "POST", node: FILES.node, body: { path: path, name: v } }).then(function () {
-        toast("已重命名为 " + v);
+        toast(T("已重命名为 %s", v));
         if (FILES.path === dir && FILES.node === node) loadDir(dir);
       }).catch(function (e) { toast(e.message, true); });
     });
@@ -4898,13 +4985,13 @@
 
   function deleteFile(path, name, isDir) {
     var dir = FILES.path, node = FILES.node;
-    confirmSheet("删除「" + truncate(name, 40) + "」？",
-      "<p>" + (isDir ? "文件夹和其中的所有内容都会被删除，" : "") + "删除后无法恢复。</p>" +
+    confirmSheet(T("删除「%s」？", truncate(name, 40)),
+      "<p>" + (isDir ? T("文件夹和其中的所有内容都会被删除，删除后无法恢复。") : T("删除后无法恢复。")) + "</p>" +
       '<p class="small muted mono" style="word-break:break-all">' + esc(path) + "</p>",
-      "删除", true).then(function (ok) {
+      T("删除"), true).then(function (ok) {
       if (!ok) return;
       api("/api/files/delete", { method: "POST", node: FILES.node, body: { path: path } }).then(function () {
-        toast("已删除 " + name);
+        toast(T("已删除 %s", name));
         if (FILES.path === dir && FILES.node === node) loadDir(dir);
       }).catch(function (e) { toast(e.message, true); });
     });
@@ -4967,15 +5054,15 @@
     var code = block ? block.querySelector("code") : null;
     if (!code) return;
     writeClipboard(code.textContent).then(function (ok) {
-      if (!ok) { toast("复制失败", true); return; }
+      if (!ok) { toast(T("复制失败"), true); return; }
       // The tick holds for 2.5s and fades back; another click while it shows
       // only restarts the wait, so the icon does not flicker.
       clearTimeout(c._copyTimer);
       c.classList.add("done");
-      c.setAttribute("aria-label", "已复制");
+      c.setAttribute("aria-label", T("已复制"));
       c._copyTimer = setTimeout(function () {
         c.classList.remove("done");
-        c.setAttribute("aria-label", "复制代码");
+        c.setAttribute("aria-label", T("复制代码"));
       }, 2500);
     });
   });
@@ -5000,14 +5087,27 @@
 
   // ---------------------------------------------------------------- start-up
   applyTheme(S.theme);
+  // The language comes first: everything drawn after it is in that language.
+  function startLanguage(pref) {
+    S.langPref = pref || "";
+    return window.I18N.load(S.langPref).then(function (lang) {
+      window.I18N.localize(document.body);
+      // The Mac app names its menus and notifications in the same language.
+      if (macNative) macNative.postMessage({ op: "lang", lang: lang });
+    });
+  }
   fetch("/api/session", { credentials: "same-origin", cache: "no-store" })
     .then(function (r) { return r.json(); })
     .then(function (d) {
-      if (d.authenticated) {
-        S.csrf = d.csrf || "";
-        return boot();
-      }
-      showLogin();
+      return startLanguage(d.language).then(function () {
+        if (d.authenticated) {
+          S.csrf = d.csrf || "";
+          return boot();
+        }
+        showLogin();
+      });
     })
-    .catch(function () { showLogin(); });
+    .catch(function () {
+      (S.langPref === undefined ? startLanguage("") : Promise.resolve()).then(showLogin);
+    });
 })();

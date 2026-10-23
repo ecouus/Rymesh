@@ -200,13 +200,13 @@ func (c *acpSession) handleResponse(id string, result json.RawMessage, errMsg st
 			params["sessionId"] = c.spec.NativeID
 			c.call("session/resume", params)
 		default:
-			msg := c.label + " 不支持继续已有的会话，请新开一个对话"
+			msg := fmt.Sprintf("%s 不支持继续已有的会话，请新开一个对话", c.label)
 			c.event("error", map[string]any{"text": msg})
 			c.finish(store.StatusFailed, msg)
 		}
 	case "session/new", "session/load", "session/resume":
 		if method == "session/load" && acpEmptyResult(result) {
-			msg := c.label + " 找不到这段对话（可能已在 " + c.label + " 中删除），请新开一个对话"
+			msg := fmt.Sprintf("%[1]s 找不到这段对话（可能已在 %[1]s 中删除），请新开一个对话", c.label)
 			c.event("error", map[string]any{"text": msg})
 			c.finish(store.StatusFailed, msg)
 			return
@@ -262,7 +262,7 @@ func (c *acpSession) handleResponse(id string, result json.RawMessage, errMsg st
 			c.event("error", map[string]any{"text": "模型拒绝回答"})
 			c.finish(store.StatusFailed, "模型拒绝回答")
 		case "max_tokens", "max_turn_requests":
-			c.w.notice(c.label + " 已达到本轮的上限（" + r.StopReason + "）")
+			c.w.notice(fmt.Sprintf("%s 已达到本轮的上限（%s）", c.label, r.StopReason))
 			c.finish(store.StatusCompleted, "")
 		default:
 			c.finish(store.StatusCompleted, "")
@@ -374,7 +374,7 @@ func (c *acpSession) handleUpdate(params json.RawMessage) {
 		}
 		if len(lines) > 0 {
 			c.flush()
-			c.event("notice", map[string]any{"text": "计划：" + strings.Join(lines, "　")})
+			c.event("notice", map[string]any{"text": fmt.Sprintf("计划：%s", strings.Join(lines, "　"))})
 		}
 	case "available_commands_update":
 		// What "/" offers in the composer (ingest keeps the latest list).

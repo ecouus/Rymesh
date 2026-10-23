@@ -254,7 +254,7 @@ func (im *Importer) importCodexFile(path string, titles map[string]string, rep *
 		title = store.TruncateTitle(firstUser, 72)
 	}
 	if title == "" {
-		title = "Codex 会话 " + shortID(meta.ID)
+		title = fmt.Sprintf("Codex 会话 %s", shortID(meta.ID))
 	}
 	created := meta.Timestamp
 	if created == "" {
@@ -451,7 +451,7 @@ func (ps *claudeParse) title() string {
 	if t := store.TruncateTitle(ps.firstUser, 72); t != "" {
 		return t
 	}
-	return "Claude 会话 " + shortID(ps.sid)
+	return fmt.Sprintf("Claude 会话 %s", shortID(ps.sid))
 }
 
 // parseClaudeFile reads every record of a transcript. A nil ps returns just the

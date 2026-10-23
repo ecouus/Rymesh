@@ -76,7 +76,7 @@ func nodeSetupMain(args []string) int {
 	}
 	res, err := nodeSetup(*token, *port, *name)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "安装失败:", err)
+		fmt.Fprintln(os.Stderr, T("安装失败:"), Tr(err.Error()))
 		return 1
 	}
 	b, _ := json.Marshal(res)
@@ -187,13 +187,13 @@ func startNodeService(exe, cfgPath, base string) (service, warning string) {
 		if err := launchdInstall(exe, cfgPath, home, path, base); err == nil {
 			return "launchd", ""
 		} else if errors.Is(err, errLaunchdDisabled) {
-			warning = err.Error() + "。现在先以普通后台进程运行"
+			warning = fmt.Sprintf("%v。现在先以普通后台进程运行", err)
 		} else {
-			warning = "launchd 注册失败（" + err.Error() + "），已改为后台进程"
+			warning = fmt.Sprintf("launchd 注册失败（%v），已改为后台进程", err)
 		}
 	}
 	if err := startDetached(exe, cfgPath, base); err != nil {
-		return "none", "无法启动节点：" + err.Error()
+		return "none", fmt.Sprintf("无法启动节点：%v", err)
 	}
 	return "nohup", warning
 }
@@ -270,8 +270,7 @@ func systemctl(user bool, args ...string) error {
 
 const launchdLabel = "com.rymesh.node"
 
-var errLaunchdDisabled = errors.New("后台服务已在“系统设置 → 通用 → 登录项与扩展”中被关闭（允许在后台：rymesh）。" +
-	"打开它之后，控制台会随系统启动、崩溃后自动恢复")
+var errLaunchdDisabled = errors.New("后台服务已在“系统设置 → 通用 → 登录项与扩展”中被关闭（允许在后台：rymesh）。打开它之后，控制台会随系统启动、崩溃后自动恢复")
 
 // launchdInstall registers a LaunchAgent. AbandonProcessGroup keeps detached
 // runners alive when launchd restarts the node, like KillMode=process.

@@ -128,7 +128,7 @@ func (in deviceInput) apply(n *config.NodeConfig) error {
 			return err
 		}
 	default:
-		return errors.New("未知的连接方式: " + n.Transport)
+		return fmt.Errorf("未知的连接方式：%s", n.Transport)
 	}
 	return nil
 }
@@ -294,7 +294,7 @@ func (s *Server) handleDeviceTest(w http.ResponseWriter, r *http.Request) {
 	if n.HostKey == "" {
 		p, err := sshconn.ProbeHostKey(ctx, n)
 		if err != nil {
-			writeJSON(w, 200, map[string]any{"stage": "error", "error": "无法连接 " + n.SSHAddr() + "：" + err.Error()})
+			writeJSON(w, 200, map[string]any{"stage": "error", "error": fmt.Sprintf("无法连接 %s：%v", n.SSHAddr(), err)})
 			return
 		}
 		if !p.Known {
@@ -362,7 +362,7 @@ func (s *Server) handleDeviceTrust(w http.ResponseWriter, r *http.Request) {
 	}
 	p, err := sshconn.ProbeHostKey(r.Context(), n)
 	if err != nil {
-		writeErr(w, 502, "无法连接："+err.Error())
+		writeErr(w, 502, fmt.Sprintf("无法连接：%v", err))
 		return
 	}
 	if strings.TrimSpace(req.Key) != p.Key {
@@ -417,7 +417,7 @@ func (s *Server) deployNode(ctx context.Context, n config.NodeConfig, emit func(
 	if n.HostKey == "" {
 		return n, errors.New("请先测试连接并确认主机指纹")
 	}
-	emit("连接 " + n.SSHUser + "@" + n.SSHAddr())
+	emit(fmt.Sprintf("连接 %s@%s", n.SSHUser, n.SSHAddr()))
 	out, err := s.ssh.Run(ctx, n, "uname -s -m", nil)
 	if err != nil {
 		return n, errors.New(sshErrorText(err))
@@ -482,7 +482,7 @@ func (s *Server) deployNode(ctx context.Context, n config.NodeConfig, emit func(
 	}
 	emit(fmt.Sprintf("节点已运行（%s，端口 %d）", res.Service, res.Port))
 	if res.Warning != "" {
-		emit("注意：" + res.Warning)
+		emit(fmt.Sprintf("注意：%s", res.Warning))
 	}
 	n, err = s.updateDevice(n.ID, func(d *config.NodeConfig) { d.Token, d.RemotePort = token, res.Port })
 	if err != nil {
@@ -491,7 +491,7 @@ func (s *Server) deployNode(ctx context.Context, n config.NodeConfig, emit func(
 	emit("验证连接")
 	for i := 0; i < 10; i++ {
 		if v := probeNode(ctx, n, s.transportFor(n)); v.Online {
-			emit("完成：节点版本 " + v.Version)
+			emit(fmt.Sprintf("完成：节点版本 %s", v.Version))
 			return n, nil
 		}
 		time.Sleep(time.Second)
@@ -532,7 +532,7 @@ sed -n 's/.*"port": *\([0-9]*\).*/\1/p' "$C" | head -1`
 	emit("验证连接")
 	for i := 0; i < 5; i++ {
 		if v := probeNode(ctx, n, s.transportFor(n)); v.Online {
-			emit("完成：Mac 上的 Rymesh 版本 " + v.Version)
+			emit(fmt.Sprintf("完成：Mac 上的 Rymesh 版本 %s", v.Version))
 			return n, true, nil
 		}
 		time.Sleep(time.Second)
@@ -547,7 +547,7 @@ sed -n 's/.*"port": *\([0-9]*\).*/\1/p' "$C" | head -1`
 // is kept as <binary>.prev). Running agent tasks survive the restart.
 func (s *Server) adoptSystemNode(ctx context.Context, n config.NodeConfig, emit func(string)) (config.NodeConfig, error) {
 	const cfg = "/etc/rymesh/config.json"
-	emit("检测到服务器上的系统级安装（" + cfg + "），接管并升级它")
+	emit(fmt.Sprintf("检测到服务器上的系统级安装（%s），接管并升级它", cfg))
 	out, err := s.ssh.Run(ctx, n, `"$HOME/.rymesh/bin/rymesh" node token --config `+cfg+` 2>/dev/null`, nil)
 	token := strings.TrimSpace(out)
 	if err != nil || token == "" {
@@ -569,7 +569,7 @@ echo "$BIN"`
 	if out, err := s.ssh.Run(ctx, n, swap, nil); err != nil {
 		return n, fmt.Errorf("升级系统服务失败（需要 root）：%s", strings.TrimSpace(out))
 	} else {
-		emit("已升级 " + strings.TrimSpace(out) + "（旧程序保存为 .prev）")
+		emit(fmt.Sprintf("已升级 %s（旧程序保存为 .prev）", strings.TrimSpace(out)))
 	}
 	n, err = s.updateDevice(n.ID, func(d *config.NodeConfig) { d.Token, d.RemotePort = token, port })
 	if err != nil {
@@ -578,7 +578,7 @@ echo "$BIN"`
 	emit("验证连接")
 	for i := 0; i < 15; i++ {
 		if v := probeNode(ctx, n, s.transportFor(n)); v.Online {
-			emit("完成：节点版本 " + v.Version)
+			emit(fmt.Sprintf("完成：节点版本 %s", v.Version))
 			return n, nil
 		}
 		time.Sleep(time.Second)

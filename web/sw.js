@@ -2,13 +2,13 @@
  * Caches the app shell only. Never caches /api: task state and events must
  * always come from the server. Registered only in a secure context.
  */
-var CACHE = "rymesh-shell-v28";
+var CACHE = "rymesh-shell-v29";
 // Code and markup must match the server that is running, so they are fetched
 // first and only fall back to the cache offline. Icons are immutable enough to
 // serve from cache.
-var NETWORK_FIRST = ["/", "/index.html", "/app.js", "/styles.css", "/markdown.js"];
+var NETWORK_FIRST = ["/", "/index.html", "/app.js", "/styles.css", "/markdown.js", "/i18n.js", "/i18n/en.json"];
 var SHELL = [
-  "/", "/index.html", "/styles.css", "/app.js", "/markdown.js",
+  "/", "/index.html", "/styles.css", "/app.js", "/markdown.js", "/i18n.js", "/i18n/en.json",
   "/manifest.webmanifest", "/icon.svg", "/icon-192.png", "/icon-512.png"
 ];
 
@@ -44,7 +44,7 @@ self.addEventListener("fetch", function (event) {
         return res;
       }).catch(function () {
         return caches.match("/index.html").then(function (r) {
-          return r || new Response("离线", { status: 503, headers: { "Content-Type": "text/plain; charset=utf-8" } });
+          return r || new Response("Offline", { status: 503, headers: { "Content-Type": "text/plain; charset=utf-8" } });
         });
       })
     );
@@ -61,7 +61,7 @@ self.addEventListener("fetch", function (event) {
         return res;
       }).catch(function () {
         return caches.match(req).then(function (r) {
-          return r || new Response("离线", { status: 503, headers: { "Content-Type": "text/plain; charset=utf-8" } });
+          return r || new Response("Offline", { status: 503, headers: { "Content-Type": "text/plain; charset=utf-8" } });
         });
       })
     );

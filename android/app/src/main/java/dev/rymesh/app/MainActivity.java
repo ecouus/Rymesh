@@ -100,7 +100,7 @@ public class MainActivity extends Activity {
                 try {
                     startActivity(new Intent(Intent.ACTION_VIEW, u));
                 } catch (android.content.ActivityNotFoundException e) {
-                    Toast.makeText(MainActivity.this, "没有可以打开此链接的应用", Toast.LENGTH_SHORT).show();
+                    Toast.makeText(MainActivity.this, L("没有可以打开此链接的应用"), Toast.LENGTH_SHORT).show();
                 }
                 return true;
             }
@@ -164,7 +164,7 @@ public class MainActivity extends Activity {
                 android.util.Log.i("Rymesh", "console on " + console.getPort());
                 runOnUiThread(() -> web.loadUrl(url));
             } catch (Exception e) {
-                String html = "<p style='font:16px sans-serif;padding:24px'>启动失败：" + e.getMessage() + "</p>";
+                String html = "<p style='font:16px sans-serif;padding:24px'>" + String.format(L("启动失败：%s"), e.getMessage()) + "</p>";
                 runOnUiThread(() -> web.loadData(html, "text/html; charset=utf-8", "utf-8"));
             }
         }).start();
@@ -223,7 +223,7 @@ public class MainActivity extends Activity {
             runOnUiThread(() -> {
                 Intent i = new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text);
                 if (title != null && !title.isEmpty()) i.putExtra(Intent.EXTRA_SUBJECT, title);
-                startActivity(Intent.createChooser(i, title == null || title.isEmpty() ? "分享" : title));
+                startActivity(Intent.createChooser(i, title == null || title.isEmpty() ? L("分享") : title));
             });
         }
 
@@ -256,9 +256,9 @@ public class MainActivity extends Activity {
                 Intent i = new Intent(Intent.ACTION_VIEW).setDataAndType(uri, getContentResolver().getType(uri))
                         .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
                 try {
-                    startActivity(Intent.createChooser(i, "打开"));
+                    startActivity(Intent.createChooser(i, L("打开")));
                 } catch (android.content.ActivityNotFoundException e) {
-                    Toast.makeText(MainActivity.this, "没有可以打开此文件的应用", Toast.LENGTH_SHORT).show();
+                    Toast.makeText(MainActivity.this, L("没有可以打开此文件的应用"), Toast.LENGTH_SHORT).show();
                 }
             });
         }
@@ -272,7 +272,7 @@ public class MainActivity extends Activity {
         public void scanQR() {
             runOnUiThread(() -> new IntentIntegrator(MainActivity.this)
                     .setDesiredBarcodeFormats(IntentIntegrator.QR_CODE)
-                    .setPrompt("扫描另一台设备上显示的导出二维码")
+                    .setPrompt(L("扫描另一台设备上显示的导出二维码"))
                     .setBeepEnabled(false)
                     .setOrientationLocked(false)
                     .initiateScan());
@@ -284,6 +284,18 @@ public class MainActivity extends Activity {
         }
     }
 
+    /**
+     * The app's own text in the interface language: the one chosen in
+     * Settings, else the system's. The Chinese text is the message id; the
+     * console holds the English catalog (web/i18n/en.json).
+     */
+    private static String L(String s) {
+        String lang = Mobile.language();
+        if (lang.isEmpty()) lang = java.util.Locale.getDefault().getLanguage();
+        return lang.startsWith("zh") ? s : Mobile.translate(s);
+    }
+
+    // info is shown by the page, which translates it.
     private void reportDownload(String id, long done, long total, String state, String info) {
         String js = "window.acDownload&&acDownload(" + JSONObject.quote(id) + "," + done + "," + total + ","
                 + (state == null ? "null" : JSONObject.quote(state)) + ","
@@ -404,9 +416,9 @@ public class MainActivity extends Activity {
             if (uri == null || text == null) return;
             try (OutputStream os = getContentResolver().openOutputStream(uri, "wt")) {
                 os.write(text.getBytes(StandardCharsets.UTF_8));
-                Toast.makeText(this, "已保存", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, L("已保存"), Toast.LENGTH_SHORT).show();
             } catch (Exception e) {
-                Toast.makeText(this, "保存失败：" + e.getMessage(), Toast.LENGTH_LONG).show();
+                Toast.makeText(this, String.format(L("保存失败：%s"), e.getMessage()), Toast.LENGTH_LONG).show();
             }
         }
     }

@@ -1,7 +1,7 @@
 {
   "name": "Rymesh",
   "short_name": "Rymesh",
-  "description": "Codex CLI 与 Claude Code 的远程控制台",
+  "description": "Remote control for Codex CLI, Claude Code and Hermes Agent",
   "lang": "zh-CN",
   "start_url": "/",
   "scope": "/",

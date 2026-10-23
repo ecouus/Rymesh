@@ -12,9 +12,9 @@ struct Pending: Equatable {
 
     var heading: String {
         switch kind {
-        case "question": return "Agent 在提问"
-        case "plan": return "计划待批准"
-        default: return "需要审批"
+        case "question": return L("Agent 在提问")
+        case "plan": return L("计划待批准")
+        default: return L("需要审批")
         }
     }
 }
@@ -54,9 +54,12 @@ final class Console {
     }
 
     func ensureRunning() throws {
+        loadConfig()
         let p = Process()
         p.executableURL = binary
         p.arguments = ["client", "--no-open"]
+        // Its messages (a failure to start, say) in the interface language.
+        p.environment = ProcessInfo.processInfo.environment.merging(["RYMESH_LANG": Lang.isEnglish ? "en" : "zh"]) { $1 }
         let out = Pipe()
         p.standardOutput = out
         p.standardError = out
@@ -73,22 +76,31 @@ final class Console {
         } else {
             try? Data("\(Date()) client: \(text)\n".utf8).write(to: log)
         }
-        warning = text.split(separator: "\n").first(where: { $0.hasPrefix("注意：") }).map {
-            String($0.dropFirst(3))
-        } ?? ""
+        let prefixes = ["注意：", "Note: "]
+        warning = text.split(separator: "\n").compactMap { line -> String? in
+            prefixes.first(where: { line.hasPrefix($0) }).map { String(line.dropFirst($0.count)) }
+        }.first ?? ""
         if p.terminationStatus != 0 {
             throw NSError(domain: "Rymesh", code: Int(p.terminationStatus),
-                          userInfo: [NSLocalizedDescriptionKey: text.isEmpty ? "后台服务启动失败" : text])
+                          userInfo: [NSLocalizedDescriptionKey: text.isEmpty ? L("后台服务启动失败") : text])
         }
         loadConfig()
     }
 
-    private func loadConfig() {
+    /// The console's settings (~/.rymesh/config.json), empty before its
+    /// first start.
+    static func savedConfig() -> [String: Any] {
         let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".rymesh/config.json")
         guard let data = try? Data(contentsOf: url),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
+        return obj
+    }
+
+    private func loadConfig() {
+        let obj = Console.savedConfig()
         if let p = obj["port"] as? Int { port = p }
         if let d = obj["data_dir"] as? String { dataDir = d }
+        Lang.choice = obj["language"] as? String ?? ""
     }
 
     var baseURL: URL { URL(string: "http://127.0.0.1:\(port)")! }
@@ -141,7 +153,7 @@ final class Console {
                     let items = perms.filter { $0["status"] as? String == "pending" }.map { p in
                         Pending(id: p["id"] as? String ?? "", node: local ? "local" : id, nodeName: name,
                                 sessionID: p["session_id"] as? String ?? "",
-                                title: p["session_title"] as? String ?? "会话",
+                                title: p["session_title"] as? String ?? L("会话"),
                                 kind: p["kind"] as? String ?? "permission",
                                 tool: p["tool_name"] as? String ?? "")
                     }

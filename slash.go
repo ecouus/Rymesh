@@ -2,6 +2,7 @@ package console
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -102,7 +103,7 @@ func (s *Server) handleLocalCommand(w http.ResponseWriter, sess *store.Session, 
 		if a, ok := s.agents.Get(sess.Agent); ok && a.Label != "" {
 			label = a.Label
 		}
-		next := &store.Session{Agent: sess.Agent, Cwd: sess.Cwd, Title: "新会话 · " + label, Source: "web"}
+		next := &store.Session{Agent: sess.Agent, Cwd: sess.Cwd, Title: fmt.Sprintf("新会话 · %s", label), Source: "web"}
 		if err := s.store.CreateSession(next); err != nil {
 			writeErr(w, 500, err.Error())
 			return true
@@ -121,7 +122,7 @@ func (s *Server) handleLocalCommand(w http.ResponseWriter, sess *store.Session, 
 		if sess.Agent == "claude" {
 			return false // Claude renames its own session too
 		}
-		reply("对话已重命名为：" + title)
+		reply(fmt.Sprintf("对话已重命名为：%s", title))
 		return true
 	}
 	if sess.Agent == "codex" {
@@ -134,7 +135,7 @@ func (s *Server) handleLocalCommand(w http.ResponseWriter, sess *store.Session, 
 		for _, c := range agent.CodexCommands {
 			names = append(names, "/"+c.Name)
 		}
-		reply("未知指令 /" + name + "。可用：" + strings.Join(names, " "))
+		reply(fmt.Sprintf("未知指令 /%s。可用：%s", name, strings.Join(names, " ")))
 		return true
 	}
 	return false
@@ -146,7 +147,7 @@ func (s *Server) insertLocalExchange(sess *store.Session, text, answer string) {
 	taskID := "local-" + util.RandomID(9)
 	ts := util.NowRFC3339()
 	u, _ := json.Marshal(map[string]any{"text": text})
-	a, _ := json.Marshal(map[string]any{"text": answer})
+	a, _ := json.Marshal(map[string]any{"text": answer, "console": true})
 	_, _ = s.store.InsertEvent(&store.Event{SessionID: sess.ID, TaskID: taskID, TaskSeq: 1, TS: ts, Kind: "user", Payload: u})
 	_, _ = s.store.InsertEvent(&store.Event{SessionID: sess.ID, TaskID: taskID, TaskSeq: 2, TS: ts, Kind: "assistant", Payload: a})
 	_ = s.store.TouchSession(sess.ID)

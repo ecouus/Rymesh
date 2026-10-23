@@ -230,7 +230,7 @@ func (s *Server) handleImportKey(w http.ResponseWriter, r *http.Request) {
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {
-		writeErr(w, 400, "读取私钥失败："+err.Error())
+		writeErr(w, 400, fmt.Sprintf("读取私钥失败：%v", err))
 		return
 	}
 	pemBytes, err := plainKeyPEM(b, req.Passphrase)
@@ -313,7 +313,7 @@ func (s *Server) handleDeleteKey(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	for _, n := range s.config().Nodes {
 		if n.KeyID == id {
-			writeErr(w, 409, "设备「"+n.Name+"」正在使用这把密钥，请先为它换一把密钥或删除设备")
+			writeErr(w, 409, fmt.Sprintf("设备「%s」正在使用这把密钥，请先为它换一把密钥或删除设备", n.Name))
 			return
 		}
 	}
@@ -637,16 +637,16 @@ func (s *Server) handleVaultExport(w http.ResponseWriter, r *http.Request) {
 				if pb, err := plainKeyPEM(b, ""); err == nil {
 					pemBytes = pb
 				} else if errors.Is(err, errPassphraseNeeded) {
-					warnings = append(warnings, n.Name+"：私钥有密码短语，请先在「密钥」里导入它再导出")
+					warnings = append(warnings, fmt.Sprintf("%s：私钥有密码短语，请先在「密钥」里导入它再导出", n.Name))
 				}
 			}
 		case n.UseAgent:
-			warnings = append(warnings, n.Name+"：使用 ssh-agent，导入后需要为它另选密钥")
+			warnings = append(warnings, fmt.Sprintf("%s：使用 ssh-agent，导入后需要为它另选密钥", n.Name))
 		}
 		if n.PasswordAuth {
 			pw, err := s.store.DevicePassword(n.ID)
 			if err != nil {
-				warnings = append(warnings, n.Name+"：读取登录密码失败，导入后需要重新输入")
+				warnings = append(warnings, fmt.Sprintf("%s：读取登录密码失败，导入后需要重新输入", n.Name))
 			} else {
 				if p.Passwords == nil {
 					p.Passwords = map[string]string{}
@@ -735,7 +735,7 @@ func (s *Server) handleVaultImport(w http.ResponseWriter, r *http.Request) {
 	for _, k := range p.Keys {
 		vk, created, err := s.store.AddKey(k.Name, "imported", []byte(k.Private))
 		if err != nil {
-			writeErr(w, 400, "导入密钥「"+k.Name+"」失败："+err.Error())
+			writeErr(w, 400, fmt.Sprintf("导入密钥「%s」失败：%v", k.Name, err))
 			return
 		}
 		if created {
@@ -758,7 +758,7 @@ func (s *Server) handleVaultImport(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if err := s.store.SetDevicePassword(p.Devices[i].ID, pw); err != nil {
-			writeErr(w, 500, "保存「"+d.Name+"」的登录密码失败："+err.Error())
+			writeErr(w, 500, fmt.Sprintf("保存「%s」的登录密码失败：%v", d.Name, err))
 			return
 		}
 	}

@@ -31,7 +31,7 @@ var ErrHostKeyUnknown = errors.New("host key not trusted yet")
 type HostKeyMismatchError struct{ got string }
 
 func (e *HostKeyMismatchError) Error() string {
-	return "主机密钥与已信任的不一致（" + e.got + "），已拒绝连接"
+	return fmt.Sprintf("主机密钥与已信任的不一致（%s），已拒绝连接", e.got)
 }
 
 // sshAuth collects the configured authentication methods: a vault key, a key

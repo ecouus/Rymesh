@@ -36,6 +36,8 @@ lipo -create "$ROOT/dist/rymesh_darwin_arm64" "$ROOT/dist/rymesh_darwin_amd64" \
 # (nodeBinary looks in dist/ next to the console binary).
 mkdir -p "$APP/Contents/Resources/dist"
 cp "$ROOT/dist/rymesh_linux_amd64.gz" "$ROOT/dist/rymesh_linux_arm64.gz" "$APP/Contents/Resources/dist/"
+# The English catalog the page also uses, for the menus and notifications.
+cp "$ROOT/web/i18n/en.json" "$APP/Contents/Resources/en.json"
 
 # App icon: a 1024 master on Apple's icon grid (transparent margin).
 ICON="$ROOT/macos/Resources/AppIcon.png"

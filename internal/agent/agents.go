@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -115,7 +116,7 @@ func (a *AgentSet) detectCodex() AgentInfo {
 	auth := filepath.Join(a.homeDir, ".codex", "auth.json")
 	if st, err := os.Stat(auth); err == nil && st.Size() > 0 {
 		info.Authenticated = true
-		info.AuthDetail = "复用 " + shortenHome(auth, a.homeDir) + " 中的现有登录状态"
+		info.AuthDetail = fmt.Sprintf("复用 %s 中的现有登录状态", shortenHome(auth, a.homeDir))
 		if b, err := os.ReadFile(auth); err == nil {
 			var m map[string]json.RawMessage
 			_ = json.Unmarshal(b, &m)
@@ -227,7 +228,7 @@ func (a *AgentSet) detectHermes() AgentInfo {
 	cfg := filepath.Join(a.homeDir, ".hermes", "config.yaml")
 	if st, err := os.Stat(cfg); err == nil && st.Size() > 0 {
 		info.Authenticated = true
-		info.AuthDetail = "复用 " + shortenHome(cfg, a.homeDir) + " 中的现有模型配置"
+		info.AuthDetail = fmt.Sprintf("复用 %s 中的现有模型配置", shortenHome(cfg, a.homeDir))
 	} else {
 		info.AuthDetail = "未检测到配置，请先在服务器上运行 hermes setup"
 	}

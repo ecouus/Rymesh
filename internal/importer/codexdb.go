@@ -204,7 +204,7 @@ func (im *Importer) importCodexThread(c *codexRPC, t codexThread, rep *ImportRep
 		title = store.TruncateTitle(firstNonEmpty(firstUser, t.Preview), 72)
 	}
 	if title == "" {
-		title = "Codex 会话 " + shortID(t.ID)
+		title = fmt.Sprintf("Codex 会话 %s", shortID(t.ID))
 	}
 	created := firstNonEmpty(unixTS(t.CreatedAt), firstTS(events))
 	updated := firstNonEmpty(unixTS(t.UpdatedAt), created)

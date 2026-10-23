@@ -246,7 +246,7 @@ func RunTaskMain(taskDir string) int {
 
 	cmd, err := buildAgentCommand(spec, control)
 	if err != nil {
-		w.notice("无法启动 Agent: " + err.Error())
+		w.notice(fmt.Sprintf("无法启动 Agent: %v", err))
 		w.exit(map[string]any{"code": 127, "signal": "", "reason": "failed", "error": err.Error()})
 		writeState(map[string]any{"status": store.StatusFailed, "error": err.Error()})
 		return 127
@@ -271,7 +271,7 @@ func RunTaskMain(taskDir string) int {
 	// Own process group: cancellation can signal the agent and its tool children.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
-		w.notice("Agent 启动失败: " + err.Error())
+		w.notice(fmt.Sprintf("Agent 启动失败: %v", err))
 		w.exit(map[string]any{"code": 127, "reason": "failed", "error": err.Error()})
 		writeState(map[string]any{"status": store.StatusFailed, "error": err.Error()})
 		return 127
@@ -303,7 +303,7 @@ func RunTaskMain(taskDir string) int {
 			sigName = sig.String()
 			sigMu.Unlock()
 			cancel.Store(true)
-			w.notice("收到 " + sig.String() + "，正在停止 Agent…")
+			w.notice(fmt.Sprintf("收到 %s，正在停止 Agent…", sig))
 			sys.SignalChild(childPID, syscall.SIGINT)
 			go func() {
 				time.Sleep(4 * time.Second)

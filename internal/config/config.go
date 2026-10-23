@@ -50,6 +50,11 @@ type Config struct {
 	// API with "Authorization: Bearer <token>". Nodes lists the other machines
 	// this instance can reach as a hub. See nodes.go in the root package.
 	NodeName string `json:"node_name,omitempty"`
+	// Language is the apps' interface language on this device: "zh", "en",
+	// or empty to follow the system. The page, the Mac app and the Android
+	// app read it; servers keep their messages in Chinese and the page
+	// translates them.
+	Language string `json:"language,omitempty"`
 	// HubOnly: this console runs no agents of its own (the phone app); the
 	// device list then has no "local" entry.
 	HubOnly   bool         `json:"hub_only,omitempty"`

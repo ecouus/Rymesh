@@ -19,7 +19,7 @@ final class Downloader: NSObject, URLSessionDownloadDelegate {
 
     func start(id: String, path: String, name: String, base: URL, cookies: WKHTTPCookieStore) {
         guard path.hasPrefix("/"), let url = URL(string: path, relativeTo: base)?.absoluteURL else {
-            report(id, 0, 0, "error", "地址无效")
+            report(id, 0, 0, "error", "地址无效") // translated by the page
             return
         }
         cookies.getAllCookies { all in
@@ -63,7 +63,7 @@ final class Downloader: NSObject, URLSessionDownloadDelegate {
             let dest = Self.freeURL(in: dir, name: job.name)
             try FileManager.default.moveItem(at: tmp, to: dest)
             finished[job.id] = dest
-            report(job.id, t.countOfBytesReceived, t.countOfBytesReceived, "done", "下载")
+            report(job.id, t.countOfBytesReceived, t.countOfBytesReceived, "done", "“下载”文件夹")
         } catch {
             report(job.id, 0, 0, "error", error.localizedDescription)
         }

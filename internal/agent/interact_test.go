@@ -1,0 +1,345 @@
+package agent
+
+import (
+	"bufio"
+	"encoding/json"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"rymesh/internal/store"
+	"rymesh/internal/util"
+)
+
+// sessionRig wires an agent session to in-memory stdin and a temp control dir,
+// playing the agent (feed) and the web service (answer).
+type sessionRig struct {
+	t        *testing.T
+	control  string
+	sent     chan map[string]any
+	stop     chan struct{}
+	nativeID chan string
+	events   string // the session's events.jsonl
+	// answered requests are skipped by request(): their done file is written
+	// just after the reply, so it may not exist yet when the next is sought.
+	answered map[string]bool
+}
+
+func newRig(t *testing.T, agent, profile string, timeout time.Duration) (*sessionRig, agentSession) {
+	t.Helper()
+	dir := t.TempDir()
+	control := filepath.Join(dir, "control")
+	if err := os.MkdirAll(control, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	w, err := newEventWriter(filepath.Join(dir, "events.jsonl"), 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(w.close)
+	pr, pw := io.Pipe()
+	rig := &sessionRig{t: t, control: control, sent: make(chan map[string]any, 32),
+		stop: make(chan struct{}), nativeID: make(chan string, 4), answered: map[string]bool{},
+		events: filepath.Join(dir, "events.jsonl")}
+	go func() {
+		sc := bufio.NewScanner(pr)
+		for sc.Scan() {
+			var m map[string]any
+			if json.Unmarshal(sc.Bytes(), &m) == nil {
+				rig.sent <- m
+			}
+		}
+	}()
+	t.Cleanup(func() { close(rig.stop); pw.Close() })
+	spec := TaskSpec{Agent: agent, Profile: profile, Cwd: dir, Prompt: "hello", IsNew: true,
+		PermTimeout: int(timeout / time.Second)}
+	var sess agentSession
+	switch agent {
+	case "codex":
+		sess = newCodexSession(spec, control, w, pw, rig.stop, func(id string) { rig.nativeID <- id }, timeout)
+	case "hermes":
+		sess = newACPSession(spec, control, w, pw, rig.stop, func(id string) { rig.nativeID <- id }, timeout, "Hermes")
+	default:
+		sess = &claudeSession{spec: spec, control: control, w: w, stdin: pw, stop: rig.stop,
+			onNativeID: func(id string) { rig.nativeID <- id }, timeout: timeout}
+	}
+	return rig, sess
+}
+
+func (r *sessionRig) next() map[string]any {
+	r.t.Helper()
+	select {
+	case m := <-r.sent:
+		return m
+	case <-time.After(5 * time.Second):
+		r.t.Fatal("agent stdin: nothing sent")
+	}
+	return nil
+}
+
+func (r *sessionRig) feed(s agentSession, v any) {
+	b, _ := json.Marshal(v)
+	s.onLine(b)
+}
+
+// request waits for the runner to publish a request, as the ingestor would.
+func (r *sessionRig) request() CtlRequest {
+	r.t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		ents, _ := os.ReadDir(r.control)
+		for _, e := range ents {
+			if strings.HasPrefix(e.Name(), "req-") {
+				b, _ := os.ReadFile(filepath.Join(r.control, e.Name()))
+				var req CtlRequest
+				if json.Unmarshal(b, &req) == nil && req.ID != "" && !r.answered[req.ID] {
+					if _, err := os.Stat(filepath.Join(r.control, "done-"+req.ID+".json")); err != nil {
+						return req
+					}
+				}
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	r.t.Fatal("no pending request published")
+	return CtlRequest{}
+}
+
+func (r *sessionRig) answer(id string, resp CtlResponse) {
+	r.answered[id] = true
+	if err := util.AtomicWriteJSON(filepath.Join(r.control, "resp-"+id+".json"), resp); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+func (r *sessionRig) done(id string) ctlDone {
+	r.t.Helper()
+	var d ctlDone
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if b, err := os.ReadFile(filepath.Join(r.control, "done-"+id+".json")); err == nil && json.Unmarshal(b, &d) == nil {
+			return d
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	r.t.Fatal("no done file")
+	return d
+}
+
+func optionIDs(req CtlRequest) string {
+	var ids []string
+	for _, o := range req.Options {
+		ids = append(ids, o.ID)
+	}
+	return strings.Join(ids, ",")
+}
+
+func claudeControl(id, tool string, input any, suggestions any) map[string]any {
+	req := map[string]any{"subtype": "can_use_tool", "tool_name": tool, "input": input, "tool_use_id": "tu-" + id}
+	if suggestions != nil {
+		req["permission_suggestions"] = suggestions
+	}
+	return map[string]any{"type": "control_request", "request_id": id, "request": req}
+}
+
+func controlReply(t *testing.T, m map[string]any) map[string]any {
+	t.Helper()
+	if m["type"] != "control_response" {
+		t.Fatalf("expected control_response, got %v", m)
+	}
+	resp := m["response"].(map[string]any)
+	if resp["subtype"] != "success" {
+		t.Fatalf("control response not success: %v", resp)
+	}
+	return resp["response"].(map[string]any)
+}
+
+func TestClaudeSessionPermissionChoices(t *testing.T) {
+	rig, s := newRig(t, "claude", "manual", time.Minute)
+	s.start()
+	if first := rig.next(); first["type"] != "user" {
+		t.Fatalf("first message = %v", first)
+	}
+	sugg := []any{
+		map[string]any{"type": "addRules", "rules": []any{map[string]any{"toolName": "Bash", "ruleContent": "npm test:*"}},
+			"behavior": "allow", "destination": "localSettings"},
+		map[string]any{"type": "addDirectories", "directories": []any{"/w"}, "destination": "session"},
+		map[string]any{"type": "setMode", "mode": "acceptEdits", "destination": "session"},
+	}
+	cases := []struct {
+		decision string
+		check    func(map[string]any)
+	}{
+		{DecisionAllowSession, func(r map[string]any) {
+			perms := r["updatedPermissions"].([]any)
+			for _, p := range perms {
+				pm := p.(map[string]any)
+				if pm["destination"] != "session" || pm["type"] == "setMode" {
+					t.Fatalf("session allow must grant rules only, for the session: %v", perms)
+				}
+			}
+		}},
+		{decisionAllowMode, func(r map[string]any) {
+			perms := r["updatedPermissions"].([]any)
+			if len(perms) != 1 || perms[0].(map[string]any)["mode"] != "acceptEdits" {
+				t.Fatalf("mode allow = %v", perms)
+			}
+		}},
+		{decisionAllowAlways, func(r map[string]any) {
+			if r["updatedPermissions"].([]any)[0].(map[string]any)["destination"] != "localSettings" {
+				t.Fatalf("always allow lost the destination: %v", r)
+			}
+		}},
+		{decisionDenyStop, func(r map[string]any) {
+			if r["behavior"] != "deny" || r["interrupt"] != true {
+				t.Fatalf("deny_stop = %v", r)
+			}
+			// The reply is sent before stopped is recorded; give it a moment.
+			time.Sleep(50 * time.Millisecond)
+			if st, _, ok := s.outcome(); !ok || st != store.StatusCancelled {
+				t.Fatalf("deny_stop outcome = %s %v", st, ok)
+			}
+		}},
+	}
+	for i, c := range cases {
+		rig.feed(s, claudeControl(string(rune('a'+i)), "Bash", map[string]any{"command": "npm test"}, sugg))
+		req := rig.request()
+		if req.Kind != store.KindPermission || optionIDs(req) != "allow,allow_session,allow_mode,allow_always,deny,deny_stop" {
+			t.Fatalf("options = %s (%s)", optionIDs(req), req.Kind)
+		}
+		if o, _ := req.Option(decisionAllowAlways); !strings.Contains(o.Detail, "Bash(npm test:*)") {
+			t.Fatalf("always detail = %q", o.Detail)
+		}
+		rig.answer(req.ID, CtlResponse{Decision: c.decision})
+		c.check(controlReply(t, rig.next()))
+		rig.done(req.ID)
+	}
+}
+
+func TestClaudeSessionQuestionAndPlan(t *testing.T) {
+	rig, s := newRig(t, "claude", "plan", time.Minute)
+	q := map[string]any{"questions": []any{map[string]any{"question": "颜色？", "header": "颜色", "multiSelect": true,
+		"options": []any{map[string]any{"label": "红"}, map[string]any{"label": "蓝"}}}}}
+	rig.feed(s, claudeControl("q1", "AskUserQuestion", q, nil))
+	req := rig.request()
+	if req.Kind != store.KindQuestion || len(req.Questions) != 1 || !req.Questions[0].Multi || !req.Questions[0].Other {
+		t.Fatalf("question request = %+v", req)
+	}
+	rig.answer(req.ID, CtlResponse{Decision: DecisionAnswer, Answers: map[string][]string{"颜色？": {"红", "紫色（自填）"}}})
+	r := controlReply(t, rig.next())
+	ans := r["updatedInput"].(map[string]any)["answers"].(map[string]any)
+	if r["behavior"] != "allow" || ans["颜色？"] != "红, 紫色（自填）" {
+		t.Fatalf("answer reply = %v", r)
+	}
+	if d := rig.done(req.ID); d.Decision != "answered" {
+		t.Fatalf("done = %+v", d)
+	}
+
+	rig.feed(s, claudeControl("p1", "ExitPlanMode", map[string]any{"plan": "# 计划"}, nil))
+	req = rig.request()
+	if req.Kind != store.KindPlan || req.Plan != "# 计划" {
+		t.Fatalf("plan request = %+v", req)
+	}
+	rig.answer(req.ID, CtlResponse{Decision: decisionPlanAccept})
+	r = controlReply(t, rig.next())
+	perm := r["updatedPermissions"].([]any)[0].(map[string]any)
+	if r["behavior"] != "allow" || perm["type"] != "setMode" || perm["mode"] != "acceptEdits" {
+		t.Fatalf("plan approval = %v", r)
+	}
+
+	rig.feed(s, claudeControl("p2", "ExitPlanMode", map[string]any{"plan": "x"}, nil))
+	req = rig.request()
+	rig.answer(req.ID, CtlResponse{Decision: decisionPlanRevise, Message: "再细一点"})
+	if r = controlReply(t, rig.next()); r["behavior"] != "deny" || r["message"] != "再细一点" {
+		t.Fatalf("plan revise = %v", r)
+	}
+}
+
+func TestClaudeSessionRequestExpires(t *testing.T) {
+	rig, s := newRig(t, "claude", "manual", 0)
+	s.(*claudeSession).timeout = 100 * time.Millisecond
+	rig.feed(s, claudeControl("x", "Bash", map[string]any{"command": "rm -rf /"}, nil))
+	r := controlReply(t, rig.next())
+	if r["behavior"] != "deny" || r["message"] != "审批超时" {
+		t.Fatalf("expired reply = %v", r)
+	}
+	// The done record follows the reply; wait for it so the temp dir cleanup
+	// does not race the write.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if m, _ := filepath.Glob(filepath.Join(rig.control, "done-*.json")); len(m) == 1 {
+			b, _ := os.ReadFile(m[0])
+			if !strings.Contains(string(b), `"expired"`) {
+				t.Fatalf("done = %s", b)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("no done record for the expired request")
+}
+
+func TestCodexSessionHandshakeApprovalAndQuestion(t *testing.T) {
+	rig, s := newRig(t, "codex", "plan", time.Minute)
+	s.start()
+	init := rig.next()
+	if init["method"] != "initialize" {
+		t.Fatalf("first = %v", init)
+	}
+	rig.feed(s, map[string]any{"id": init["id"], "result": map[string]any{}})
+	if m := rig.next(); m["method"] != "initialized" {
+		t.Fatalf("expected initialized, got %v", m)
+	}
+	ts := rig.next()
+	p := ts["params"].(map[string]any)
+	if ts["method"] != "thread/start" || p["sandbox"] != "read-only" || p["approvalPolicy"] != "on-request" {
+		t.Fatalf("thread/start = %v", ts)
+	}
+	rig.feed(s, map[string]any{"id": ts["id"], "result": map[string]any{"thread": map[string]any{"id": "th-1"}, "model": "gpt-x"}})
+	if id := <-rig.nativeID; id != "th-1" {
+		t.Fatalf("native id = %s", id)
+	}
+	turn := rig.next()
+	cm := turn["params"].(map[string]any)["collaborationMode"].(map[string]any)
+	if turn["method"] != "turn/start" || cm["mode"] != "plan" || cm["settings"].(map[string]any)["model"] != "gpt-x" {
+		t.Fatalf("turn/start = %v", turn)
+	}
+
+	amend := map[string]any{"acceptWithExecpolicyAmendment": map[string]any{"execpolicy_amendment": []any{"npm", "test"}}}
+	rig.feed(s, map[string]any{"id": 77, "method": "item/commandExecution/requestApproval", "params": map[string]any{
+		"itemId": "i1", "command": "npm test", "reason": "需要运行测试",
+		"availableDecisions": []any{"accept", amend, "acceptForSession", "decline", "cancel"}}})
+	req := rig.request()
+	if optionIDs(req) != "allow,allow_always,allow_session,deny,deny_stop" || req.Description != "需要运行测试" {
+		t.Fatalf("codex options = %s / %q", optionIDs(req), req.Description)
+	}
+	rig.answer(req.ID, CtlResponse{Decision: decisionAllowAlways})
+	reply := rig.next()
+	dec, _ := json.Marshal(reply["result"].(map[string]any)["decision"])
+	if reply["id"] != float64(77) || !strings.Contains(string(dec), "execpolicy_amendment") {
+		t.Fatalf("always reply = %v", reply)
+	}
+
+	rig.feed(s, map[string]any{"id": 78, "method": "item/tool/requestUserInput", "params": map[string]any{
+		"itemId": "i2", "isBlocking": true, "questions": []any{map[string]any{"id": "fmt", "header": "格式",
+			"question": "JSON 还是 YAML？", "isOther": true, "options": []any{map[string]any{"label": "JSON", "description": "严格"}}}}}})
+	req = rig.request()
+	if req.Kind != store.KindQuestion || req.Questions[0].ID != "fmt" || !req.Questions[0].Other {
+		t.Fatalf("codex question = %+v", req)
+	}
+	rig.answer(req.ID, CtlResponse{Decision: DecisionAnswer, Answers: map[string][]string{"fmt": {"TOML"}}})
+	reply = rig.next()
+	got := reply["result"].(map[string]any)["answers"].(map[string]any)["fmt"].(map[string]any)["answers"].([]any)
+	if len(got) != 1 || got[0] != "TOML" {
+		t.Fatalf("answers reply = %v", reply)
+	}
+
+	rig.feed(s, map[string]any{"method": "turn/completed", "params": map[string]any{"turn": map[string]any{
+		"status": "failed", "error": map[string]any{"message": "quota"}}}})
+	if st, msg, ok := s.outcome(); !ok || st != store.StatusFailed || msg != "quota" {
+		t.Fatalf("outcome = %s %q %v", st, msg, ok)
+	}
+}

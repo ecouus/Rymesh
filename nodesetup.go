@@ -1,10 +1,5 @@
 package console
 
-// `rymesh node setup` installs (or upgrades) a node for the current
-// user. The client runs it over SSH after uploading the binary (deploy.go),
-// but it works the same by hand. Everything lives in ~/.rymesh and the
-// node listens on loopback only: SSH is the only way in.
-
 import (
 	"context"
 	"encoding/json"
@@ -20,6 +15,10 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"rymesh/internal/config"
+	"rymesh/internal/sys"
+	"rymesh/internal/util"
 )
 
 const nodeServiceName = "rymesh-node"
@@ -35,12 +34,12 @@ func agentHome() (string, error) {
 // personalConfig is a fresh config for one user's machine: loopback only,
 // rooted in their home directory; the page is reached through a hub or a
 // login ticket.
-func personalConfig(base string, port int) (*Config, error) {
+func personalConfig(base string, port int) (*config.Config, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err
 	}
-	c, err := newConfig()
+	c, err := config.NewConfig()
 	if err != nil {
 		return nil, err
 	}
@@ -70,7 +69,7 @@ type setupResult struct {
 func nodeSetupMain(args []string) int {
 	fset := flag.NewFlagSet("node setup", flag.ContinueOnError)
 	token := fset.String("token", "", "node token the client will use (required)")
-	port := fset.Int("port", defaultPort, "loopback port for a new install")
+	port := fset.Int("port", config.DefaultPort, "loopback port for a new install")
 	name := fset.String("name", "", "device name")
 	if err := fset.Parse(args); err != nil {
 		return 2
@@ -99,7 +98,7 @@ func nodeSetup(token string, port int, name string) (*setupResult, error) {
 	}
 	exe, _ = filepath.EvalSymlinks(exe)
 	cfgPath := filepath.Join(base, "config.json")
-	cfg, err := loadConfig(cfgPath)
+	cfg, err := config.LoadConfig(cfgPath)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			return nil, fmt.Errorf("读取已有配置失败：%w", err)
@@ -114,19 +113,19 @@ func nodeSetup(token string, port int, name string) (*setupResult, error) {
 	if name != "" {
 		cfg.NodeName = name
 	}
-	if err := cfg.normalize(); err != nil {
+	if err := cfg.Normalize(); err != nil {
 		return nil, err
 	}
-	if err := cfg.ensureDirs(); err != nil {
+	if err := cfg.EnsureDirs(); err != nil {
 		return nil, err
 	}
 	if err := os.MkdirAll(base, 0o700); err != nil {
 		return nil, err
 	}
-	if err := saveConfig(cfgPath, cfg); err != nil {
+	if err := config.SaveConfig(cfgPath, cfg); err != nil {
 		return nil, err
 	}
-	res := &setupResult{OK: true, Version: version, Port: cfg.Port, Config: cfgPath}
+	res := &setupResult{OK: true, Version: util.Version, Port: cfg.Port, Config: cfgPath}
 	res.Service, res.Warning = startNodeService(exe, cfgPath, base)
 	if !waitHealthy(cfg.Port, 15*time.Second) {
 		return nil, fmt.Errorf("节点已安装（%s），但 15 秒内没有在 127.0.0.1:%d 响应；日志在 %s",
@@ -356,9 +355,9 @@ func stopDetached(base string) {
 	}
 	// A stale pid file can name an unrelated process that reused the number;
 	// only stop it if it is really rymesh.
-	if pid, _ := strconv.Atoi(strings.TrimSpace(string(b))); pid > 1 && processAlive(pid) && isRymesh(pid) {
+	if pid, _ := strconv.Atoi(strings.TrimSpace(string(b))); pid > 1 && sys.ProcessAlive(pid) && isRymesh(pid) {
 		_ = syscall.Kill(pid, syscall.SIGTERM)
-		for i := 0; i < 50 && processAlive(pid); i++ {
+		for i := 0; i < 50 && sys.ProcessAlive(pid); i++ {
 			time.Sleep(100 * time.Millisecond)
 		}
 	}
@@ -376,9 +375,24 @@ func startDetached(exe, cfgPath, base string) error {
 	cmd := exec.Command(exe, "serve", "--config", cfgPath)
 	cmd.Stdout, cmd.Stderr = logf, logf
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	// Started by the Mac app (or anything launched from Finder) this process
+	// has only the system directories on PATH; the agents live where the
+	// user's shell puts them (nvm, Homebrew, ~/.local/bin).
+	cmd.Env = withEnv(os.Environ(), "PATH", servicePath())
 	if err := cmd.Start(); err != nil {
 		return err
 	}
 	_ = os.WriteFile(pidPath, []byte(strconv.Itoa(cmd.Process.Pid)+"\n"), 0o600)
 	return cmd.Process.Release()
+}
+
+// withEnv returns env with key set to value, replacing an earlier setting.
+func withEnv(env []string, key, value string) []string {
+	out := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		if !strings.HasPrefix(kv, key+"=") {
+			out = append(out, kv)
+		}
+	}
+	return append(out, key+"="+value)
 }

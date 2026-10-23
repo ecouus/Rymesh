@@ -9,6 +9,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"rymesh/internal/config"
+	"rymesh/internal/util"
 )
 
 const sessionCookie = "rymesh_session"
@@ -24,11 +27,11 @@ type authInfo struct {
 }
 
 type authManager struct {
-	cfg     *Config
+	cfg     *config.Config
 	stateMu sync.RWMutex
 }
 
-func newAuthManager(cfg *Config) *authManager {
+func newAuthManager(cfg *config.Config) *authManager {
 	return &authManager{cfg: cfg}
 }
 
@@ -38,24 +41,24 @@ func (a *authManager) token() string {
 	a.stateMu.RUnlock()
 	p := authPayload{
 		Exp:  time.Now().Add(time.Duration(ttl) * time.Hour).Unix(),
-		CSRF: randomID(24),
+		CSRF: util.RandomID(24),
 	}
 	b, _ := json.Marshal(p)
 	body := base64.RawURLEncoding.EncodeToString(b)
-	sig := a.sign([]byte(body))
+	sig := a.Sign([]byte(body))
 	return body + "." + base64.RawURLEncoding.EncodeToString(sig)
 }
 
-func (a *authManager) sign(data []byte) []byte {
+func (a *authManager) Sign(data []byte) []byte {
 	a.stateMu.RLock()
 	defer a.stateMu.RUnlock()
-	return a.cfg.sign(data)
+	return a.cfg.Sign(data)
 }
 
 // setConfig points the manager at the config currently published by Server.
 // Settings changes use copy-on-write, so without this the manager would keep
 // validating against a stale snapshot.
-func (a *authManager) setConfig(c *Config) {
+func (a *authManager) setConfig(c *config.Config) {
 	a.stateMu.Lock()
 	a.cfg = c
 	a.stateMu.Unlock()
@@ -75,7 +78,7 @@ func (a *authManager) verifyToken(tok string) (*authInfo, bool) {
 	if err != nil {
 		return nil, false
 	}
-	want := a.sign(rawBody)
+	want := a.Sign(rawBody)
 	if !hmac.Equal(sig, want) {
 		return nil, false
 	}

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- Match the page background (web/styles.css, bg) in light and dark. -->
-    <color name="page_bg">#FCFCFB</color>
+    <color name="page_bg">#FCFCFC</color>
     <color name="icon_bg">#0C0E0F</color>
 </resources>

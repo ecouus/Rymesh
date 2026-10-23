@@ -152,7 +152,8 @@
   // need to spell out "Claude Code" / "Codex CLI" every time.
   var AGENT_ICONS = {
     claude: '<path d="M12 4v16M4 12h16M6.3 6.3l11.4 11.4M17.7 6.3 6.3 17.7"/>',
-    codex: '<path d="m6 8 4 4-4 4M13 16h5"/>'
+    codex: '<path d="m6 8 4 4-4 4M13 16h5"/>',
+    hermes: '<path d="M7 5v14M17 5v14M7 12h10"/>'
   };
   function agentIcon(name) {
     var a = agentMeta(name);
@@ -1186,6 +1187,7 @@
   window.acBack = function () {
     if (overlays.length) { overlays[overlays.length - 1].close(); return true; }
     if (nodeMenu() && !nodeMenu().hidden) { closeNodeMenu(); return true; }
+    if (closeAgentFilterMenu()) return true;
     if (!$("#sheet").hidden) { closeSheet(); return true; }
     if (!$("#term").hidden) { closeTerminalView(); return true; }
     if (!$("#files").hidden) { closeFilesView(); return true; }
@@ -1315,7 +1317,7 @@
     var meta = $('meta[name="theme-color"]');
     if (!meta) return;
     var light = S.theme === "light" || (S.theme === "auto" && matchMedia("(prefers-color-scheme: light)").matches);
-    meta.setAttribute("content", light ? "#fcfcfb" : "#0b0b0a");
+    meta.setAttribute("content", light ? "#fcfcfc" : "#0b0b0a");
     if (window.RymeshNative) window.RymeshNative.setTheme(!light);
   }
   matchMedia("(prefers-color-scheme: light)").addEventListener?.("change", updateThemeColor);
@@ -1575,6 +1577,7 @@
     $("#stop-btn").hidden = true;
     $("#term-btn").hidden = true;
     $("#files-btn").hidden = true;
+    $("#new-chat-btn").hidden = true; // already a new conversation
     $("#settings-btn").classList.remove("active");
     setBackButton(false);
     setAgentPicker(true);
@@ -1658,6 +1661,7 @@
     if (wide.matches && S.booted && force !== true) return;
     if (!S.sidebarOpen && $("#sidebar").hidden) return;
     S.sidebarOpen = false;
+    closeAgentFilterMenu();
     $("#sidebar").hidden = true;
     syncScrollLock();
   }
@@ -1685,27 +1689,77 @@
     return null;
   }
 
-  // One chip per agent that actually has conversations, plus "all". A saved
-  // filter whose agent no longer has any conversation falls back to "all".
-  function renderAgentFilter() {
-    var bar = $("#agent-filter");
-    if (!bar) return;
+  // The agent filter sits behind one button beside the search, so the sidebar
+  // keeps its size however many agents there are. It is offered only when
+  // conversations of two or more agents exist; a saved filter whose agent has
+  // none left falls back to "all". The active choice shows as a tag under the
+  // search, with × to clear it.
+  function agentCounts() {
     var counts = {};
     S.sessions.forEach(function (s) { counts[s.agent] = (counts[s.agent] || 0) + 1; });
-    var names = Object.keys(counts);
-    if (S.agentFilter !== "all" && !counts[S.agentFilter]) S.agentFilter = "all";
-    bar.hidden = names.length < 2;
-    bar.innerHTML = [["all", "全部"]].concat(names.map(function (n) {
-      return [n, agentMeta(n).label || n];
-    })).map(function (f) {
-      return '<button type="button" role="tab" class="chip' + (S.agentFilter === f[0] ? " active" : "") +
-        '" aria-selected="' + (S.agentFilter === f[0]) + '" data-agent-filter="' + esc(f[0]) + '">' + esc(f[1]) + "</button>";
-    }).join("");
+    return counts;
   }
 
-  $("#agent-filter").addEventListener("click", function (e) {
+  function renderAgentFilter() {
+    var btn = $("#agent-filter-btn"), tag = $("#agent-filter");
+    if (!btn || !tag) return;
+    var counts = agentCounts();
+    var several = Object.keys(counts).length >= 2;
+    if (S.agentFilter !== "all" && (!counts[S.agentFilter] || !several)) S.agentFilter = "all";
+    var on = S.agentFilter !== "all";
+    btn.hidden = !several;
+    btn.classList.toggle("active", on);
+    if (!several) closeAgentFilterMenu();
+    tag.hidden = !on;
+    tag.innerHTML = on
+      ? '<button type="button" class="chip active filter-tag" data-agent-filter="all" title="显示全部">' +
+        esc(agentMeta(S.agentFilter).label || S.agentFilter) +
+        '<svg class="ico sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>'
+      : "";
+    if (!$("#agent-filter-menu").hidden) drawAgentFilterMenu();
+  }
+
+  function drawAgentFilterMenu() {
+    var counts = agentCounts();
+    var names = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a] || (a < b ? -1 : 1); });
+    var row = function (id, icon, label, n) {
+      var on = S.agentFilter === id;
+      return '<button type="button" role="option" class="menu-item' + (on ? " on" : "") + '" aria-selected="' + on +
+        '" data-agent-filter="' + esc(id) + '">' + icon +
+        '<span class="menu-text"><span class="menu-label">' + esc(label) + "</span></span>" +
+        '<span class="filter-count">' + n + "</span>" +
+        '<svg class="ico sm menu-check" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg></button>';
+    };
+    $("#agent-filter-menu").innerHTML =
+      row("all", '<svg class="ico agent-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>',
+        "全部", S.sessions.length) +
+      '<div class="menu-sep"></div>' +
+      names.map(function (n) { return row(n, agentIcon(n), agentMeta(n).label || n, counts[n]); }).join("");
+  }
+
+  function openAgentFilterMenu() {
+    drawAgentFilterMenu();
+    $("#agent-filter-menu").hidden = false;
+    $("#agent-filter-btn").setAttribute("aria-expanded", "true");
+  }
+
+  function closeAgentFilterMenu() {
+    var menu = $("#agent-filter-menu");
+    if (!menu || menu.hidden) return false;
+    menu.hidden = true;
+    $("#agent-filter-btn").setAttribute("aria-expanded", "false");
+    return true;
+  }
+
+  document.addEventListener("click", function (e) {
+    if (e.target.closest("#agent-filter-btn")) {
+      if (!closeAgentFilterMenu()) openAgentFilterMenu();
+      return;
+    }
     var b = e.target.closest("[data-agent-filter]");
+    if (!e.target.closest("#agent-filter-menu")) closeAgentFilterMenu();
     if (!b) return;
+    closeAgentFilterMenu();
     S.agentFilter = b.getAttribute("data-agent-filter");
     LS.set("agentFilter", S.agentFilter);
     renderSessionList();
@@ -2073,6 +2127,7 @@
     S.sessionPerms = [];
     $("#composer-wrap").hidden = false;
     $("#conn-dot").hidden = false;
+    $("#new-chat-btn").hidden = false;
     $("#settings-btn").classList.remove("active");
     setBackButton(false);
     document.body.classList.add("has-composer");
@@ -2082,7 +2137,8 @@
       '<div class="chat-wrap"><div id="perm-banner"></div>' +
       '<div id="events" class="events"><div class="events-inner" id="events-inner">' +
       '<div class="empty"><span class="spinner"></span> 正在加载会话…</div>' +
-      '</div><div id="activity" class="activity" aria-live="polite" hidden></div></div></div>';
+      '</div><div id="activity" class="activity" aria-live="polite" hidden></div></div>' +
+      '<div id="readonly-note" class="readonly-note" hidden></div></div>';
     setTop("会话", "");
     setConn("wait");
 
@@ -2168,6 +2224,13 @@
     updateComposerMeta();
     $("#prompt").placeholder = "给 " + (agentMeta(S.session.agent).label || S.session.agent) + " 发消息…";
     setTop(S.session.title || "会话", sessionSub(), sessionState());
+    // A conversation the agent cannot continue (a Hermes bot's WeChat chat)
+    // is shown without a composer, with the reason in its place.
+    var ro = S.session.read_only || "";
+    var note = $("#readonly-note");
+    if (note) { note.hidden = !ro; note.textContent = ro; }
+    $("#composer-wrap").hidden = !!ro;
+    document.body.classList.toggle("has-composer", !ro);
     // Only show a hint while something is actually happening. The idle state
     // needs no caption: the top bar already shows agent, state and directory.
     var act = activeOnSession();
@@ -2652,11 +2715,14 @@
       }
       case "status": {
         var st = p.status || "";
-        wrap.innerHTML = '<div class="status-line">' + esc(statusLabel(st)) +
+        wrap.innerHTML = '<div class="status-line">任务结束 · ' + esc(statusLabel(st)) +
           (p.reason && p.reason !== "exited" ? " · " + esc(reasonLabel(p.reason)) : "") + "</div>";
         break;
       }
       case "notice":
+        // Earlier runners also wrote the end of the task as a notice; the
+        // status line below says the same.
+        if (/^任务结束：/.test(p.text || "")) return null;
         if (/^已为这个对话保存/.test(p.text || "")) refreshSessionSettings();
         wrap.innerHTML = '<div class="notice">' + esc(p.text || "") + "</div>";
         break;
@@ -3631,6 +3697,7 @@
     $("#conn-dot").hidden = true;
     $("#term-btn").hidden = true;
     $("#files-btn").hidden = true;
+    $("#new-chat-btn").hidden = true;
     $("#settings-btn").classList.add("active");
     setBackButton(true);
     setAgentPicker(false);
@@ -3941,7 +4008,10 @@
     else openSidebar();
   });
 
+  // Settings sit at the foot of the sidebar; on a phone the sidebar is an
+  // overlay and goes away with the choice.
   $("#settings-btn").addEventListener("click", function () {
+    closeSidebar();
     if (S.route === "settings") {
       leaveSettings();
     } else {
@@ -3981,6 +4051,13 @@
   });
 
   $("#sidebar-new").addEventListener("click", function () { newChat(); });
+
+  // Inside a conversation the top bar offers a new one with the same agent,
+  // in the same directory.
+  $("#new-chat-btn").addEventListener("click", function () {
+    if (S.session) S.draftCwd = S.session.cwd;
+    newChat(S.session ? S.session.agent : "");
+  });
   $("#session-search").addEventListener("input", function () {
     S.sessionQuery = this.value;
     renderSessionList();
@@ -4013,6 +4090,7 @@
   document.addEventListener("keydown", function (e) {
     if (e.key !== "Escape") return;
     if (!$("#profile-menu").hidden) closeProfileMenu();
+    else if (closeAgentFilterMenu()) return;
     else if (!$("#sheet").hidden) closeSheet();
     else if (S.sidebarOpen) closeSidebar();
   });

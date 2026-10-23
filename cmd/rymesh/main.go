@@ -2,6 +2,6 @@
 // the detached task runner it starts for each agent turn.
 package main
 
-import "rymesh"
+import console "rymesh"
 
 func main() { console.Main() }

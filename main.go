@@ -17,15 +17,63 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"rymesh/internal/agent"
+	"rymesh/internal/config"
+	"rymesh/internal/importer"
+	"rymesh/internal/store"
+	"rymesh/internal/sys"
+	"rymesh/internal/util"
 )
 
-const version = "1.1.1"
-
-var agents *AgentSet
+func listenAddresses(c *config.Config) ([]string, error) {
+	if len(c.ListenAddrs) > 0 {
+		var out []string
+		for _, a := range c.ListenAddrs {
+			host, _, err := net.SplitHostPort(a)
+			if err != nil {
+				return nil, fmt.Errorf("invalid listen address %q: %w", a, err)
+			}
+			ip := net.ParseIP(host)
+			if ip != nil && (ip.IsUnspecified()) && !c.AllowPublicBind {
+				return nil, fmt.Errorf("refusing to bind %s without allow_public_bind", a)
+			}
+			out = append(out, a)
+		}
+		return out, nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	add := func(ip string) {
+		a := net.JoinHostPort(ip, fmt.Sprintf("%d", c.Port))
+		if !seen[a] {
+			seen[a] = true
+			out = append(out, a)
+		}
+	}
+	add("127.0.0.1")
+	if iface, err := net.InterfaceByName(c.EasyTierIface); err == nil {
+		addrs, _ := iface.Addrs()
+		for _, a := range addrs {
+			var ip net.IP
+			switch v := a.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			if ip == nil || ip.To4() == nil || ip.IsLoopback() {
+				continue
+			}
+			add(ip.String())
+		}
+	}
+	return out, nil
+}
 
 // Main is the rymesh command line (cmd/rymesh).
 func Main() {
-	agents = newAgentSet()
+	agent.Agents = agent.NewAgentSet()
 	if len(os.Args) < 2 {
 		help()
 		return
@@ -54,7 +102,7 @@ func Main() {
 	case "run-task":
 		os.Exit(runTaskCLI(os.Args[2:]))
 	case "version", "--version", "-v":
-		fmt.Println("rymesh " + version)
+		fmt.Println("rymesh " + util.Version)
 	case "help", "--help", "-h":
 		help()
 	default:
@@ -104,17 +152,17 @@ install 选项:
 
 func serveMain(args []string) int {
 	fset := flag.NewFlagSet("serve", flag.ContinueOnError)
-	configPath := fset.String("config", defaultConfigPath, "config path")
+	configPath := fset.String("config", config.DefaultConfigPath, "config path")
 	if err := fset.Parse(args); err != nil {
 		return 2
 	}
-	cfg, err := loadConfig(*configPath)
+	cfg, err := config.LoadConfig(*configPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "读取配置失败:", err)
 		fmt.Fprintln(os.Stderr, "请先运行: rymesh install")
 		return 1
 	}
-	if err := cfg.ensureDirs(); err != nil {
+	if err := cfg.EnsureDirs(); err != nil {
 		fmt.Fprintln(os.Stderr, "创建目录失败:", err)
 		return 1
 	}
@@ -126,7 +174,7 @@ func serveMain(args []string) int {
 	}
 	defer logFile.Close()
 	logger := log.New(io.MultiWriter(os.Stdout, logFile), "", log.LstdFlags|log.Lmicroseconds)
-	st, err := openStore(cfg.DataDir)
+	st, err := store.OpenStore(cfg.DataDir)
 	if err != nil {
 		logger.Printf("打开数据库失败: %v", err)
 		return 1
@@ -141,11 +189,18 @@ func serveMain(args []string) int {
 	srv.warmNodes()
 
 	if cfg.ImportOnStart {
-		rep := srv.runImport()
-		logger.Printf("原生会话导入: codex=%d claude=%d imported=%d skipped=%d excluded=%d errors=%d",
-			rep.CodexFiles, rep.ClaudeFiles, rep.Imported, rep.Skipped, rep.Excluded, rep.Errors)
-		go srv.autoImport(30 * time.Second)
+		// In the background: a first import that reads a few hundred Codex
+		// threads through the app-server takes a while, and an upgrade waits
+		// for the node to answer.
+		go func() {
+			rep := srv.runImport()
+			logger.Printf("原生会话导入: codex=%d threads=%d claude=%d hermes=%d imported=%d skipped=%d excluded=%d errors=%d",
+				rep.CodexFiles, rep.CodexThreads, rep.ClaudeFiles, rep.HermesSessions, rep.Imported, rep.Skipped,
+				rep.Excluded, rep.Errors)
+			srv.autoImport(30 * time.Second)
+		}()
 	}
+	go srv.pruneTrashLoop()
 	srv.ing.Reconcile()
 	srv.schedule()
 
@@ -203,7 +258,7 @@ func serveMain(args []string) int {
 
 func installMain(args []string) int {
 	fset := flag.NewFlagSet("install", flag.ContinueOnError)
-	configPath := fset.String("config", defaultConfigPath, "config path")
+	configPath := fset.String("config", config.DefaultConfigPath, "config path")
 	port := fset.Int("port", 0, "listen port")
 	dataDir := fset.String("data", "", "data dir")
 	logDir := fset.String("log", "", "log dir")
@@ -213,13 +268,13 @@ func installMain(args []string) int {
 	if err := fset.Parse(args); err != nil {
 		return 2
 	}
-	cfg, err := loadConfig(*configPath)
+	cfg, err := config.LoadConfig(*configPath)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			fmt.Fprintln(os.Stderr, "读取配置失败:", err)
 			return 1
 		}
-		cfg, err = newConfig()
+		cfg, err = config.NewConfig()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "生成配置失败:", err)
 			return 1
@@ -234,15 +289,15 @@ func installMain(args []string) int {
 	if *logDir != "" {
 		cfg.LogDir = *logDir
 	}
-	if err := cfg.normalize(); err != nil {
+	if err := cfg.Normalize(); err != nil {
 		fmt.Fprintln(os.Stderr, "配置无效:", err)
 		return 1
 	}
-	if err := cfg.ensureDirs(); err != nil {
+	if err := cfg.EnsureDirs(); err != nil {
 		fmt.Fprintln(os.Stderr, "创建目录失败:", err)
 		return 1
 	}
-	if err := saveConfig(*configPath, cfg); err != nil {
+	if err := config.SaveConfig(*configPath, cfg); err != nil {
 		fmt.Fprintln(os.Stderr, "保存配置失败:", err)
 		return 1
 	}
@@ -335,11 +390,6 @@ func waitHealth(port int, timeout time.Duration) {
 	}
 }
 
-func fileExists(p string) bool {
-	_, err := os.Stat(p)
-	return err == nil
-}
-
 // pidFilePath keeps separate instances from clobbering each other's PID file
 // (for example a test instance on another port). The port is part of the name.
 func pidFilePath(addrs []string) string {
@@ -358,14 +408,14 @@ func pidFilePath(addrs []string) string {
 
 func statusMain(args []string) int {
 	fset := flag.NewFlagSet("status", flag.ContinueOnError)
-	configPath := fset.String("config", defaultConfigPath, "config path")
+	configPath := fset.String("config", config.DefaultConfigPath, "config path")
 	_ = fset.Parse(args)
-	cfg, err := loadConfig(*configPath)
+	cfg, err := config.LoadConfig(*configPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "读取配置失败:", err)
 		return 1
 	}
-	fmt.Println("rymesh", version)
+	fmt.Println("rymesh", util.Version)
 	fmt.Println("配置:", *configPath)
 	fmt.Println("数据:", cfg.DataDir)
 	fmt.Println("日志:", filepath.Join(cfg.LogDir, "rymesh.log"))
@@ -373,7 +423,7 @@ func statusMain(args []string) int {
 	for _, a := range addrs {
 		fmt.Println("监听: http://" + a)
 	}
-	if pid := readPID(pidFilePath(addrs)); pid > 0 && processAlive(pid) {
+	if pid := readPID(pidFilePath(addrs)); pid > 0 && sys.ProcessAlive(pid) {
 		fmt.Println("Web 服务: running (pid", pid, ")")
 	} else {
 		fmt.Println("Web 服务: not running (或非 systemd 启动)")
@@ -383,7 +433,7 @@ func statusMain(args []string) int {
 	} else {
 		fmt.Println("systemd:", out)
 	}
-	st, err := openStore(cfg.DataDir)
+	st, err := store.OpenStore(cfg.DataDir)
 	if err == nil {
 		defer st.Close()
 		sc, _ := st.SourceCounts()
@@ -391,10 +441,10 @@ func statusMain(args []string) int {
 		sess, _ := st.ListSessions("", "", true)
 		fmt.Printf("会话: %d (web=%d imported=%d)\n", len(sess), sc["web"], sc["imported"])
 		fmt.Printf("任务: running=%d waiting=%d pending=%d completed=%d failed=%d interrupted=%d cancelled=%d\n",
-			tc[StatusRunning], tc[StatusWaitingInput], tc[StatusPending], tc[StatusCompleted],
-			tc[StatusFailed], tc[StatusInterrupted], tc[StatusCancelled])
+			tc[store.StatusRunning], tc[store.StatusWaitingInput], tc[store.StatusPending], tc[store.StatusCompleted],
+			tc[store.StatusFailed], tc[store.StatusInterrupted], tc[store.StatusCancelled])
 	}
-	for _, a := range agents.List(false) {
+	for _, a := range agent.Agents.List(false) {
 		state := "unavailable"
 		if a.Available {
 			state = "available"
@@ -410,21 +460,21 @@ func statusMain(args []string) int {
 
 func importMain(args []string) int {
 	fset := flag.NewFlagSet("import", flag.ContinueOnError)
-	configPath := fset.String("config", defaultConfigPath, "config path")
+	configPath := fset.String("config", config.DefaultConfigPath, "config path")
 	_ = fset.Parse(args)
-	cfg, err := loadConfig(*configPath)
+	cfg, err := config.LoadConfig(*configPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "读取配置失败:", err)
 		return 1
 	}
-	st, err := openStore(cfg.DataDir)
+	st, err := store.OpenStore(cfg.DataDir)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "打开数据库失败:", err)
 		return 1
 	}
 	defer st.Close()
 	logger := log.New(os.Stderr, "", log.LstdFlags)
-	imp := newImporter(st, logger, cfg.ImportExcludeRoots, cfg.ImportHistoryLimit)
+	imp := importer.NewImporter(st, logger, cfg.ImportExcludeRoots, cfg.ImportHistoryLimit)
 	rep := imp.ImportAll()
 	b, _ := json.Marshal(rep)
 	_ = st.SetMeta("last_import_report", string(b))
@@ -439,15 +489,15 @@ func importMain(args []string) int {
 
 func tasksMain(args []string) int {
 	fset := flag.NewFlagSet("tasks", flag.ContinueOnError)
-	configPath := fset.String("config", defaultConfigPath, "config path")
+	configPath := fset.String("config", config.DefaultConfigPath, "config path")
 	all := fset.Bool("all", false, "include finished tasks")
 	_ = fset.Parse(args)
-	cfg, err := loadConfig(*configPath)
+	cfg, err := config.LoadConfig(*configPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	st, err := openStore(cfg.DataDir)
+	st, err := store.OpenStore(cfg.DataDir)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -455,7 +505,7 @@ func tasksMain(args []string) int {
 	defer st.Close()
 	var statuses []string
 	if !*all {
-		statuses = []string{StatusRunning, StatusWaitingInput, StatusPending}
+		statuses = []string{store.StatusRunning, store.StatusWaitingInput, store.StatusPending}
 	}
 	list, _ := st.ListTasks(statuses, 100)
 	if len(list) == 0 {
@@ -465,26 +515,26 @@ func tasksMain(args []string) int {
 	fmt.Printf("%-14s %-10s %-9s %-8s %-20s %s\n", "ID", "STATUS", "AGENT", "PID", "CREATED", "PROMPT")
 	for _, t := range list {
 		fmt.Printf("%-14s %-10s %-9s %-8d %-20s %s\n", t.ID, t.Status, t.Agent, t.PID,
-			t.CreatedAt, truncateTitle(t.Prompt, 60))
+			t.CreatedAt, store.TruncateTitle(t.Prompt, 60))
 	}
 	return 0
 }
 
 func cancelMain(args []string) int {
 	fset := flag.NewFlagSet("cancel", flag.ContinueOnError)
-	configPath := fset.String("config", defaultConfigPath, "config path")
+	configPath := fset.String("config", config.DefaultConfigPath, "config path")
 	_ = fset.Parse(args)
 	rest := fset.Args()
 	if len(rest) != 1 {
 		fmt.Fprintln(os.Stderr, "用法: rymesh cancel <task-id>")
 		return 2
 	}
-	cfg, err := loadConfig(*configPath)
+	cfg, err := config.LoadConfig(*configPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	st, err := openStore(cfg.DataDir)
+	st, err := store.OpenStore(cfg.DataDir)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -496,11 +546,11 @@ func cancelMain(args []string) int {
 		return 1
 	}
 	switch t.Status {
-	case StatusCompleted, StatusFailed, StatusCancelled, StatusInterrupted:
+	case store.StatusCompleted, store.StatusFailed, store.StatusCancelled, store.StatusInterrupted:
 		fmt.Println("任务已结束:", t.Status)
 		return 0
-	case StatusPending:
-		_ = st.FinishTask(t.ID, StatusCancelled, nil, "用户取消（尚未启动）", nowRFC3339())
+	case store.StatusPending:
+		_ = st.FinishTask(t.ID, store.StatusCancelled, nil, "用户取消（尚未启动）", util.NowRFC3339())
 		fmt.Println("已取消")
 		return 0
 	}
@@ -512,10 +562,10 @@ func cancelMain(args []string) int {
 
 func logsMain(args []string) int {
 	fset := flag.NewFlagSet("logs", flag.ContinueOnError)
-	configPath := fset.String("config", defaultConfigPath, "config path")
+	configPath := fset.String("config", config.DefaultConfigPath, "config path")
 	n := fset.Int("n", 100, "number of lines")
 	_ = fset.Parse(args)
-	cfg, err := loadConfig(*configPath)
+	cfg, err := config.LoadConfig(*configPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -552,11 +602,11 @@ func tailLines(f *os.File, n int) []string {
 
 func doctorMain(args []string) int {
 	fset := flag.NewFlagSet("doctor", flag.ContinueOnError)
-	configPath := fset.String("config", defaultConfigPath, "config path")
+	configPath := fset.String("config", config.DefaultConfigPath, "config path")
 	_ = fset.Parse(args)
 	ok := true
 	fmt.Println("== 配置 ==")
-	cfg, err := loadConfig(*configPath)
+	cfg, err := config.LoadConfig(*configPath)
 	if err != nil {
 		fmt.Println("✗", err)
 		return 1
@@ -592,7 +642,7 @@ func doctorMain(args []string) int {
 		fmt.Println("  ", a)
 	}
 	fmt.Println("== Agent ==")
-	for _, a := range agents.List(true) {
+	for _, a := range agent.Agents.List(true) {
 		mark := "✓"
 		if !a.Available {
 			mark = "✗"
@@ -607,7 +657,7 @@ func doctorMain(args []string) int {
 		fmt.Println("!", out)
 	}
 	fmt.Println("== 数据库 ==")
-	if st, err := openStore(cfg.DataDir); err == nil {
+	if st, err := store.OpenStore(cfg.DataDir); err == nil {
 		st.Close()
 		fmt.Println("✓", filepath.Join(cfg.DataDir, "rymesh.db"))
 	} else {
@@ -641,5 +691,5 @@ func runTaskCLI(args []string) int {
 		fmt.Fprintln(os.Stderr, "run-task: --task-dir required")
 		return 2
 	}
-	return runTaskMain(*dir)
+	return agent.RunTaskMain(*dir)
 }

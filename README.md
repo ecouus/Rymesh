@@ -93,25 +93,30 @@ rymesh run-task  (setsid，独立于 Web 服务)
 ### 目录结构
 
 ```text
-/srv/rymesh/
-├── main.go           命令入口（serve/install/status/doctor/import/…）
-├── server.go         HTTP API、调度器、会话/任务/审批路由
-├── runner.go         独立任务进程、Agent 命令构造、MCP 审批服务
-├── events.go         事件入库、归一化、断线恢复、孤儿清理
-├── store.go           SQLite schema 与查询
-├── store_extra.go     任务/事件附加查询
-├── importer.go       Codex/Claude 原生历史导入
-├── auth.go           Cookie、CSRF、安全头
-├── agents.go         Agent 探测（版本/认证/能力）
-├── config.go         配置、PBKDF2、监听地址、工作目录校验
-├── sse.go            SSE 流
-├── web/              前端（无构建步骤）
-│   ├── index.html
-│   ├── app.js
-│   ├── markdown.js   Markdown + 轻量语法高亮
-│   ├── styles.css
-│   ├── manifest.webmanifest, sw.js, icon*
-└── rymesh_test.go
+rymesh/
+├── cmd/rymesh/          程序入口
+├── main.go              命令行子命令（serve/install/status/doctor/import/…）
+├── server.go            HTTP API、调度器、会话/任务/审批路由
+├── sse.go               会话事件的 SSE 流
+├── auth.go, gzip.go     Cookie、CSRF、安全头；响应压缩
+├── files.go, terminal.go  文件浏览与终端
+├── nodes.go, devices.go 多设备：中转、设备管理与部署
+├── vault.go             密钥与设备的接口、导出导入
+├── client.go, nodesetup.go, embed.go  本机控制台、节点安装、手机内嵌模式
+├── slash.go             斜杠命令与模型列表接口
+├── internal/
+│   ├── agent/           调用官方 CLI：探测、命令构造、stdio 协议、审批、任务进程、更新
+│   ├── config/          配置文件与设备描述
+│   ├── importer/        导入并同步 CLI 原生会话
+│   ├── ingest/          任务事件入库、归一化、重启后恢复
+│   ├── sshconn/         SSH 连接池、主机指纹、隧道
+│   ├── store/           SQLite：会话、任务、事件、审批、密钥库（加密存储）
+│   ├── sys/             平台相关：伪终端、开机标识、进程检查
+│   └── util/            通用小工具：ID、时间戳、版本号等
+├── mobile/              Android 用的 gomobile 绑定
+├── web/                 前端（无构建步骤）
+├── macos/               Mac App（Swift）
+└── android/             Android App
 ```
 
 ---
@@ -492,5 +497,5 @@ App 退到后台时连接会断开，服务器上的 Agent 照常运行；回到
 5. **整机重启未实际执行**（会中断当前管理会话）。开机自启已配置，boot_id 判定逻辑有单元测试，
    runner 丢失路径已实测；不声称重启后进程继续运行。
 6. **一个会话一个活动任务**；同一会话并发消息会排队，这是刻意设计，避免上下文错乱。
-7. 仅提供 Codex/Claude 适配器；新增 Agent 可在 `agents.go` 探测与 `runner.go`
-   的 `buildAgentCommand` 中扩展，事件归一化在 `events.go`。
+7. 仅提供 Codex/Claude 适配器；新增 Agent 可在 `internal/agent/agents.go` 探测与
+   `internal/agent/runner.go` 的 `BuildAgentCommand` 中扩展，事件归一化在 `internal/ingest/events.go`。

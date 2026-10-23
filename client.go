@@ -1,10 +1,5 @@
 package console
 
-// `rymesh client` is the entry point on a personal machine: the console
-// runs locally (loopback only), is both this machine's node and the hub for
-// the user's servers, and opens in the browser without a password through a
-// one-time login ticket.
-
 import (
 	"crypto/sha256"
 	"crypto/subtle"
@@ -21,6 +16,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"rymesh/internal/config"
+	"rymesh/internal/util"
 )
 
 const ticketFile = "login-ticket"
@@ -42,16 +40,16 @@ func clientMain(args []string) int {
 	}
 	fset := flag.NewFlagSet("client", flag.ContinueOnError)
 	configPath := fset.String("config", filepath.Join(base, "config.json"), "config path")
-	port := fset.Int("port", defaultPort, "loopback port for a new config")
+	port := fset.Int("port", config.DefaultPort, "loopback port for a new config")
 	noOpen := fset.Bool("no-open", false, "do not open the browser")
 	if err := fset.Parse(args); err != nil {
 		return 2
 	}
-	cfg, err := loadConfig(*configPath)
+	cfg, err := config.LoadConfig(*configPath)
 	if os.IsNotExist(err) {
 		if cfg, err = personalConfig(filepath.Dir(*configPath), *port); err == nil {
-			if err = cfg.ensureDirs(); err == nil {
-				err = saveConfig(*configPath, cfg)
+			if err = cfg.EnsureDirs(); err == nil {
+				err = config.SaveConfig(*configPath, cfg)
 			}
 		}
 		if err == nil {
@@ -166,10 +164,10 @@ func stopClientService(base string) {
 }
 
 func readPort(base string) int {
-	if c, err := loadConfig(filepath.Join(base, "config.json")); err == nil {
+	if c, err := config.LoadConfig(filepath.Join(base, "config.json")); err == nil {
 		return c.Port
 	}
-	return defaultPort
+	return config.DefaultPort
 }
 
 // serviceUsesOther reports whether the registered service starts a different
@@ -211,7 +209,7 @@ func runningBuild(port int) string {
 }
 
 // openConsole opens the page with the current login ticket.
-func openConsole(cfg *Config) int {
+func openConsole(cfg *config.Config) int {
 	b, err := os.ReadFile(filepath.Join(cfg.DataDir, ticketFile))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "控制台未运行（没有登录凭证），请先运行 rymesh client")
@@ -231,7 +229,7 @@ func openConsole(cfg *Config) int {
 // rotateTicket writes a fresh single-use login ticket that only this user can
 // read; the CLI hands it to the browser so no password is needed locally.
 func (s *Server) rotateTicket() {
-	b, err := randomBytes(24)
+	b, err := util.RandomBytes(24)
 	if err != nil {
 		return
 	}

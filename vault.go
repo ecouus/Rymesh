@@ -1,21 +1,11 @@
 package console
 
-// The client's credential vault: SSH keys and the device list live in the
-// console's own SQLite database, so a phone (which has no ~/.ssh) and a Mac
-// manage them the same way, and a set of devices can be exported from one
-// client and imported into another.
-//
-// Only SSH credentials, pinned host keys and node tokens are kept here. The
-// vault never reads, stores or carries Codex / Claude CLI credentials: those
-// stay with the CLI on each server (see CLAUDE.md).
-
 import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ed25519"
 	"crypto/rand"
-	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
@@ -32,206 +22,12 @@ import (
 
 	"golang.org/x/crypto/scrypt"
 	"golang.org/x/crypto/ssh"
+
+	"rymesh/internal/config"
+	"rymesh/internal/sshconn"
+	"rymesh/internal/store"
+	"rymesh/internal/util"
 )
-
-// ---------------------------------------------------------------------------
-// Storage
-// ---------------------------------------------------------------------------
-
-var vaultSchema = []string{`CREATE TABLE IF NOT EXISTS ssh_keys (
-	id          TEXT PRIMARY KEY,
-	name        TEXT NOT NULL UNIQUE,
-	type        TEXT NOT NULL,
-	fingerprint TEXT NOT NULL UNIQUE,
-	public      TEXT NOT NULL,
-	private     BLOB NOT NULL,
-	source      TEXT NOT NULL,
-	created_at  INTEGER NOT NULL
-)`,
-	`CREATE TABLE IF NOT EXISTS devices (
-	id   TEXT PRIMARY KEY,
-	pos  INTEGER NOT NULL,
-	data TEXT NOT NULL
-)`}
-
-// vaultKey is a stored key as the page sees it: never the private part.
-type vaultKey struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	Type        string   `json:"type"`
-	Fingerprint string   `json:"fingerprint"`
-	Public      string   `json:"public"`
-	Source      string   `json:"source"` // generated | imported
-	Created     int64    `json:"created"`
-	UsedBy      []string `json:"used_by"`
-}
-
-// keySource resolves NodeConfig.KeyID to a private key (the Store).
-type keySource interface {
-	privateKey(id string) ([]byte, error)
-}
-
-func (s *Store) privateKey(id string) ([]byte, error) {
-	var b []byte
-	err := s.db.QueryRow(`SELECT private FROM ssh_keys WHERE id=?`, id).Scan(&b)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, errors.New("密钥已被删除，请为这台设备重新选择密钥")
-	}
-	if err != nil {
-		return nil, err
-	}
-	return s.openPrivate(b)
-}
-
-func (s *Store) listKeys() ([]vaultKey, error) {
-	rows, err := s.db.Query(`SELECT id, name, type, fingerprint, public, source, created_at FROM ssh_keys ORDER BY created_at`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []vaultKey{}
-	for rows.Next() {
-		var k vaultKey
-		if err := rows.Scan(&k.ID, &k.Name, &k.Type, &k.Fingerprint, &k.Public, &k.Source, &k.Created); err != nil {
-			return nil, err
-		}
-		k.UsedBy = []string{}
-		out = append(out, k)
-	}
-	return out, rows.Err()
-}
-
-func (s *Store) keyByFingerprint(fp string) (vaultKey, bool) {
-	var k vaultKey
-	err := s.db.QueryRow(`SELECT id, name, type, fingerprint, public, source, created_at FROM ssh_keys WHERE fingerprint=?`, fp).
-		Scan(&k.ID, &k.Name, &k.Type, &k.Fingerprint, &k.Public, &k.Source, &k.Created)
-	return k, err == nil
-}
-
-func (s *Store) keyNameTaken(name string) bool {
-	var n int
-	_ = s.db.QueryRow(`SELECT COUNT(*) FROM ssh_keys WHERE name=?`, name).Scan(&n)
-	return n > 0
-}
-
-// addKey stores a private key (unencrypted OpenSSH PEM, sealed in the
-// database by vaultseal.go). A key already in
-// the vault (same fingerprint) is returned as is, with created false.
-func (s *Store) addKey(name, source string, privPEM []byte) (k vaultKey, created bool, err error) {
-	signer, err := ssh.ParsePrivateKey(privPEM)
-	if err != nil {
-		return vaultKey{}, false, fmt.Errorf("解析私钥失败：%w", err)
-	}
-	pub := signer.PublicKey()
-	fp := ssh.FingerprintSHA256(pub)
-	if k, ok := s.keyByFingerprint(fp); ok {
-		return k, false, nil
-	}
-	sealed, err := s.sealPrivate(privPEM)
-	if err != nil {
-		return vaultKey{}, false, err
-	}
-	name = s.uniqueKeyName(name)
-	k = vaultKey{ID: "k" + strings.ToLower(randomID(7)), Name: name, Type: pub.Type(), Fingerprint: fp,
-		Public: authorizedLine(pub, name), Source: source, Created: time.Now().Unix(), UsedBy: []string{}}
-	_, err = s.db.Exec(`INSERT INTO ssh_keys (id, name, type, fingerprint, public, private, source, created_at) VALUES (?,?,?,?,?,?,?,?)`,
-		k.ID, k.Name, k.Type, k.Fingerprint, k.Public, sealed, k.Source, k.Created)
-	return k, err == nil, err
-}
-
-func (s *Store) uniqueKeyName(name string) string {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		name = "key"
-	}
-	base := name
-	for i := 2; s.keyNameTaken(name); i++ {
-		name = fmt.Sprintf("%s-%d", base, i)
-	}
-	return name
-}
-
-func (s *Store) renameKey(id, name string) error {
-	if s.keyNameTaken(name) {
-		return errors.New("已有同名密钥")
-	}
-	var pub string
-	if err := s.db.QueryRow(`SELECT public FROM ssh_keys WHERE id=?`, id).Scan(&pub); err != nil {
-		return errors.New("密钥不存在")
-	}
-	if k, _, _, _, err := ssh.ParseAuthorizedKey([]byte(pub)); err == nil {
-		pub = authorizedLine(k, name)
-	}
-	_, err := s.db.Exec(`UPDATE ssh_keys SET name=?, public=? WHERE id=?`, name, pub, id)
-	return err
-}
-
-func (s *Store) deleteKey(id string) error {
-	res, err := s.db.Exec(`DELETE FROM ssh_keys WHERE id=?`, id)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return errors.New("密钥不存在")
-	}
-	return nil
-}
-
-func (s *Store) loadDevices() ([]NodeConfig, error) {
-	rows, err := s.db.Query(`SELECT data FROM devices ORDER BY pos`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []NodeConfig
-	for rows.Next() {
-		var data string
-		if err := rows.Scan(&data); err != nil {
-			return nil, err
-		}
-		var n NodeConfig
-		if err := json.Unmarshal([]byte(data), &n); err != nil {
-			return nil, err
-		}
-		out = append(out, n)
-	}
-	return out, rows.Err()
-}
-
-// saveDevices replaces the stored device list.
-func (s *Store) saveDevices(nodes []NodeConfig) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err := tx.Exec(`DELETE FROM devices`); err != nil {
-		return err
-	}
-	for i, n := range nodes {
-		b, _ := json.Marshal(n)
-		if _, err := tx.Exec(`INSERT INTO devices (id, pos, data) VALUES (?,?,?)`, n.ID, i, string(b)); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
-}
-
-// authorizedLine is the authorized_keys line for a key, with a comment that
-// tells the server's owner which client it belongs to.
-func authorizedLine(k ssh.PublicKey, name string) string {
-	comment := "rymesh"
-	name = strings.TrimPrefix(strings.TrimPrefix(name, comment), "-")
-	if c := strings.Map(func(r rune) rune {
-		if r <= ' ' || r == 0x7f {
-			return '-'
-		}
-		return r
-	}, name); c != "" {
-		comment += "-" + c
-	}
-	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(k))) + " " + comment
-}
 
 // newKeyPair makes an ed25519 key and returns it as OpenSSH PEM.
 func newKeyPair(comment string) ([]byte, error) {
@@ -253,8 +49,8 @@ func newKeyPair(comment string) ([]byte, error) {
 // initVault loads the device list from the database. Devices still in
 // config.json (from before the vault) and keys generated into data/keys are
 // moved in first; config.json is backed up before it is rewritten.
-func initVault(st *Store, cfg *Config, cfgPath string) error {
-	stored, err := st.loadDevices()
+func initVault(st *store.Store, cfg *config.Config, cfgPath string) error {
+	stored, err := st.LoadDevices()
 	if err != nil {
 		return err
 	}
@@ -279,7 +75,7 @@ func initVault(st *Store, cfg *Config, cfgPath string) error {
 			if err != nil {
 				continue
 			}
-			k, _, err := st.addKey(filepath.Base(priv), "generated", b)
+			k, _, err := st.AddKey(filepath.Base(priv), "generated", b)
 			if err != nil {
 				continue
 			}
@@ -294,29 +90,21 @@ func initVault(st *Store, cfg *Config, cfgPath string) error {
 		_ = os.Rename(dir, dir+".imported-"+time.Now().Format("20060102-150405"))
 	}
 	if moved {
-		if err := st.saveDevices(stored); err != nil {
+		if err := st.SaveDevices(stored); err != nil {
 			return err
 		}
 	}
 	cfg.Nodes = stored
 	if len(cfg.Nodes) > 0 && cfgPath != "" {
 		// Only rewrite config.json if it still lists devices.
-		if raw, err := loadConfig(cfgPath); err == nil && len(raw.Nodes) > 0 {
+		if raw, err := config.LoadConfig(cfgPath); err == nil && len(raw.Nodes) > 0 {
 			if b, err := os.ReadFile(cfgPath); err == nil {
 				_ = os.WriteFile(cfgPath+".pre-vault", b, 0o600)
 			}
-			return saveConfigFile(cfgPath, cfg)
+			return config.SaveConfigFile(cfgPath, cfg)
 		}
 	}
 	return nil
-}
-
-// saveConfigFile writes config.json without the device list, which lives in
-// the database.
-func saveConfigFile(path string, c *Config) error {
-	cp := *c
-	cp.Nodes = nil
-	return saveConfig(path, &cp)
 }
 
 // ---------------------------------------------------------------------------
@@ -335,19 +123,19 @@ type detectedKey struct {
 }
 
 func (s *Server) handleListKeys(w http.ResponseWriter, r *http.Request) {
-	keys, err := s.store.listKeys()
+	keys, err := s.store.ListKeys()
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	byID := map[string]*vaultKey{}
+	byID := map[string]*store.VaultKey{}
 	vaulted := map[string]bool{}
 	for i := range keys {
 		byID[keys[i].ID] = &keys[i]
 		vaulted[keys[i].Fingerprint] = true
 	}
 	detected := []detectedKey{}
-	pubs, _ := filepath.Glob(filepath.Join(expandHome("~/.ssh"), "*.pub"))
+	pubs, _ := filepath.Glob(filepath.Join(util.ExpandHome("~/.ssh"), "*.pub"))
 	sort.Strings(pubs)
 	for _, pub := range pubs {
 		priv := strings.TrimSuffix(pub, ".pub")
@@ -401,8 +189,8 @@ func (s *Server) handleGenerateKey(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Name = strings.TrimSpace(req.Name)
 	if req.Name == "" {
-		req.Name = s.config().nodeName() + "-" + time.Now().Format("0102")
-	} else if s.store.keyNameTaken(req.Name) {
+		req.Name = s.config().DisplayName() + "-" + time.Now().Format("0102")
+	} else if s.store.KeyNameTaken(req.Name) {
 		writeErr(w, 409, "已有同名密钥")
 		return
 	}
@@ -415,7 +203,7 @@ func (s *Server) handleGenerateKey(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	k, _, err := s.store.addKey(req.Name, "generated", priv)
+	k, _, err := s.store.AddKey(req.Name, "generated", priv)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -434,8 +222,8 @@ func (s *Server) handleImportKey(w http.ResponseWriter, r *http.Request) {
 	if err := decodeJSON(w, r, &req); err != nil {
 		return
 	}
-	dir := expandHome("~/.ssh")
-	path := filepath.Clean(expandHome(req.Path))
+	dir := util.ExpandHome("~/.ssh")
+	path := filepath.Clean(util.ExpandHome(req.Path))
 	if filepath.Dir(path) != dir {
 		writeErr(w, 400, "只能导入 ~/.ssh 里的密钥")
 		return
@@ -458,14 +246,14 @@ func (s *Server) handleImportKey(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	k, _, err := s.store.addKey(name, "imported", pemBytes)
+	k, _, err := s.store.AddKey(name, "imported", pemBytes)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	_ = s.saveNodes(func(nodes []NodeConfig) ([]NodeConfig, error) {
+	_ = s.saveNodes(func(nodes []config.NodeConfig) ([]config.NodeConfig, error) {
 		for i := range nodes {
-			if nodes[i].KeyID == "" && filepath.Clean(expandHome(nodes[i].KeyPath)) == path {
+			if nodes[i].KeyID == "" && filepath.Clean(util.ExpandHome(nodes[i].KeyPath)) == path {
 				nodes[i].KeyPath, nodes[i].KeyID = "", k.ID
 			}
 		}
@@ -514,7 +302,7 @@ func (s *Server) handlePatchKey(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	if err := s.store.renameKey(r.PathValue("id"), req.Name); err != nil {
+	if err := s.store.RenameKey(r.PathValue("id"), req.Name); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
@@ -529,7 +317,7 @@ func (s *Server) handleDeleteKey(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.store.deleteKey(id); err != nil {
+	if err := s.store.DeleteKey(id); err != nil {
 		writeErr(w, 404, err.Error())
 		return
 	}
@@ -537,22 +325,22 @@ func (s *Server) handleDeleteKey(w http.ResponseWriter, r *http.Request) {
 }
 
 // publicKeyOf returns the authorized_keys line of the key a device uses.
-func (s *Server) publicKeyOf(n NodeConfig) (string, error) {
+func (s *Server) publicKeyOf(n config.NodeConfig) (string, error) {
 	var b []byte
 	var err error
 	switch {
 	case n.KeyID != "":
 		var pub string
-		if err := s.store.db.QueryRow(`SELECT public FROM ssh_keys WHERE id=?`, n.KeyID).Scan(&pub); err != nil {
+		if err := s.store.DB.QueryRow(`SELECT public FROM ssh_keys WHERE id=?`, n.KeyID).Scan(&pub); err != nil {
 			return "", errors.New("密钥已被删除，请为这台设备重新选择密钥")
 		}
 		return pub, nil
 	case n.KeyPath != "":
-		b, err = os.ReadFile(expandHome(n.KeyPath + ".pub"))
+		b, err = os.ReadFile(util.ExpandHome(n.KeyPath + ".pub"))
 		if err == nil {
 			return strings.TrimSpace(string(b)), nil
 		}
-		b, err = os.ReadFile(expandHome(n.KeyPath))
+		b, err = os.ReadFile(util.ExpandHome(n.KeyPath))
 	default:
 		return "", errors.New("这台设备使用 ssh-agent，无法自动安装公钥")
 	}
@@ -563,7 +351,7 @@ func (s *Server) publicKeyOf(n NodeConfig) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("解析私钥失败：%w", err)
 	}
-	return authorizedLine(signer.PublicKey(), s.config().nodeName()), nil
+	return store.AuthorizedLine(signer.PublicKey(), s.config().DisplayName()), nil
 }
 
 // handleInstallKey logs in once with the server password and appends the
@@ -582,7 +370,7 @@ func (s *Server) handleInstallKey(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "设备不存在")
 		return
 	}
-	if n.Transport != transportSSH || n.HostKey == "" {
+	if n.Transport != config.TransportSSH || n.HostKey == "" {
 		writeErr(w, 400, "请先确认服务器的主机指纹")
 		return
 	}
@@ -610,7 +398,7 @@ const installAuthorizedKeyScript = `umask 077; K=$(cat); mkdir -p "$HOME/.ssh" &
 	`touch "$HOME/.ssh/authorized_keys" && chmod 600 "$HOME/.ssh/authorized_keys" && ` +
 	`{ grep -qxF "$K" "$HOME/.ssh/authorized_keys" || printf '%s\n' "$K" >> "$HOME/.ssh/authorized_keys"; }`
 
-func installAuthorizedKey(ctx context.Context, n NodeConfig, password, pub string) error {
+func installAuthorizedKey(ctx context.Context, n config.NodeConfig, password, pub string) error {
 	answer := func(_, _ string, qs []string, _ []bool) ([]string, error) {
 		out := make([]string, len(qs))
 		for i := range qs {
@@ -621,20 +409,20 @@ func installAuthorizedKey(ctx context.Context, n NodeConfig, password, pub strin
 	cfg := &ssh.ClientConfig{
 		User:              n.SSHUser,
 		Auth:              []ssh.AuthMethod{ssh.Password(password), ssh.KeyboardInteractive(answer)},
-		HostKeyCallback:   pinnedHostKey(n),
-		HostKeyAlgorithms: hostKeyAlgorithms(n),
+		HostKeyCallback:   sshconn.PinnedHostKey(n),
+		HostKeyAlgorithms: sshconn.HostKeyAlgorithms(n),
 		Timeout:           10 * time.Second,
 	}
 	d := net.Dialer{Timeout: 10 * time.Second}
-	conn, err := d.DialContext(ctx, "tcp", n.sshAddr())
+	conn, err := d.DialContext(ctx, "tcp", n.SSHAddr())
 	if err != nil {
-		return fmt.Errorf("无法连接 %s：%w", n.sshAddr(), err)
+		return fmt.Errorf("无法连接 %s：%w", n.SSHAddr(), err)
 	}
 	defer conn.Close()
 	if dl, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(dl)
 	}
-	c, chans, reqs, err := ssh.NewClientConn(conn, n.sshAddr(), cfg)
+	c, chans, reqs, err := ssh.NewClientConn(conn, n.SSHAddr(), cfg)
 	if err != nil {
 		if strings.Contains(err.Error(), "unable to authenticate") {
 			return errors.New("密码不正确，或服务器不允许密码登录")
@@ -683,8 +471,8 @@ type bundleKey struct {
 }
 
 type bundlePayload struct {
-	Devices []NodeConfig `json:"devices"`
-	Keys    []bundleKey  `json:"keys"`
+	Devices []config.NodeConfig `json:"devices"`
+	Keys    []bundleKey         `json:"keys"`
 }
 
 // codeAlphabet has 32 symbols without look-alikes (no 0/O, 1/I).
@@ -694,7 +482,7 @@ const codeAlphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
 // It is generated, never chosen, so a copy of the file cannot be opened by
 // guessing.
 func newBundleCode() (string, error) {
-	b, err := randomBytes(16)
+	b, err := util.RandomBytes(16)
 	if err != nil {
 		return "", err
 	}
@@ -738,7 +526,7 @@ func sealBundle(p bundlePayload, code, from string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	salt, err := randomBytes(16)
+	salt, err := util.RandomBytes(16)
 	if err != nil {
 		return nil, err
 	}
@@ -747,7 +535,7 @@ func sealBundle(p bundlePayload, code, from string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	nonce, err := randomBytes(aead.NonceSize())
+	nonce, err := util.RandomBytes(aead.NonceSize())
 	if err != nil {
 		return nil, err
 	}
@@ -823,9 +611,9 @@ func (s *Server) handleVaultExport(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case n.KeyID != "":
 			ref = n.KeyID
-			if b, err := s.store.privateKey(n.KeyID); err == nil {
+			if b, err := s.store.PrivateKey(n.KeyID); err == nil {
 				pemBytes = b
-				if keys, err := s.store.listKeys(); err == nil {
+				if keys, err := s.store.ListKeys(); err == nil {
 					for _, k := range keys {
 						if k.ID == n.KeyID {
 							name = k.Name
@@ -836,7 +624,7 @@ func (s *Server) handleVaultExport(w http.ResponseWriter, r *http.Request) {
 		case n.KeyPath != "":
 			ref = n.KeyPath
 			name = filepath.Base(n.KeyPath)
-			if b, err := os.ReadFile(expandHome(n.KeyPath)); err == nil {
+			if b, err := os.ReadFile(util.ExpandHome(n.KeyPath)); err == nil {
 				if pb, err := plainKeyPEM(b, ""); err == nil {
 					pemBytes = pb
 				} else if errors.Is(err, errPassphraseNeeded) {
@@ -868,7 +656,7 @@ func (s *Server) handleVaultExport(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	data, err := sealBundle(p, code, s.config().nodeName())
+	data, err := sealBundle(p, code, s.config().DisplayName())
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -899,7 +687,7 @@ func (s *Server) handleVaultImport(w http.ResponseWriter, r *http.Request) {
 	keyMap := map[string]string{}
 	newKeys := 0
 	for _, k := range p.Keys {
-		vk, created, err := s.store.addKey(k.Name, "imported", []byte(k.Private))
+		vk, created, err := s.store.AddKey(k.Name, "imported", []byte(k.Private))
 		if err != nil {
 			writeErr(w, 400, "导入密钥「"+k.Name+"」失败："+err.Error())
 			return
@@ -910,11 +698,11 @@ func (s *Server) handleVaultImport(w http.ResponseWriter, r *http.Request) {
 		keyMap[k.ID] = vk.ID
 	}
 	added, updated := 0, 0
-	err = s.saveNodes(func(nodes []NodeConfig) ([]NodeConfig, error) {
+	err = s.saveNodes(func(nodes []config.NodeConfig) ([]config.NodeConfig, error) {
 		for _, d := range p.Devices {
 			d.KeyID = keyMap[d.KeyID]
-			if d.ID == "" || d.ID == localNodeID {
-				d.ID = "d" + strings.ToLower(randomID(7))
+			if d.ID == "" || d.ID == config.LocalNodeID {
+				d.ID = "d" + strings.ToLower(util.RandomID(7))
 			}
 			replaced := false
 			for i := range nodes {

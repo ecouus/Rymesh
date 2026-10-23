@@ -16,18 +16,22 @@ import (
 	"testing"
 
 	"golang.org/x/crypto/ssh"
+
+	"rymesh/internal/config"
+	"rymesh/internal/sshconn"
+	"rymesh/internal/store"
 )
 
 // testHub is a client console with an authenticated request helper.
 type testHub struct {
 	srv *Server
-	st  *Store
+	st  *store.Store
 	do  func(method, path, body string) *httptest.ResponseRecorder
 }
 
-func newTestHub(t *testing.T, cfg *Config, cfgPath string) *testHub {
+func newTestHub(t *testing.T, cfg *config.Config, cfgPath string) *testHub {
 	t.Helper()
-	st, err := openStore(cfg.DataDir)
+	st, err := store.OpenStore(cfg.DataDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,12 +68,12 @@ func TestVaultMigratesConfigDevicesAndKeyFiles(t *testing.T) {
 	priv, _ := newKeyPair("old")
 	_ = os.WriteFile(filepath.Join(keyDir, "phone"), priv, 0o600)
 	_ = os.WriteFile(filepath.Join(keyDir, "phone.pub"), []byte("ssh-ed25519 AAAA phone\n"), 0o644)
-	cfg.Nodes = []NodeConfig{
-		{ID: "dbox", Name: "Box", Transport: transportSSH, SSHHost: "h", SSHUser: "root", KeyPath: filepath.Join(keyDir, "phone"), Token: "tok"},
+	cfg.Nodes = []config.NodeConfig{
+		{ID: "dbox", Name: "Box", Transport: config.TransportSSH, SSHHost: "h", SSHUser: "root", KeyPath: filepath.Join(keyDir, "phone"), Token: "tok"},
 		{ID: "mac", Name: "Mac", URL: "http://10.0.0.2:8899", Token: "t2"},
 	}
 	cfgPath := filepath.Join(t.TempDir(), "config.json")
-	if err := saveConfig(cfgPath, cfg); err != nil {
+	if err := config.SaveConfig(cfgPath, cfg); err != nil {
 		t.Fatal(err)
 	}
 	h := newTestHub(t, cfg, cfgPath)
@@ -78,10 +82,10 @@ func TestVaultMigratesConfigDevicesAndKeyFiles(t *testing.T) {
 	if len(nodes) != 2 || nodes[0].KeyID == "" || nodes[0].KeyPath != "" || nodes[1].ID != "mac" {
 		t.Fatalf("nodes = %+v", nodes)
 	}
-	if b, err := h.st.privateKey(nodes[0].KeyID); err != nil || string(b) != string(priv) {
+	if b, err := h.st.PrivateKey(nodes[0].KeyID); err != nil || string(b) != string(priv) {
 		t.Fatalf("key not moved: %v", err)
 	}
-	if raw, _ := loadConfig(cfgPath); len(raw.Nodes) != 0 {
+	if raw, _ := config.LoadConfig(cfgPath); len(raw.Nodes) != 0 {
 		t.Fatalf("config.json still lists devices")
 	}
 	if _, err := os.Stat(cfgPath + ".pre-vault"); err != nil {
@@ -94,7 +98,7 @@ func TestVaultMigratesConfigDevicesAndKeyFiles(t *testing.T) {
 		t.Fatalf("database mode = %v", fi.Mode().Perm())
 	}
 	// A second start reads the same list from the database alone.
-	cfg2, _ := loadConfig(cfgPath)
+	cfg2, _ := config.LoadConfig(cfgPath)
 	cfg2.DataDir = cfg.DataDir
 	h2 := newTestHub(t, cfg2, cfgPath)
 	if got := h2.srv.config().Nodes; len(got) != 2 || got[0].KeyID != nodes[0].KeyID {
@@ -107,7 +111,7 @@ func TestVaultKeyLifecycle(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.NodeName = "手机"
 	h := newTestHub(t, cfg, "")
-	type keyResp struct{ Key vaultKey }
+	type keyResp struct{ Key store.VaultKey }
 
 	// Unnamed keys never collide (the old date-based name did, silently).
 	a := decode[keyResp](t, h.do("POST", "/api/keys/generate", `{}`)).Key
@@ -125,7 +129,7 @@ func TestVaultKeyLifecycle(t *testing.T) {
 	if rec := h.do("POST", "/api/devices", dev); rec.Code != 201 {
 		t.Fatalf("create device: %d %s", rec.Code, rec.Body.String())
 	}
-	list := decode[struct{ Keys []vaultKey }](t, h.do("GET", "/api/keys", ""))
+	list := decode[struct{ Keys []store.VaultKey }](t, h.do("GET", "/api/keys", ""))
 	if len(list.Keys) != 2 || list.Keys[0].Name != "工作 Mac" || len(list.Keys[0].UsedBy) != 1 ||
 		!strings.HasSuffix(list.Keys[0].Public, " rymesh-工作-Mac") {
 		t.Fatalf("keys = %+v", list.Keys)
@@ -152,8 +156,8 @@ func TestVaultImportsProtectedKeyFromSSHDir(t *testing.T) {
 
 	cfg := testConfig(t)
 	h := newTestHub(t, cfg, "")
-	_ = h.srv.saveNodes(func([]NodeConfig) ([]NodeConfig, error) {
-		return []NodeConfig{{ID: "dbox", Name: "Box", Transport: transportSSH, SSHHost: "h", SSHUser: "u", KeyPath: path}}, nil
+	_ = h.srv.saveNodes(func([]config.NodeConfig) ([]config.NodeConfig, error) {
+		return []config.NodeConfig{{ID: "dbox", Name: "Box", Transport: config.TransportSSH, SSHHost: "h", SSHUser: "u", KeyPath: path}}, nil
 	})
 	list := decode[struct{ Detected []detectedKey }](t, h.do("GET", "/api/keys", ""))
 	if len(list.Detected) != 1 || !list.Detected[0].Encrypted || list.Detected[0].Imported || len(list.Detected[0].UsedBy) != 1 {
@@ -171,12 +175,12 @@ func TestVaultImportsProtectedKeyFromSSHDir(t *testing.T) {
 	if rec.Code != 201 {
 		t.Fatalf("import: %d %s", rec.Code, rec.Body.String())
 	}
-	k := decode[struct{ Key vaultKey }](t, rec).Key
+	k := decode[struct{ Key store.VaultKey }](t, rec).Key
 	if k.Fingerprint != ssh.FingerprintSHA256(signer.PublicKey()) {
 		t.Fatalf("fingerprint %s", k.Fingerprint)
 	}
 	// Stored decrypted, and the device now uses the vault copy.
-	b, _ := h.st.privateKey(k.ID)
+	b, _ := h.st.PrivateKey(k.ID)
 	if _, err := ssh.ParsePrivateKey(b); err != nil {
 		t.Fatalf("stored key: %v", err)
 	}
@@ -188,13 +192,13 @@ func TestVaultImportsProtectedKeyFromSSHDir(t *testing.T) {
 func TestVaultBundleRoundTrip(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	mac := newTestHub(t, testConfig(t), "")
-	key := decode[struct{ Key vaultKey }](t, mac.do("POST", "/api/keys/generate", `{"name":"mac"}`)).Key
-	_ = mac.srv.saveNodes(func([]NodeConfig) ([]NodeConfig, error) {
-		return []NodeConfig{
-			{ID: "dbox", Name: "Box", Transport: transportSSH, SSHHost: "h", SSHUser: "root", KeyID: key.ID,
+	key := decode[struct{ Key store.VaultKey }](t, mac.do("POST", "/api/keys/generate", `{"name":"mac"}`)).Key
+	_ = mac.srv.saveNodes(func([]config.NodeConfig) ([]config.NodeConfig, error) {
+		return []config.NodeConfig{
+			{ID: "dbox", Name: "Box", Transport: config.TransportSSH, SSHHost: "h", SSHUser: "root", KeyID: key.ID,
 				HostKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl", Token: "node-tok", RemotePort: 8899},
-			{ID: "dagent", Name: "Agent box", Transport: transportSSH, SSHHost: "h2", SSHUser: "root", UseAgent: true},
-			{ID: "dskip", Name: "Not chosen", Transport: transportSSH, SSHHost: "h3", SSHUser: "root", KeyID: key.ID},
+			{ID: "dagent", Name: "Agent box", Transport: config.TransportSSH, SSHHost: "h2", SSHUser: "root", UseAgent: true},
+			{ID: "dskip", Name: "Not chosen", Transport: config.TransportSSH, SSHHost: "h3", SSHUser: "root", KeyID: key.ID},
 		}, nil
 	})
 	rec := mac.do("POST", "/api/vault/export", `{"devices":["dbox","dagent"]}`)
@@ -234,8 +238,8 @@ func TestVaultBundleRoundTrip(t *testing.T) {
 	if !ok || box.Token != "node-tok" || box.HostKey == "" || box.KeyID == "" || box.RemotePort != 8899 {
 		t.Fatalf("imported device = %+v", box)
 	}
-	want, _ := mac.st.privateKey(key.ID)
-	if got, _ := phone.st.privateKey(box.KeyID); string(got) != string(want) {
+	want, _ := mac.st.PrivateKey(key.ID)
+	if got, _ := phone.st.PrivateKey(box.KeyID); string(got) != string(want) {
 		t.Fatal("private key differs after import")
 	}
 	if a, _ := phone.srv.device("dagent"); a.KeyID != "" || a.UseAgent {
@@ -258,16 +262,16 @@ func TestInstallKeyWithPasswordOnce(t *testing.T) {
 	sshd := newTestSSHServer(t, nil) // knows no keys yet
 
 	h := newTestHub(t, testConfig(t), "")
-	key := decode[struct{ Key vaultKey }](t, h.do("POST", "/api/keys/generate", `{"name":"phone"}`)).Key
+	key := decode[struct{ Key store.VaultKey }](t, h.do("POST", "/api/keys/generate", `{"name":"phone"}`)).Key
 	n := sshNodeFor(t, sshd, "", "http://127.0.0.1:9")
 	n.KeyPath, n.KeyID = "", key.ID
-	_ = h.srv.saveNodes(func([]NodeConfig) ([]NodeConfig, error) { return []NodeConfig{n}, nil })
+	_ = h.srv.saveNodes(func([]config.NodeConfig) ([]config.NodeConfig, error) { return []config.NodeConfig{n}, nil })
 
 	// The password is never sent before the host key is pinned.
 	if rec := h.do("POST", "/api/devices/box/install-key", `{"password":"server-pw"}`); rec.Code != 400 {
 		t.Fatalf("install before trust: %d", rec.Code)
 	}
-	probe := decode[struct{ Hostkey HostKeyProbe }](t, h.do("POST", "/api/devices/box/test", "{}"))
+	probe := decode[struct{ Hostkey sshconn.HostKeyProbe }](t, h.do("POST", "/api/devices/box/test", "{}"))
 	h.do("POST", "/api/devices/box/trust", `{"key":`+strconv.Quote(probe.Hostkey.Key)+`}`)
 
 	rec := h.do("POST", "/api/devices/box/test", "{}")
@@ -298,8 +302,8 @@ func TestInstallKeyWithPasswordOnce(t *testing.T) {
 func TestFastNodeListAndSnapshot(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	h := newTestHub(t, testConfig(t), "")
-	_ = h.srv.saveNodes(func([]NodeConfig) ([]NodeConfig, error) {
-		return []NodeConfig{{ID: "dfar", Name: "Far", Transport: transportSSH, SSHHost: "203.0.113.1", SSHUser: "root", UseAgent: true}}, nil
+	_ = h.srv.saveNodes(func([]config.NodeConfig) ([]config.NodeConfig, error) {
+		return []config.NodeConfig{{ID: "dfar", Name: "Far", Transport: config.TransportSSH, SSHHost: "203.0.113.1", SSHUser: "root", UseAgent: true}}, nil
 	})
 	// The fast listing never dials: an unreachable address answers at once.
 	rec := h.do("GET", "/api/nodes?fast=1", "")

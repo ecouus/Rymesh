@@ -1,21 +1,5 @@
 package console
 
-// Multi-device ("hub and nodes").
-//
-// Every instance is a node: it runs its own agents, keeps its own database and
-// syncs its own native history, exactly as a single install does. An instance
-// whose config lists other nodes is also a hub. The page reaches a remote node
-// through /n/{node}/api/..., which the hub relays over EasyTier with that
-// node's token. Agents therefore always run on the machine they belong to and
-// keep running if the hub, the network or the browser goes away; the hub only
-// forwards HTTP and SSE.
-//
-// Setup, per remote machine:
-//
-//	node$ rymesh node token          # prints (and creates) its token
-//	hub$  rymesh node add mac --name Mac --url http://10.0.0.2:8899 --token <token>
-//	hub$  systemctl restart rymesh
-
 import (
 	"context"
 	"crypto/subtle"
@@ -34,48 +18,12 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"rymesh/internal/config"
+	"rymesh/internal/sshconn"
+	"rymesh/internal/store"
+	"rymesh/internal/util"
 )
-
-// NodeConfig is one remote device. A direct device is reached at URL (a LAN
-// or VPN address); an SSH device through an SSH connection to its loopback
-// port (sshconn.go), with HostKey pinned on first contact.
-type NodeConfig struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	URL        string `json:"url,omitempty"`
-	Token      string `json:"token"`
-	Transport  string `json:"transport,omitempty"` // "" (direct) or "ssh"
-	SSHHost    string `json:"ssh_host,omitempty"`
-	SSHPort    int    `json:"ssh_port,omitempty"`
-	SSHUser    string `json:"ssh_user,omitempty"`
-	KeyPath    string `json:"key_path,omitempty"` // a key file (~/.ssh)
-	KeyID      string `json:"key_id,omitempty"`   // or a key in the vault (vault.go)
-	UseAgent   bool   `json:"use_agent,omitempty"`
-	HostKey    string `json:"host_key,omitempty"`
-	RemotePort int    `json:"remote_port,omitempty"`
-}
-
-// localNodeID names this instance in the device list; it is never proxied.
-const localNodeID = "local"
-
-func (c *Config) nodeName() string {
-	if c.NodeName != "" {
-		return c.NodeName
-	}
-	if h, err := os.Hostname(); err == nil && h != "" {
-		return h
-	}
-	return "本机"
-}
-
-func (c *Config) findNode(id string) (NodeConfig, bool) {
-	for _, n := range c.Nodes {
-		if n.ID == id {
-			return n, true
-		}
-	}
-	return NodeConfig{}, false
-}
 
 // nodeTokenOK reports whether r carries this node's hub token.
 func (s *Server) nodeTokenOK(r *http.Request) bool {
@@ -104,7 +52,7 @@ func (s *Server) reloadNodeToken() string {
 	if tok == "" || tok == s.config().NodeToken {
 		return ""
 	}
-	s.updateConfig(func(c *Config) { c.NodeToken = tok })
+	s.updateConfig(func(c *config.Config) { c.NodeToken = tok })
 	s.logger.Printf("node token reloaded from %s", s.cfgPath)
 	return tok
 }
@@ -149,9 +97,9 @@ type nodeView struct {
 }
 
 // transportFor picks how the relay reaches a device.
-func (s *Server) transportFor(n NodeConfig) http.RoundTripper {
-	if n.Transport == transportSSH {
-		return s.ssh.transport(n)
+func (s *Server) transportFor(n config.NodeConfig) http.RoundTripper {
+	if n.Transport == config.TransportSSH {
+		return s.ssh.Transport(n)
 	}
 	return nodeTransport
 }
@@ -168,7 +116,7 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]nodeView, off+len(cfg.Nodes))
 	if !cfg.HubOnly {
-		out[0] = nodeView{ID: localNodeID, Name: cfg.nodeName(), Local: true, Online: true, Version: version}
+		out[0] = nodeView{ID: config.LocalNodeID, Name: cfg.DisplayName(), Local: true, Online: true, Version: util.Version}
 	}
 	fast := r.URL.Query().Get("fast") == "1"
 	var wg sync.WaitGroup
@@ -178,7 +126,7 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		wg.Add(1)
-		go func(i int, n NodeConfig) {
+		go func(i int, n config.NodeConfig) {
 			defer wg.Done()
 			out[i+off] = s.probe(r.Context(), n)
 		}(i, n)
@@ -188,7 +136,7 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
 }
 
 // probe checks a device and remembers the result for fast listings.
-func (s *Server) probe(ctx context.Context, n NodeConfig) nodeView {
+func (s *Server) probe(ctx context.Context, n config.NodeConfig) nodeView {
 	v := probeNode(ctx, n, s.transportFor(n))
 	s.nodeMu.Lock()
 	if s.nodeSeen == nil {
@@ -199,7 +147,7 @@ func (s *Server) probe(ctx context.Context, n NodeConfig) nodeView {
 	return v
 }
 
-func (s *Server) lastProbe(n NodeConfig) nodeView {
+func (s *Server) lastProbe(n config.NodeConfig) nodeView {
 	s.nodeMu.Lock()
 	v, ok := s.nodeSeen[n.ID]
 	s.nodeMu.Unlock()
@@ -208,7 +156,7 @@ func (s *Server) lastProbe(n NodeConfig) nodeView {
 		return v
 	}
 	v = nodeView{ID: n.ID, Name: n.Name, URL: n.URL, Transport: n.Transport, Checking: true}
-	if n.Transport == transportSSH {
+	if n.Transport == config.TransportSSH {
 		v.URL, v.Target = "", n.SSHUser+"@"+n.SSHHost
 	}
 	return v
@@ -219,14 +167,14 @@ func (s *Server) lastProbe(n NodeConfig) nodeView {
 // backoff, so choosing it or pressing retry always makes a fresh attempt.
 func (s *Server) handleUseNode(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if id != localNodeID {
+	if id != config.LocalNodeID {
 		n, ok := s.device(id)
 		if !ok {
 			writeErr(w, 404, "设备不存在")
 			return
 		}
-		if n.Transport == transportSSH {
-			s.ssh.retry(n)
+		if n.Transport == config.TransportSSH {
+			s.ssh.Retry(n)
 		}
 	}
 	if err := s.store.SetMeta("current_node", id); err != nil {
@@ -276,14 +224,14 @@ func (s *Server) warmNodes() {
 	}
 }
 
-func probeNode(ctx context.Context, n NodeConfig, rt http.RoundTripper) nodeView {
+func probeNode(ctx context.Context, n config.NodeConfig, rt http.RoundTripper) nodeView {
 	v := nodeView{ID: n.ID, Name: n.Name, URL: n.URL, Transport: n.Transport}
-	if n.Transport == transportSSH {
+	if n.Transport == config.TransportSSH {
 		v.URL, v.Target = "", n.SSHUser+"@"+n.SSHHost
 	}
 	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "GET", strings.TrimRight(n.baseURL(), "/")+"/api/nodes/self", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", strings.TrimRight(n.BaseURL(), "/")+"/api/nodes/self", nil)
 	if err != nil {
 		v.Error = err.Error()
 		return v
@@ -292,11 +240,11 @@ func probeNode(ctx context.Context, n NodeConfig, rt http.RoundTripper) nodeView
 	resp, err := (&http.Client{Transport: rt}).Do(req)
 	if err != nil {
 		v.Error = "无法连接"
-		var mm *hostKeyMismatchError
+		var mm *sshconn.HostKeyMismatchError
 		switch {
 		case errors.As(err, &mm):
 			v.Error = "主机密钥不一致"
-		case errors.Is(err, errHostKeyUnknown):
+		case errors.Is(err, sshconn.ErrHostKeyUnknown):
 			v.Error = "未信任主机密钥"
 		case strings.Contains(err.Error(), "节点程序未在"):
 			v.Error = "节点未运行"
@@ -325,7 +273,7 @@ func probeNode(ctx context.Context, n NodeConfig, rt http.RoundTripper) nodeView
 // handleNodeSelf identifies this node to a hub; it requires the node token
 // (or a login), so a successful answer also proves the token is right.
 func (s *Server) handleNodeSelf(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, map[string]any{"name": s.config().nodeName(), "version": version})
+	writeJSON(w, 200, map[string]any{"name": s.config().DisplayName(), "version": util.Version})
 }
 
 // Login state belongs to the hub. These must never reach a node: the node
@@ -338,7 +286,7 @@ var hubOnlyPaths = map[string]bool{
 
 func (s *Server) handleNodeProxy(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("node")
-	n, ok := s.config().findNode(id)
+	n, ok := s.config().FindNode(id)
 	if !ok {
 		writeErr(w, 404, "未知设备: "+id)
 		return
@@ -348,7 +296,7 @@ func (s *Server) handleNodeProxy(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 403, "该操作只能在当前控制台执行")
 		return
 	}
-	target, err := url.Parse(n.baseURL())
+	target, err := url.Parse(n.BaseURL())
 	if err != nil {
 		writeErr(w, 500, "设备地址无效")
 		return
@@ -449,9 +397,9 @@ func nonPublicAddr(ip netip.Addr) bool {
 	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || sharedAddrSpace.Contains(ip)
 }
 
-func cliTransport(n NodeConfig, keys keySource) http.RoundTripper {
-	if n.Transport == transportSSH {
-		return newSSHPool(keys).transport(n)
+func cliTransport(n config.NodeConfig, keys sshconn.KeySource) http.RoundTripper {
+	if n.Transport == config.TransportSSH {
+		return sshconn.NewPool(keys).Transport(n)
 	}
 	return nodeTransport
 }
@@ -477,7 +425,7 @@ func nodeMain(args []string) int {
 		return nodeSetupMain(rest) // runs on the node itself; no hub config
 	}
 	fset := flag.NewFlagSet("node "+sub, flag.ContinueOnError)
-	configPath := fset.String("config", defaultConfigPath, "config path")
+	configPath := fset.String("config", config.DefaultConfigPath, "config path")
 	rotate := fset.Bool("rotate", false, "generate a new token")
 	name := fset.String("name", "", "display name")
 	nodeURL := fset.String("url", "", "node base URL, e.g. http://10.0.0.2:8899")
@@ -492,16 +440,16 @@ func nodeMain(args []string) int {
 		return 2
 	}
 	pos = append(pos, fset.Args()...)
-	cfg, err := loadConfig(*configPath)
+	cfg, err := config.LoadConfig(*configPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "读取配置失败:", err)
 		return 1
 	}
 	// Devices live in the database (vault.go); token and name only touch
 	// config.json, so they work while the service has the database open.
-	var st *Store
+	var st *store.Store
 	if sub == "add" || sub == "remove" || sub == "list" {
-		if st, err = openStore(cfg.DataDir); err != nil {
+		if st, err = store.OpenStore(cfg.DataDir); err != nil {
 			fmt.Fprintln(os.Stderr, "打开数据库失败:", err)
 			return 1
 		}
@@ -514,11 +462,11 @@ func nodeMain(args []string) int {
 	save := func() int {
 		var err error
 		if st != nil {
-			if err = st.saveDevices(cfg.Nodes); err == nil {
-				err = saveConfigFile(*configPath, cfg)
+			if err = st.SaveDevices(cfg.Nodes); err == nil {
+				err = config.SaveConfigFile(*configPath, cfg)
 			}
 		} else {
-			err = saveConfig(*configPath, cfg)
+			err = config.SaveConfig(*configPath, cfg)
 		}
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "保存配置失败:", err)
@@ -530,7 +478,7 @@ func nodeMain(args []string) int {
 	switch sub {
 	case "token":
 		if cfg.NodeToken == "" || *rotate {
-			b, err := randomBytes(32)
+			b, err := util.RandomBytes(32)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				return 1
@@ -555,7 +503,7 @@ func nodeMain(args []string) int {
 			return 2
 		}
 		id := pos[0]
-		if !validID(id) || id == localNodeID {
+		if !store.ValidID(id) || id == config.LocalNodeID {
 			fmt.Fprintln(os.Stderr, "设备 id 只能包含字母、数字、- 和 _，且不能是 local")
 			return 2
 		}
@@ -563,7 +511,7 @@ func nodeMain(args []string) int {
 			fmt.Fprintln(os.Stderr, err)
 			return 2
 		}
-		n := NodeConfig{ID: id, Name: *name, URL: strings.TrimRight(*nodeURL, "/"), Token: *token}
+		n := config.NodeConfig{ID: id, Name: *name, URL: strings.TrimRight(*nodeURL, "/"), Token: *token}
 		if n.Name == "" {
 			n.Name = id
 		}
@@ -601,7 +549,7 @@ func nodeMain(args []string) int {
 		cfg.Nodes = kept
 		return save()
 	case "list":
-		fmt.Printf("本机  %s\n", cfg.nodeName())
+		fmt.Printf("本机  %s\n", cfg.DisplayName())
 		for _, n := range cfg.Nodes {
 			v := probeNode(context.Background(), n, cliTransport(n, st))
 			state := "在线 " + v.Version

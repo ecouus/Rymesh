@@ -21,6 +21,10 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+
+	"rymesh/internal/config"
+	"rymesh/internal/sshconn"
+	"rymesh/internal/store"
 )
 
 // testSSHServer is a minimal sshd: public-key auth for one key (and for keys
@@ -171,12 +175,12 @@ func clientKey(t *testing.T) (path string, pub ssh.PublicKey) {
 	return path, signer.PublicKey()
 }
 
-func sshNodeFor(t *testing.T, srv *testSSHServer, keyPath string, nodeURL string) NodeConfig {
+func sshNodeFor(t *testing.T, srv *testSSHServer, keyPath string, nodeURL string) config.NodeConfig {
 	host, port, _ := net.SplitHostPort(srv.addr)
 	p, _ := strconv.Atoi(port)
 	_, nport, _ := net.SplitHostPort(strings.TrimPrefix(nodeURL, "http://"))
 	np, _ := strconv.Atoi(nport)
-	return NodeConfig{ID: "box", Name: "Box", Transport: transportSSH, SSHHost: host, SSHPort: p,
+	return config.NodeConfig{ID: "box", Name: "Box", Transport: config.TransportSSH, SSHHost: host, SSHPort: p,
 		SSHUser: "me", KeyPath: keyPath, RemotePort: np, Token: "node-secret-token-123"}
 }
 
@@ -184,10 +188,10 @@ func TestHubRelaysThroughSSHTunnel(t *testing.T) {
 	// The node: a real server, reachable only as the SSH server's loopback.
 	nodeCfg := testConfig(t)
 	nodeCfg.NodeToken, nodeCfg.NodeName = "node-secret-token-123", "Box"
-	nst, _ := openStore(nodeCfg.DataDir)
+	nst, _ := store.OpenStore(nodeCfg.DataDir)
 	defer nst.Close()
 	node := newServer(nodeCfg, "", nst, log.New(io.Discard, "", 0), nil)
-	_ = nst.CreateSession(&Session{Agent: "claude", Cwd: nodeCfg.DataDir, Title: "via ssh"})
+	_ = nst.CreateSession(&store.Session{Agent: "claude", Cwd: nodeCfg.DataDir, Title: "via ssh"})
 	ns := httptest.NewServer(node.Handler())
 	defer ns.Close()
 
@@ -196,10 +200,10 @@ func TestHubRelaysThroughSSHTunnel(t *testing.T) {
 	n := sshNodeFor(t, sshd, keyPath, ns.URL)
 
 	hubCfg := testConfig(t)
-	hst, _ := openStore(hubCfg.DataDir)
+	hst, _ := store.OpenStore(hubCfg.DataDir)
 	defer hst.Close()
 	hub := newServer(hubCfg, "", hst, log.New(io.Discard, "", 0), nil)
-	_ = hub.saveNodes(func(_ []NodeConfig) ([]NodeConfig, error) { return []NodeConfig{n}, nil })
+	_ = hub.saveNodes(func(_ []config.NodeConfig) ([]config.NodeConfig, error) { return []config.NodeConfig{n}, nil })
 	tok := hub.auth.token()
 	info, _ := hub.auth.verifyToken(tok)
 	do := func(method, path, body string) *httptest.ResponseRecorder {
@@ -216,7 +220,7 @@ func TestHubRelaysThroughSSHTunnel(t *testing.T) {
 	rec := do("POST", "/api/devices/box/test", "{}")
 	var probe struct {
 		Stage   string
-		Hostkey HostKeyProbe
+		Hostkey sshconn.HostKeyProbe
 	}
 	_ = json.Unmarshal(rec.Body.Bytes(), &probe)
 	if probe.Stage != "hostkey" || probe.Hostkey.Fingerprint != ssh.FingerprintSHA256(sshd.hostKey.PublicKey()) {
@@ -245,7 +249,7 @@ func TestHubRelaysThroughSSHTunnel(t *testing.T) {
 	}
 	// Commands run on the device (deploy's building block).
 	n, _ = hub.device("box")
-	out, err := hub.ssh.run(t.Context(), n, "echo hello-$((1+1))", nil)
+	out, err := hub.ssh.Run(t.Context(), n, "echo hello-$((1+1))", nil)
 	if err != nil || strings.TrimSpace(out) != "hello-2" {
 		t.Fatalf("run = %q %v", out, err)
 	}
@@ -255,12 +259,12 @@ func TestSSHRejectsChangedHostKey(t *testing.T) {
 	keyPath, pub := clientKey(t)
 	sshd := newTestSSHServer(t, pub)
 	n := sshNodeFor(t, sshd, keyPath, "http://127.0.0.1:9")
-	p, err := probeHostKey(t.Context(), n)
+	p, err := sshconn.ProbeHostKey(t.Context(), n)
 	if err != nil {
 		t.Fatal(err)
 	}
 	n.HostKey = p.Key
-	if _, err := dialSSH(t.Context(), n, nil); err != nil {
+	if _, err := sshconn.DialSSH(t.Context(), n, nil); err != nil {
 		t.Fatalf("trusted key: %v", err)
 	}
 	// Same address, different server key: a man in the middle.
@@ -269,8 +273,8 @@ func TestSSHRejectsChangedHostKey(t *testing.T) {
 	impostor := startTestSSHServer(t, pub, signer)
 	host, port, _ := net.SplitHostPort(impostor.addr)
 	n.SSHHost, n.SSHPort = host, mustAtoi(port)
-	_, err = dialSSH(t.Context(), n, nil)
-	var mm *hostKeyMismatchError
+	_, err = sshconn.DialSSH(t.Context(), n, nil)
+	var mm *sshconn.HostKeyMismatchError
 	if err == nil || !errors.As(err, &mm) {
 		t.Fatalf("changed host key accepted: %v", err)
 	}
@@ -290,7 +294,7 @@ Host prod web1
   IdentityFile ~/.ssh/prod_ed25519
 `), 0o600)
 	cfg := testConfig(t)
-	st, _ := openStore(cfg.DataDir)
+	st, _ := store.OpenStore(cfg.DataDir)
 	defer st.Close()
 	srv := newServer(cfg, "", st, log.New(io.Discard, "", 0), nil)
 	rec := httptest.NewRecorder()
@@ -355,9 +359,9 @@ func TestDialFailureNamesTheCause(t *testing.T) {
 	_, port, _ := net.SplitHostPort(ln.Addr().String())
 	ln.Close() // nothing listens here now
 	keyPath, _ := clientKey(t)
-	n := NodeConfig{ID: "x", Transport: transportSSH, SSHHost: "127.0.0.1", SSHPort: mustAtoi(port), SSHUser: "root", KeyPath: keyPath,
+	n := config.NodeConfig{ID: "x", Transport: config.TransportSSH, SSHHost: "127.0.0.1", SSHPort: mustAtoi(port), SSHUser: "root", KeyPath: keyPath,
 		HostKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"}
-	_, err := dialSSH(t.Context(), n, nil)
+	_, err := sshconn.DialSSH(t.Context(), n, nil)
 	if got := dialFailure(err); !strings.Contains(got, "连接被拒绝") {
 		t.Fatalf("refused: %q (%v)", got, err)
 	}
@@ -377,9 +381,9 @@ func TestDeployAdoptsMacClient(t *testing.T) {
 
 	macCfg := testConfig(t)
 	macCfg.NodeName = "Mac"
-	mst, _ := openStore(macCfg.DataDir)
+	mst, _ := store.OpenStore(macCfg.DataDir)
 	defer mst.Close()
-	_ = mst.CreateSession(&Session{Agent: "claude", Cwd: macCfg.DataDir, Title: "on the mac"})
+	_ = mst.CreateSession(&store.Session{Agent: "claude", Cwd: macCfg.DataDir, Title: "on the mac"})
 	mac := newServer(macCfg, cfgPath, mst, log.New(io.Discard, "", 0), nil)
 	ms := httptest.NewServer(mac.Handler())
 	defer ms.Close()
@@ -391,7 +395,7 @@ func TestDeployAdoptsMacClient(t *testing.T) {
 	n.Token, n.RemotePort = "", 0
 	n.HostKey = string(ssh.MarshalAuthorizedKey(sshd.hostKey.PublicKey()))
 	hub := newTestHub(t, testConfig(t), "")
-	_ = hub.srv.saveNodes(func(_ []NodeConfig) ([]NodeConfig, error) { return []NodeConfig{n}, nil })
+	_ = hub.srv.saveNodes(func(_ []config.NodeConfig) ([]config.NodeConfig, error) { return []config.NodeConfig{n}, nil })
 
 	// No console on the machine: not adopted, deploy goes on as usual.
 	if _, ok, err := hub.srv.adoptClient(t.Context(), n, func(string) {}); ok || err != nil {
@@ -401,7 +405,7 @@ func TestDeployAdoptsMacClient(t *testing.T) {
 	if err := os.MkdirAll(base, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := saveConfig(cfgPath, macCfg); err != nil {
+	if err := config.SaveConfig(cfgPath, macCfg); err != nil {
 		t.Fatal(err)
 	}
 
@@ -410,7 +414,7 @@ func TestDeployAdoptsMacClient(t *testing.T) {
 	withToken := *macCfg
 	withToken.NodeToken = "mac-node-token-0123456789"
 	withToken.Port, _ = strconv.Atoi(mport)
-	if err := saveConfig(cfgPath+".next", &withToken); err != nil {
+	if err := config.SaveConfig(cfgPath+".next", &withToken); err != nil {
 		t.Fatal(err)
 	}
 	bin := filepath.Join(home, "rymesh-app")
@@ -440,10 +444,10 @@ func TestDeployAdoptsMacClient(t *testing.T) {
 func TestNodeTokenReloadIsBounded(t *testing.T) {
 	cfg := testConfig(t)
 	cfgPath := filepath.Join(t.TempDir(), "config.json")
-	if err := saveConfig(cfgPath, cfg); err != nil {
+	if err := config.SaveConfig(cfgPath, cfg); err != nil {
 		t.Fatal(err)
 	}
-	st, _ := openStore(cfg.DataDir)
+	st, _ := store.OpenStore(cfg.DataDir)
 	defer st.Close()
 	srv := newServer(cfg, cfgPath, st, log.New(io.Discard, "", 0), nil)
 	req := func(tok string) bool {
@@ -456,7 +460,7 @@ func TestNodeTokenReloadIsBounded(t *testing.T) {
 	}
 	next := *cfg
 	next.NodeToken = "written-by-node-token"
-	if err := saveConfig(cfgPath, &next); err != nil {
+	if err := config.SaveConfig(cfgPath, &next); err != nil {
 		t.Fatal(err)
 	}
 	// Read less than a second ago: the file is not read again yet.

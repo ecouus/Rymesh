@@ -20,15 +20,24 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"rymesh/internal/agent"
+	"rymesh/internal/config"
+	"rymesh/internal/importer"
+	"rymesh/internal/ingest"
+	"rymesh/internal/sshconn"
+	"rymesh/internal/store"
+	"rymesh/internal/sys"
+	"rymesh/internal/util"
 )
 
 type Server struct {
-	cfg       *Config
+	cfg       *config.Config
 	cfgPath   string
-	store     *Store
-	agents    *AgentSet
-	ing       *Ingestor
-	imp       *Importer
+	store     *store.Store
+	agents    *agent.AgentSet
+	ing       *ingest.Ingestor
+	imp       *importer.Importer
 	auth      *authManager
 	mux       *http.ServeMux
 	logger    *log.Logger
@@ -42,7 +51,7 @@ type Server struct {
 	schedMu   sync.Mutex
 	launching map[string]bool
 	importMu  sync.Mutex
-	ssh       *sshPool
+	ssh       *sshconn.Pool
 	nodeMu    sync.Mutex
 	nodeSeen  map[string]nodeView // last probe of each device (nodes.go)
 	ticketMu  sync.Mutex
@@ -59,30 +68,30 @@ type Server struct {
 	terms     *termManager // shells for the terminal view (terminal.go)
 }
 
-func newServer(cfg *Config, cfgPath string, st *Store, logger *log.Logger, bindAddrs []string) *Server {
+func newServer(cfg *config.Config, cfgPath string, st *store.Store, logger *log.Logger, bindAddrs []string) *Server {
 	// The device list lives in the database (vault.go).
 	if err := initVault(st, cfg, cfgPath); err != nil {
 		logger.Printf("密钥库初始化失败: %v", err)
 	}
-	if err := st.sealStoredKeys(); err != nil {
+	if err := st.SealStoredKeys(); err != nil {
 		logger.Printf("加密已保存的私钥失败（下次启动重试）: %v", err)
 	}
 	s := &Server{
-		cfg: cfg, cfgPath: cfgPath, store: st, agents: newAgentSet(),
+		cfg: cfg, cfgPath: cfgPath, store: st, agents: agent.NewAgentSet(),
 		auth: newAuthManager(cfg), mux: http.NewServeMux(), logger: logger,
 		started: time.Now(), bindAddrs: bindAddrs, launching: map[string]bool{},
-		streamSem: make(chan struct{}, 32), ssh: newSSHPool(st),
+		streamSem: make(chan struct{}, 32), ssh: sshconn.NewPool(st),
 		terms: newTermManager(),
 	}
-	s.ing = newIngestor(st, cfg.DataDir, logger)
-	s.ing.onDone = func() { s.schedule() }
-	s.imp = newImporter(st, logger, cfg.ImportExcludeRoots, cfg.ImportHistoryLimit)
+	s.ing = ingest.NewIngestor(st, cfg.DataDir, logger)
+	s.ing.OnDone = func() { s.schedule() }
+	s.imp = importer.NewImporter(st, logger, cfg.ImportExcludeRoots, cfg.ImportHistoryLimit)
 	s.routes()
 	s.rotateTicket()
 	return s
 }
 
-func (s *Server) config() *Config {
+func (s *Server) config() *config.Config {
 	s.cfgMu.RLock()
 	defer s.cfgMu.RUnlock()
 	return s.cfg
@@ -90,7 +99,7 @@ func (s *Server) config() *Config {
 
 // publishConfig atomically swaps in a new config. Readers that already hold the
 // old pointer keep seeing a consistent snapshot.
-func (s *Server) publishConfig(c *Config) {
+func (s *Server) publishConfig(c *config.Config) {
 	s.cfgMu.Lock()
 	s.cfg = c
 	s.cfgMu.Unlock()
@@ -99,10 +108,10 @@ func (s *Server) publishConfig(c *Config) {
 
 // updateConfig applies fn to a copy of the current config and publishes it,
 // returning the new config for persisting.
-func (s *Server) updateConfig(fn func(*Config)) *Config {
+func (s *Server) updateConfig(fn func(*config.Config)) *config.Config {
 	s.cfgWrite.Lock()
 	defer s.cfgWrite.Unlock()
-	next := s.config().clone()
+	next := s.config().Clone()
 	fn(next)
 	s.publishConfig(next)
 	return next
@@ -282,16 +291,16 @@ func (s *Server) staticHandler() http.Handler {
 
 func (s *Server) handleAuthState(w http.ResponseWriter, r *http.Request) {
 	if info, ok := s.auth.authenticate(r); ok {
-		writeJSON(w, 200, map[string]any{"authenticated": true, "csrf": info.CSRF, "version": version})
+		writeJSON(w, 200, map[string]any{"authenticated": true, "csrf": info.CSRF, "version": util.Version})
 		return
 	}
-	writeJSON(w, 200, map[string]any{"authenticated": false, "version": version})
+	writeJSON(w, 200, map[string]any{"authenticated": false, "version": util.Version})
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{
-		"ok": true, "version": version, "build": buildID(),
-		"started_at": s.started.UTC().Format(time.RFC3339Nano), "time": nowRFC3339(),
+		"ok": true, "version": util.Version, "build": buildID(),
+		"started_at": s.started.UTC().Format(time.RFC3339Nano), "time": util.NowRFC3339(),
 	})
 }
 
@@ -303,7 +312,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	cfg := s.config()
 	agents := s.agents.List(false)
 	sessions, _ := s.store.ListSessions("", "", false)
-	active, _ := s.store.ListTasks([]string{StatusRunning, StatusWaitingInput, StatusPending}, 100)
+	active, _ := s.store.ListTasks([]string{store.StatusRunning, store.StatusWaitingInput, store.StatusPending}, 100)
 	recent, _ := s.store.ListTasks(nil, 50)
 	perms, _ := s.store.PendingPermissions("")
 	counts, _ := s.store.TaskCounts()
@@ -312,22 +321,22 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	if info, ok := s.auth.authenticate(r); ok {
 		csrf = info.CSRF
 	}
-	var lastReport ImportReport
+	var lastReport importer.ImportReport
 	_ = json.Unmarshal([]byte(s.store.GetMeta("last_import_report")), &lastReport)
 	writeJSON(w, 200, map[string]any{
-		"version": version, "started_at": s.started.UTC().Format(time.RFC3339Nano),
+		"version": util.Version, "started_at": s.started.UTC().Format(time.RFC3339Nano),
 		"uptime_seconds": int(time.Since(s.started).Seconds()),
 		"agents":         agents,
 		"sessions":       sessions,
 		"profiles": map[string]any{
-			"codex": codexProfiles, "claude": claudeProfiles,
+			"codex": agent.CodexProfiles, "claude": agent.ClaudeProfiles, "hermes": agent.HermesProfiles,
 		},
 		"tasks":         mergeTasks(active, recent, 80),
 		"permissions":   perms,
 		"counts":        counts,
 		"source_counts": sources,
 		"csrf":          csrf,
-		"node_name":     cfg.nodeName(),
+		"node_name":     cfg.DisplayName(),
 		"import": map[string]any{
 			"last_at": s.store.GetMeta("last_import_at"),
 			"report":  lastReport,
@@ -338,10 +347,10 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 
 // configView is the configuration as the page shows it (bootstrap and the
 // settings page).
-func (s *Server) configView(cfg *Config) map[string]any {
+func (s *Server) configView(cfg *config.Config) map[string]any {
 	return map[string]any{
 		"home":                   userHome(),
-		"default_cwd":            cfg.defaultCWD(),
+		"default_cwd":            cfg.DefaultDir(),
 		"allowed_roots":          cfg.AllowedRoots,
 		"max_concurrent":         cfg.MaxConcurrent,
 		"data_dir":               cfg.DataDir,
@@ -360,9 +369,9 @@ func (s *Server) configView(cfg *Config) map[string]any {
 	}
 }
 
-func mergeTasks(active, recent []*Task, limit int) []*Task {
+func mergeTasks(active, recent []*store.Task, limit int) []*store.Task {
 	seen := map[string]bool{}
-	var out []*Task
+	var out []*store.Task
 	for _, t := range active {
 		if !seen[t.ID] {
 			seen[t.ID] = true
@@ -405,7 +414,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	counts, _ := s.store.TaskCounts()
 	sources, _ := s.store.SourceCounts()
 	writeJSON(w, 200, map[string]any{
-		"version": version, "started_at": s.started.UTC().Format(time.RFC3339Nano),
+		"version": util.Version, "started_at": s.started.UTC().Format(time.RFC3339Nano),
 		"agents": s.agents.List(false),
 		"config": s.configView(cfg),
 		"counts": counts, "source_counts": sources,
@@ -415,7 +424,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 
 func serviceStatus() map[string]any {
 	pid := os.Getpid()
-	boot := currentBootID()
+	boot := sys.CurrentBootID()
 	return map[string]any{"pid": pid, "boot_id": boot, "service": "rymesh",
 		"unit": "/etc/systemd/system/rymesh.service"}
 }
@@ -434,14 +443,14 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 	// through publishConfig below.
 	s.cfgWrite.Lock()
 	defer s.cfgWrite.Unlock()
-	cfg := *s.config().clone()
+	cfg := *s.config().Clone()
 	// `rymesh node token` may have written a token this console has not read
 	// yet; saving without it would take it back out of the file.
 	if tok := s.fileNodeToken(); tok != "" {
 		cfg.NodeToken = tok
 	}
 	if req.DefaultCWD != nil {
-		cwd, err := cfg.allowedCWD(*req.DefaultCWD)
+		cwd, err := cfg.AllowedCWD(*req.DefaultCWD)
 		if err != nil {
 			writeErr(w, 400, err.Error())
 			return
@@ -456,7 +465,7 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		cfg.MaxConcurrent = n
 	}
-	if err := saveConfigFile(s.cfgPath, &cfg); err != nil {
+	if err := config.SaveConfigFile(s.cfgPath, &cfg); err != nil {
 		writeErr(w, 500, "保存配置失败: "+err.Error())
 		return
 	}
@@ -469,7 +478,7 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 // handleAgentUpdateCheck reports the installed and latest published version of
 // each agent CLI. The query goes to npm, so it is a network call.
 func (s *Server) handleAgentUpdateCheck(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, map[string]any{"updates": checkAgentUpdates(s.agents.List(false))})
+	writeJSON(w, 200, map[string]any{"updates": agent.CheckAgentUpdates(s.agents.List(false))})
 }
 
 // handleAgentUpdate installs the latest CLI release, then re-detects the agent
@@ -477,19 +486,19 @@ func (s *Server) handleAgentUpdateCheck(w http.ResponseWriter, r *http.Request) 
 // they finish; new tasks pick up the new binary.
 func (s *Server) handleAgentUpdate(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	if _, ok := agentCLISpecs[name]; !ok {
+	if _, ok := agent.AgentCLISpecs[name]; !ok {
 		writeErr(w, 404, "未知 Agent")
 		return
 	}
-	if !agentUpdateMu.TryLock() {
+	if !agent.AgentUpdateMu.TryLock() {
 		writeErr(w, 409, "正在更新，请稍候")
 		return
 	}
-	defer agentUpdateMu.Unlock()
+	defer agent.AgentUpdateMu.Unlock()
 
 	info, _ := s.agents.Get(name)
-	method, command, output, err := installAgentUpdate(name, info)
-	var updated AgentInfo
+	method, command, output, err := agent.InstallAgentUpdate(name, info)
+	var updated agent.AgentInfo
 	for _, a := range s.agents.List(true) {
 		if a.Name == name {
 			updated = a
@@ -501,8 +510,8 @@ func (s *Server) handleAgentUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]any{
 		"ok": true, "method": method, "command": command,
-		"version": agentVersion(updated.Version), "agent": updated,
-		"output": tailText(output, 2000),
+		"version": agent.AgentVersion(updated.Version), "agent": updated,
+		"output": agent.TailText(output, 2000),
 	})
 }
 
@@ -514,7 +523,7 @@ func (s *Server) handleAgentUpdate(w http.ResponseWriter, r *http.Request) {
 // start after the change anyway.
 func (s *Server) handleAgentRestart(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	if _, ok := agentCLISpecs[name]; !ok {
+	if _, ok := agent.AgentCLISpecs[name]; !ok {
 		writeErr(w, 404, "未知 Agent")
 		return
 	}
@@ -523,12 +532,12 @@ func (s *Server) handleAgentRestart(w http.ResponseWriter, r *http.Request) {
 	s.agents.List(true)
 	info, _ := s.agents.Get(name)
 
-	tasks, err := s.store.ListTasks([]string{StatusRunning, StatusWaitingInput}, 0)
+	tasks, err := s.store.ListTasks([]string{store.StatusRunning, store.StatusWaitingInput}, 0)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	var live []*Task
+	var live []*store.Task
 	for _, t := range tasks {
 		if t.Agent == name {
 			live = append(live, t)
@@ -551,7 +560,7 @@ func (s *Server) handleAgentRestart(w http.ResponseWriter, r *http.Request) {
 // restartAgentTasks stops the given tasks, waits for their processes to exit,
 // then queues the same prompts again. The scheduler serializes tasks per
 // session, so even a late exit cannot let two runs overlap.
-func (s *Server) restartAgentTasks(tasks []*Task) {
+func (s *Server) restartAgentTasks(tasks []*store.Task) {
 	for _, t := range tasks {
 		s.stopTask(t)
 	}
@@ -580,7 +589,7 @@ func (s *Server) restartAgentTasks(tasks []*Task) {
 			// the task is live before replacing it.
 			killTask(cur, syscall.SIGKILL)
 			_ = s.store.ExpirePermissionsForTask(cur.ID)
-			_ = s.store.FinishTask(cur.ID, StatusCancelled, nil, "重启 Agent 时强制终止", nowRFC3339())
+			_ = s.store.FinishTask(cur.ID, store.StatusCancelled, nil, "重启 Agent 时强制终止", util.NowRFC3339())
 		}
 		if _, err := s.enqueueRetry(cur, "重启 Agent 后自动重新运行"); err != nil {
 			s.logger.Printf("restart %s: requeue task %s: %v", cur.Agent, cur.ID, err)
@@ -591,7 +600,7 @@ func (s *Server) restartAgentTasks(tasks []*Task) {
 
 func taskTerminal(status string) bool {
 	switch status {
-	case StatusCompleted, StatusFailed, StatusCancelled, StatusInterrupted:
+	case store.StatusCompleted, store.StatusFailed, store.StatusCancelled, store.StatusInterrupted:
 		return true
 	}
 	return false
@@ -614,10 +623,10 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Agent    string           `json:"agent"`
-		Cwd      string           `json:"cwd"`
-		Title    string           `json:"title"`
-		Settings *SessionSettings `json:"settings"`
+		Agent    string                 `json:"agent"`
+		Cwd      string                 `json:"cwd"`
+		Title    string                 `json:"title"`
+		Settings *store.SessionSettings `json:"settings"`
 	}
 	if err := decodeJSON(w, r, &req); err != nil {
 		return
@@ -628,22 +637,22 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg := s.config()
-	cwd, err := cfg.allowedCWD(req.Cwd)
+	cwd, err := cfg.AllowedCWD(req.Cwd)
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	title := truncateTitle(req.Title, 120)
+	title := store.TruncateTitle(req.Title, 120)
 	if title == "" {
 		title = "新会话 · " + agent.Label
 	}
-	sess := &Session{Agent: req.Agent, Cwd: cwd, Title: title, Source: "web"}
+	sess := &store.Session{Agent: req.Agent, Cwd: cwd, Title: title, Source: "web"}
 	if err := s.store.CreateSession(sess); err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
 	if req.Settings != nil {
-		_, _ = s.store.UpdateSessionSettings(sess.ID, func(st *SessionSettings) { *st = *req.Settings })
+		_, _ = s.store.UpdateSessionSettings(sess.ID, func(st *store.SessionSettings) { *st = *req.Settings })
 	}
 	writeJSON(w, 201, map[string]any{"session": sess})
 }
@@ -682,16 +691,16 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req struct {
-		Title    *string          `json:"title"`
-		Hidden   *bool            `json:"hidden"`
-		Settings *SessionSettings `json:"settings"`
+		Title    *string                `json:"title"`
+		Hidden   *bool                  `json:"hidden"`
+		Settings *store.SessionSettings `json:"settings"`
 	}
 	if err := decodeJSON(w, r, &req); err != nil {
 		return
 	}
 	// The model picker sets these directly, as the CLI's /model picker does.
 	if req.Settings != nil {
-		st, err := s.store.UpdateSessionSettings(id, func(st *SessionSettings) { *st = *req.Settings })
+		st, err := s.store.UpdateSessionSettings(id, func(st *store.SessionSettings) { *st = *req.Settings })
 		if err != nil {
 			writeErr(w, 500, err.Error())
 			return
@@ -702,7 +711,7 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if req.Title != nil {
-		t := truncateTitle(*req.Title, 200)
+		t := store.TruncateTitle(*req.Title, 200)
 		if t == "" {
 			t = "未命名会话"
 		}
@@ -736,6 +745,16 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, "移动原生会话失败: "+err.Error())
 		return
 	}
+	if (sess.Agent == "hermes" || sess.Agent == "codex") && sess.NativeID != "" {
+		// Hermes, and Codex for threads it keeps in its own database, still
+		// have the conversation after the file (if any) is moved away; the
+		// console stops showing it rather than deleting the agent's copy.
+		if err := s.store.SetMeta(importer.DismissedKey(sess.Agent, sess.NativeProfile, sess.NativeID),
+			util.NowRFC3339()); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
 	// Task directories hold events.jsonl, control files and child.pid. They are
 	// not rows, so deleting the session has to remove them explicitly; leftovers
 	// kept the log endpoint readable for a session that no longer exists.
@@ -745,7 +764,7 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, t := range tasks {
-		if !validID(t.ID) {
+		if !store.ValidID(t.ID) {
 			continue
 		}
 		if err := os.RemoveAll(filepath.Join(s.config().DataDir, "tasks", t.ID)); err != nil {
@@ -755,7 +774,7 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": true, "native_trashed": trashed})
 }
 
-func (s *Server) trashNative(sess *Session) (string, error) {
+func (s *Server) trashNative(sess *store.Session) (string, error) {
 	home, _ := os.UserHomeDir()
 	var match string
 	if sess.NativeID == "" {
@@ -775,7 +794,7 @@ func (s *Server) trashNative(sess *Session) (string, error) {
 		_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 			// Rollout names are rollout-<time>-<uuid>.jsonl. A substring match
 			// could hit a different session whose id merely contains this one.
-			if err == nil && !d.IsDir() && uuidFromFilename(d.Name()) == sess.NativeID {
+			if err == nil && !d.IsDir() && importer.UUIDFromFilename(d.Name()) == sess.NativeID {
 				match = path
 				return io.EOF
 			}
@@ -801,11 +820,42 @@ func (s *Server) trashNative(sess *Session) (string, error) {
 	return dst, nil
 }
 
+// trashKeep is how long a deleted conversation's transcript stays in the
+// trash before it is removed for good.
+const trashKeep = 30 * 24 * time.Hour
+
+// pruneTrash removes trash folders (named by deletion time, see trashNative)
+// older than trashKeep. A folder whose name is not such a time is left alone.
+func (s *Server) pruneTrash(now time.Time) {
+	root := filepath.Join(s.config().DataDir, "trash")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		at, err := time.Parse("20060102T150405", e.Name())
+		if !e.IsDir() || err != nil || now.Sub(at) < trashKeep {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(root, e.Name())); err != nil {
+			s.logger.Printf("清理回收目录 %s 失败: %v", e.Name(), err)
+		}
+	}
+}
+
+// pruneTrashLoop prunes now and then once a day.
+func (s *Server) pruneTrashLoop() {
+	for {
+		s.pruneTrash(time.Now().UTC())
+		time.Sleep(24 * time.Hour)
+	}
+}
+
 func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, s.runImport())
 }
 
-func (s *Server) runImport() ImportReport {
+func (s *Server) runImport() importer.ImportReport {
 	s.importMu.Lock()
 	defer s.importMu.Unlock()
 	rep := s.imp.ImportAll()
@@ -953,13 +1003,17 @@ func (s *Server) handleCreateMessage(w http.ResponseWriter, r *http.Request) {
 	if err := s.imp.SyncSession(id); err != nil {
 		s.logger.Printf("同步原生会话 %s 失败: %v", id, err)
 	}
+	if sess.ReadOnly != "" {
+		writeErr(w, 409, sess.ReadOnly)
+		return
+	}
 	if s.handleLocalCommand(w, sess, req.Text) {
 		return
 	}
 	if req.Profile == "" {
-		req.Profile = defaultProfileFor(sess.Agent)
+		req.Profile = agent.DefaultProfileFor(sess.Agent)
 	}
-	if !validProfile(sess.Agent, req.Profile) {
+	if !agent.ValidProfile(sess.Agent, req.Profile) {
 		writeErr(w, 400, "未知执行配置: "+req.Profile)
 		return
 	}
@@ -971,20 +1025,20 @@ func (s *Server) handleCreateMessage(w http.ResponseWriter, r *http.Request) {
 	// Imported sessions take their cwd from the native transcript, which was
 	// never validated against allowed_roots. Re-check it here, otherwise a
 	// transcript recorded in /etc or /root would run the agent there.
-	if _, err := s.config().allowedCWD(sess.Cwd); err != nil {
+	if _, err := s.config().AllowedCWD(sess.Cwd); err != nil {
 		writeErr(w, 400, "会话目录不可用: "+err.Error())
 		return
 	}
 	if req.RequestID == "" {
-		req.RequestID = randomID(16)
+		req.RequestID = util.RandomID(16)
 	}
 	if old, err := s.store.GetTaskByRequestID(req.RequestID); err == nil && old != nil {
 		writeJSON(w, 200, map[string]any{"task": old, "duplicate": true})
 		return
 	}
-	t := &Task{
+	t := &store.Task{
 		SessionID: id, Agent: sess.Agent, NativeID: sess.NativeID, Cwd: sess.Cwd,
-		Prompt: req.Text, Status: StatusPending, Profile: req.Profile,
+		Prompt: req.Text, Status: store.StatusPending, Profile: req.Profile,
 		RequestID: req.RequestID,
 	}
 	if err := s.store.CreateTask(t); err != nil {
@@ -992,10 +1046,10 @@ func (s *Server) handleCreateMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ub, _ := json.Marshal(map[string]any{"text": req.Text, "profile": req.Profile})
-	_, _ = s.store.InsertEvent(&Event{SessionID: id, TaskID: t.ID, TaskSeq: 0, Sub: 0,
-		TS: nowRFC3339(), Kind: "user", Payload: ub})
+	_, _ = s.store.InsertEvent(&store.Event{SessionID: id, TaskID: t.ID, TaskSeq: 0, Sub: 0,
+		TS: util.NowRFC3339(), Kind: "user", Payload: ub})
 	if sess.Title == "" || strings.HasPrefix(sess.Title, "新会话") {
-		title := truncateTitle(req.Text, 72)
+		title := store.TruncateTitle(req.Text, 72)
 		_ = s.store.UpdateSession(id, &title, nil)
 	}
 	_ = s.store.TouchSession(id)
@@ -1022,7 +1076,7 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 	// The task list shows "队列第 N 位"; without this the field was only ever
 	// set on the POST response and never rendered.
 	for _, t := range tasks {
-		if t.Status != StatusPending {
+		if t.Status != store.StatusPending {
 			continue
 		}
 		if pos, ahead, err := s.store.QueueWait(t.ID); err == nil {
@@ -1035,21 +1089,21 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 func taskStatusFilter(v string) []string {
 	switch v {
 	case "active":
-		return []string{StatusRunning, StatusWaitingInput, StatusPending}
+		return []string{store.StatusRunning, store.StatusWaitingInput, store.StatusPending}
 	case "waiting":
-		return []string{StatusWaitingInput}
+		return []string{store.StatusWaitingInput}
 	case "running":
-		return []string{StatusRunning}
+		return []string{store.StatusRunning}
 	case "done", "completed":
-		return []string{StatusCompleted}
+		return []string{store.StatusCompleted}
 	case "failed":
-		return []string{StatusFailed}
+		return []string{store.StatusFailed}
 	case "interrupted":
-		return []string{StatusInterrupted}
+		return []string{store.StatusInterrupted}
 	case "cancelled":
-		return []string{StatusCancelled}
+		return []string{store.StatusCancelled}
 	case "finished":
-		return []string{StatusCompleted, StatusFailed, StatusCancelled, StatusInterrupted}
+		return []string{store.StatusCompleted, store.StatusFailed, store.StatusCancelled, store.StatusInterrupted}
 	}
 	if v == "" {
 		return nil
@@ -1111,15 +1165,15 @@ const (
 
 // stopTask cancels a pending or running task and makes sure its process dies.
 // It is shared by the HTTP cancel endpoint and the per-agent restart.
-func (s *Server) stopTask(t *Task) (cancelOutcome, string) {
-	if t.Status == StatusPending {
+func (s *Server) stopTask(t *store.Task) (cancelOutcome, string) {
+	if t.Status == store.StatusPending {
 		// The scheduler may launch this task between our read and this write.
 		// Cancel conditionally; if it already started, fall through to the
 		// running-task path so the process is actually signalled.
-		ok, err := s.store.FinishTaskIfPending(t.ID, StatusCancelled, "用户取消（尚未启动）")
+		ok, err := s.store.FinishTaskIfPending(t.ID, store.StatusCancelled, "用户取消（尚未启动）")
 		if err == nil && ok {
 			_ = s.store.ExpirePermissionsForTask(t.ID)
-			return cancelFinished, StatusCancelled
+			return cancelFinished, store.StatusCancelled
 		}
 		if t2, err := s.store.GetTask(t.ID); err == nil {
 			t = t2
@@ -1135,7 +1189,7 @@ func (s *Server) stopTask(t *Task) (cancelOutcome, string) {
 		t = cur
 	}
 	killTask(t, syscall.SIGTERM)
-	go func(task *Task) {
+	go func(task *store.Task) {
 		deadline := time.Now().Add(12 * time.Second)
 		for time.Now().Before(deadline) {
 			cur, err := s.store.GetTask(task.ID)
@@ -1152,7 +1206,7 @@ func (s *Server) stopTask(t *Task) (cancelOutcome, string) {
 		}
 		killTask(task, syscall.SIGKILL)
 		_ = s.store.ExpirePermissionsForTask(task.ID)
-		_ = s.store.FinishTask(task.ID, StatusCancelled, nil, "取消超时，已强制终止", nowRFC3339())
+		_ = s.store.FinishTask(task.ID, store.StatusCancelled, nil, "取消超时，已强制终止", util.NowRFC3339())
 		s.schedule()
 	}(t)
 	return cancelSignalled, "cancelling"
@@ -1161,9 +1215,9 @@ func (s *Server) stopTask(t *Task) (cancelOutcome, string) {
 // killTask signals a task's runner and its process group. The recorded PID
 // is only trusted while it still belongs to this task's runner: once the
 // runner is gone the number may name an unrelated process.
-func killTask(t *Task, sig syscall.Signal) {
+func killTask(t *store.Task, sig syscall.Signal) {
 	pid := t.PID
-	if pid <= 1 || !isTaskRunner(pid, t.ID) {
+	if pid <= 1 || !agent.IsTaskRunner(pid, t.ID) {
 		return
 	}
 	pgid := t.PGID
@@ -1182,7 +1236,7 @@ func (s *Server) handleRetryTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch old.Status {
-	case StatusFailed, StatusInterrupted, StatusCancelled:
+	case store.StatusFailed, store.StatusInterrupted, store.StatusCancelled:
 	default:
 		writeErr(w, 409, "只有失败、中断或已取消的任务可以重新运行")
 		return
@@ -1201,31 +1255,31 @@ func (s *Server) handleRetryTask(w http.ResponseWriter, r *http.Request) {
 // task may have run in a directory that is no longer allowed (an imported
 // transcript, or a root removed from allowed_roots since), so the same checks
 // apply. The caller schedules the queue.
-func (s *Server) enqueueRetry(old *Task, note string) (*Task, error) {
-	if _, err := s.config().allowedCWD(old.Cwd); err != nil {
+func (s *Server) enqueueRetry(old *store.Task, note string) (*store.Task, error) {
+	if _, err := s.config().AllowedCWD(old.Cwd); err != nil {
 		return nil, fmt.Errorf("会话目录不可用: %w", err)
 	}
 	if agent, ok := s.agents.Get(old.Agent); !ok || !agent.Available {
 		return nil, fmt.Errorf("Agent 不可用: %s", old.Agent)
 	}
 	profile := old.Profile
-	if !validProfile(old.Agent, profile) {
-		profile = defaultProfileFor(old.Agent)
+	if !agent.ValidProfile(old.Agent, profile) {
+		profile = agent.DefaultProfileFor(old.Agent)
 	}
-	t := &Task{
+	t := &store.Task{
 		SessionID: old.SessionID, Agent: old.Agent, NativeID: old.NativeID,
-		Cwd: old.Cwd, Prompt: old.Prompt, Status: StatusPending, Profile: profile,
-		RequestID: randomID(16),
+		Cwd: old.Cwd, Prompt: old.Prompt, Status: store.StatusPending, Profile: profile,
+		RequestID: util.RandomID(16),
 	}
 	if err := s.store.CreateTask(t); err != nil {
 		return nil, err
 	}
 	nb, _ := json.Marshal(map[string]any{"text": note + "（原任务 " + old.ID + "）"})
-	_, _ = s.store.InsertEvent(&Event{SessionID: t.SessionID, TaskID: t.ID, TaskSeq: 0,
-		TS: nowRFC3339(), Kind: "notice", Payload: nb})
+	_, _ = s.store.InsertEvent(&store.Event{SessionID: t.SessionID, TaskID: t.ID, TaskSeq: 0,
+		TS: util.NowRFC3339(), Kind: "notice", Payload: nb})
 	ub, _ := json.Marshal(map[string]any{"text": old.Prompt, "retry_of": old.ID})
-	_, _ = s.store.InsertEvent(&Event{SessionID: t.SessionID, TaskID: t.ID, TaskSeq: 0, Sub: 1,
-		TS: nowRFC3339(), Kind: "user", Payload: ub})
+	_, _ = s.store.InsertEvent(&store.Event{SessionID: t.SessionID, TaskID: t.ID, TaskSeq: 0, Sub: 1,
+		TS: util.NowRFC3339(), Kind: "user", Payload: ub})
 	return t, nil
 }
 
@@ -1233,7 +1287,7 @@ func (s *Server) handleTaskLog(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	// The id reaches filepath.Join, so it must be a bare identifier: otherwise
 	// a crafted segment could read an events.jsonl outside the data directory.
-	if !validID(id) {
+	if !store.ValidID(id) {
 		writeErr(w, 400, "任务 ID 无效")
 		return
 	}
@@ -1268,7 +1322,7 @@ func (s *Server) handleListPermissions(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleResolvePermission(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	var req ctlResponse
+	var req agent.CtlResponse
 	if err := decodeJSON(w, r, &req); err != nil {
 		return
 	}
@@ -1286,26 +1340,26 @@ func (s *Server) handleResolvePermission(w http.ResponseWriter, r *http.Request)
 		writeErr(w, 404, "任务不存在")
 		return
 	}
-	if t.Status != StatusRunning && t.Status != StatusWaitingInput {
+	if t.Status != store.StatusRunning && t.Status != store.StatusWaitingInput {
 		writeErr(w, 409, "任务已不在等待审批")
 		return
 	}
-	var detail ctlRequest
+	var detail agent.CtlRequest
 	_ = json.Unmarshal(p.Detail, &detail)
 	label, optDetail := "", ""
 	switch p.Kind {
-	case kindQuestion:
-		if req.Decision != decisionAnswer && req.Decision != decisionSkip {
+	case store.KindQuestion:
+		if req.Decision != agent.DecisionAnswer && req.Decision != agent.DecisionSkip {
 			writeErr(w, 400, "问题只能回答或跳过")
 			return
 		}
-		if req.Decision == decisionAnswer {
+		if req.Decision == agent.DecisionAnswer {
 			if len(req.Answers) == 0 {
 				writeErr(w, 400, "请先回答问题")
 				return
 			}
 			label = "已回答"
-			optDetail = describeAnswers(detail.Questions, req.Answers)
+			optDetail = agent.DescribeAnswers(detail.Questions, req.Answers)
 		} else {
 			label = "已跳过"
 		}
@@ -1313,16 +1367,16 @@ func (s *Server) handleResolvePermission(w http.ResponseWriter, r *http.Request)
 		if len(detail.Options) == 0 {
 			// Requests from tasks started before interactions existed offer
 			// only allow and deny.
-			detail.Options = []ctlOption{{ID: decisionAllow, Label: "允许"}, {ID: decisionDeny, Label: "拒绝"}}
+			detail.Options = []agent.CtlOption{{ID: agent.DecisionAllow, Label: "允许"}, {ID: agent.DecisionDeny, Label: "拒绝"}}
 		}
-		o, ok := detail.option(req.Decision)
+		o, ok := detail.Option(req.Decision)
 		if !ok {
 			writeErr(w, 400, "无效的选项: "+req.Decision)
 			return
 		}
 		label, optDetail = o.Label, o.Detail
 	}
-	status := statusFor(req.Decision)
+	status := agent.StatusFor(req.Decision)
 	dir := filepath.Join(s.config().DataDir, "tasks", p.TaskID, "control")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		writeErr(w, 500, err.Error())
@@ -1340,7 +1394,7 @@ func (s *Server) handleResolvePermission(w http.ResponseWriter, r *http.Request)
 		writeErr(w, 409, "审批请求已处理")
 		return
 	}
-	if err := atomicWriteJSON(filepath.Join(dir, "resp-"+p.ID+".json"), req); err != nil {
+	if err := util.AtomicWriteJSON(filepath.Join(dir, "resp-"+p.ID+".json"), req); err != nil {
 		_ = s.store.ReopenPermission(p.ID)
 		writeErr(w, 500, err.Error())
 		return
@@ -1352,8 +1406,8 @@ func (s *Server) handleResolvePermission(w http.ResponseWriter, r *http.Request)
 	// ingestor's event, so whichever lands second is ignored.
 	if b, err := json.Marshal(map[string]any{"permission_id": p.ID, "decision": status,
 		"choice": req.Decision, "label": label, "detail": optDetail, "message": req.Message}); err == nil {
-		_, _ = s.store.InsertEvent(&Event{SessionID: t.SessionID, TaskID: t.ID, TaskSeq: 1 << 42,
-			Sub: permSub(p.ID), TS: nowRFC3339(), Kind: "permission_result", Payload: b})
+		_, _ = s.store.InsertEvent(&store.Event{SessionID: t.SessionID, TaskID: t.ID, TaskSeq: 1 << 42,
+			Sub: ingest.PermSub(p.ID), TS: util.NowRFC3339(), Kind: "permission_result", Payload: b})
 	}
 	if n, _ := s.store.PendingPermissionCount(p.TaskID); n == 0 {
 		_ = s.store.SetTaskWaiting(p.TaskID, false)
@@ -1373,15 +1427,15 @@ func (s *Server) handleCwdCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg := s.config()
-	cwd, err := cfg.allowedCWD(req.Path)
+	cwd, err := cfg.AllowedCWD(req.Path)
 	if err != nil {
 		writeJSON(w, 200, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
 	active, _ := s.store.ActiveTasksOnCwd(cwd)
 	gitRoot := ""
-	if out, err := runBrief(3*time.Second, "git", "-C", cwd, "rev-parse", "--show-toplevel"); err == nil {
-		gitRoot = firstLine(out)
+	if out, err := agent.RunBrief(3*time.Second, "git", "-C", cwd, "rev-parse", "--show-toplevel"); err == nil {
+		gitRoot = agent.FirstLine(out)
 	}
 	warning := ""
 	if active > 0 {
@@ -1419,7 +1473,7 @@ func (s *Server) schedule() {
 				continue // another scheduler owns it
 			}
 			s.logger.Printf("launch task %s: %v", pick.ID, err)
-			_ = s.store.FinishTask(pick.ID, StatusFailed, nil, err.Error(), nowRFC3339())
+			_ = s.store.FinishTask(pick.ID, store.StatusFailed, nil, err.Error(), util.NowRFC3339())
 		}
 	}
 }
@@ -1435,7 +1489,7 @@ func (s *Server) schedule() {
 // not a failure and must not mark the task failed.
 var errTaskAlreadyClaimed = errors.New("task already claimed by another scheduler")
 
-func (s *Server) pickPending(pending []*Task) *Task {
+func (s *Server) pickPending(pending []*store.Task) *store.Task {
 	for _, t := range pending {
 		if s.launching[t.ID] {
 			continue
@@ -1449,7 +1503,7 @@ func (s *Server) pickPending(pending []*Task) *Task {
 	return nil
 }
 
-func (s *Server) launch(t *Task) error {
+func (s *Server) launch(t *store.Task) error {
 	cfg := s.config()
 	sess, err := s.store.GetSession(t.SessionID)
 	if err != nil {
@@ -1462,25 +1516,25 @@ func (s *Server) launch(t *Task) error {
 	nativeID := sess.NativeID
 	isNew := nativeID == ""
 	if isNew && t.Agent == "claude" {
-		nativeID = newUUID()
+		nativeID = util.NewUUID()
 	}
 	settings := s.store.GetSessionSettings(sess.ID)
-	spec := TaskSpec{
+	spec := agent.TaskSpec{
 		TaskID: t.ID, SessionID: t.SessionID, Agent: t.Agent,
 		NativeID: nativeID, IsNew: isNew, Cwd: sess.Cwd, Prompt: t.Prompt,
 		Profile: t.Profile, MaxLogBytes: cfg.TaskLogMaxBytes,
-		PermTimeout: cfg.PermissionTTLMin * 60, RunnerID: randomID(9),
-		Model: settings.Model, Effort: settings.Effort,
+		PermTimeout: cfg.PermissionTTLMin * 60, RunnerID: util.RandomID(9),
+		Model: settings.Model, Effort: settings.Effort, NativeProfile: sess.NativeProfile,
 	}
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
 	spec.Executable = exe
-	if err := atomicWriteJSON(filepath.Join(taskDir, "task.json"), spec); err != nil {
+	if err := util.AtomicWriteJSON(filepath.Join(taskDir, "task.json"), spec); err != nil {
 		return err
 	}
-	boot := currentBootID()
+	boot := sys.CurrentBootID()
 	// Claim before starting anything: a concurrent scheduler (old process still
 	// shutting down during a restart) must not launch the same task twice.
 	claimed, err := s.store.ClaimPendingTask(t.ID, boot)

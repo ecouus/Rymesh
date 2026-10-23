@@ -1,16 +1,5 @@
 package console
 
-// Terminals: a login shell on this machine in a pseudo-terminal, for the
-// page's terminal view. A hub reaches a server's terminal through the same
-// /n/{node} relay as everything else, so this one implementation serves the
-// local machine and every node. The shell runs as the console's own user,
-// as an SSH login would.
-//
-// A terminal outlives the page that opened it: closing the view or putting
-// the phone away keeps the shell, and the page reconnects at the byte offset
-// it last saw. Output is kept as a scrollback window for that. A shell that
-// nobody has watched for termIdle is hung up.
-
 import (
 	"bufio"
 	"encoding/base64"
@@ -28,6 +17,9 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"rymesh/internal/sys"
+	"rymesh/internal/util"
 )
 
 const (
@@ -88,7 +80,7 @@ func (m *termManager) start(cwd string, cols, rows int) (*terminal, error) {
 		m.mu.Unlock()
 	}()
 
-	master, slavePath, err := openPTY()
+	master, slavePath, err := sys.OpenPTY()
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +104,7 @@ func (m *termManager) start(cwd string, cols, rows int) (*terminal, error) {
 		master.Close()
 		return nil, err
 	}
-	t := &terminal{id: randomID(12), cwd: cwd, pty: master, cmd: cmd,
+	t := &terminal{id: util.RandomID(12), cwd: cwd, pty: master, cmd: cmd,
 		wake: make(chan struct{}), lastSeen: time.Now()}
 	m.mu.Lock()
 	m.terms[t.id] = t
@@ -285,7 +277,7 @@ func (s *Server) handleTermCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "这台设备没有本机终端")
 		return
 	}
-	cwd, err := cfg.allowedCWD(req.Cwd)
+	cwd, err := cfg.AllowedCWD(req.Cwd)
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return

@@ -194,7 +194,7 @@ public class MainActivity extends Activity {
 
     /** Colours the area behind the system bars and picks light or dark bar icons. */
     private void applyBars(boolean dark) {
-        int bg = dark ? 0xFF0B0B0A : 0xFFFCFCFB; // --bg in web/styles.css
+        int bg = dark ? 0xFF0B0B0A : 0xFFFCFCFC; // --bg in web/styles.css
         root.setBackgroundColor(bg);
         web.setBackgroundColor(bg);
         getWindow().getDecorView().setBackgroundColor(bg);

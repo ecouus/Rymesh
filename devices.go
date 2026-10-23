@@ -1,9 +1,5 @@
 package console
 
-// Device management on the client (hub): add a server by SSH, confirm its host
-// key, deploy or upgrade the node on it, and manage keys. These endpoints act
-// on this console's own config and are never relayed to a node.
-
 import (
 	"bufio"
 	"bytes"
@@ -23,18 +19,22 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+
+	"rymesh/internal/config"
+	"rymesh/internal/sshconn"
+	"rymesh/internal/util"
 )
 
 // deviceView is a NodeConfig as the page sees it: never the token.
 type deviceView struct {
-	NodeConfig
+	config.NodeConfig
 	Token    string `json:"token,omitempty"`
 	HasToken bool   `json:"has_token"`
 	Trusted  bool   `json:"trusted"`
 	Fprint   string `json:"fingerprint,omitempty"`
 }
 
-func viewDevice(n NodeConfig) deviceView {
+func viewDevice(n config.NodeConfig) deviceView {
 	v := deviceView{NodeConfig: n, HasToken: n.Token != "", Trusted: n.HostKey != ""}
 	v.NodeConfig.Token = ""
 	if n.HostKey != "" {
@@ -67,13 +67,13 @@ type deviceInput struct {
 
 // apply merges the input into n; changing where or how to connect forgets the
 // pinned host key, which must then be confirmed again.
-func (in deviceInput) apply(n *NodeConfig) error {
+func (in deviceInput) apply(n *config.NodeConfig) error {
 	set := func(dst *string, src *string) {
 		if src != nil {
 			*dst = strings.TrimSpace(*src)
 		}
 	}
-	oldTarget := n.sshAddr()
+	oldTarget := n.SSHAddr()
 	set(&n.Name, in.Name)
 	set(&n.Transport, in.Transport)
 	set(&n.SSHHost, in.SSHHost)
@@ -95,7 +95,7 @@ func (in deviceInput) apply(n *NodeConfig) error {
 		n.Name = n.SSHHost
 	}
 	switch n.Transport {
-	case transportSSH:
+	case config.TransportSSH:
 		if n.SSHHost == "" || n.SSHUser == "" {
 			return errors.New("需要主机和用户名")
 		}
@@ -105,7 +105,7 @@ func (in deviceInput) apply(n *NodeConfig) error {
 		if n.SSHPort < 0 || n.SSHPort > 65535 || n.RemotePort < 0 || n.RemotePort > 65535 {
 			return errors.New("端口无效")
 		}
-		if n.sshAddr() != oldTarget {
+		if n.SSHAddr() != oldTarget {
 			n.HostKey = ""
 		}
 	case "", "direct":
@@ -123,27 +123,27 @@ func (in deviceInput) apply(n *NodeConfig) error {
 }
 
 // saveNodes publishes and persists a change to the device list.
-func (s *Server) saveNodes(fn func(nodes []NodeConfig) ([]NodeConfig, error)) error {
+func (s *Server) saveNodes(fn func(nodes []config.NodeConfig) ([]config.NodeConfig, error)) error {
 	s.cfgWrite.Lock()
 	defer s.cfgWrite.Unlock()
-	next := s.config().clone()
+	next := s.config().Clone()
 	nodes, err := fn(next.Nodes)
 	if err != nil {
 		return err
 	}
 	next.Nodes = nodes
-	if err := s.store.saveDevices(nodes); err != nil {
+	if err := s.store.SaveDevices(nodes); err != nil {
 		return fmt.Errorf("保存设备失败：%w", err)
 	}
 	s.publishConfig(next)
 	return nil
 }
 
-func (s *Server) device(id string) (NodeConfig, bool) { return s.config().findNode(id) }
+func (s *Server) device(id string) (config.NodeConfig, bool) { return s.config().FindNode(id) }
 
-func (s *Server) updateDevice(id string, fn func(*NodeConfig)) (NodeConfig, error) {
-	var out NodeConfig
-	err := s.saveNodes(func(nodes []NodeConfig) ([]NodeConfig, error) {
+func (s *Server) updateDevice(id string, fn func(*config.NodeConfig)) (config.NodeConfig, error) {
+	var out config.NodeConfig
+	err := s.saveNodes(func(nodes []config.NodeConfig) ([]config.NodeConfig, error) {
 		for i := range nodes {
 			if nodes[i].ID == id {
 				fn(&nodes[i])
@@ -161,12 +161,12 @@ func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 	if err := decodeJSON(w, r, &in); err != nil {
 		return
 	}
-	n := NodeConfig{ID: "d" + strings.ToLower(randomID(7)), Transport: transportSSH}
+	n := config.NodeConfig{ID: "d" + strings.ToLower(util.RandomID(7)), Transport: config.TransportSSH}
 	if err := in.apply(&n); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	if err := s.saveNodes(func(nodes []NodeConfig) ([]NodeConfig, error) {
+	if err := s.saveNodes(func(nodes []config.NodeConfig) ([]config.NodeConfig, error) {
 		return append(nodes, n), nil
 	}); err != nil {
 		writeErr(w, 500, err.Error())
@@ -181,7 +181,7 @@ func (s *Server) handlePatchDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var applyErr error
-	n, err := s.updateDevice(r.PathValue("id"), func(n *NodeConfig) { applyErr = in.apply(n) })
+	n, err := s.updateDevice(r.PathValue("id"), func(n *config.NodeConfig) { applyErr = in.apply(n) })
 	if applyErr != nil {
 		writeErr(w, 400, applyErr.Error())
 		return
@@ -195,7 +195,7 @@ func (s *Server) handlePatchDevice(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	err := s.saveNodes(func(nodes []NodeConfig) ([]NodeConfig, error) {
+	err := s.saveNodes(func(nodes []config.NodeConfig) ([]config.NodeConfig, error) {
 		kept := nodes[:0]
 		for _, n := range nodes {
 			if n.ID != id {
@@ -226,7 +226,7 @@ func (s *Server) handleDeviceTest(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "设备不存在")
 		return
 	}
-	if n.Transport != transportSSH {
+	if n.Transport != config.TransportSSH {
 		v := probeNode(r.Context(), n, s.transportFor(n))
 		writeJSON(w, 200, map[string]any{"stage": "ready", "node": v})
 		return
@@ -234,9 +234,9 @@ func (s *Server) handleDeviceTest(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	if n.HostKey == "" {
-		p, err := probeHostKey(ctx, n)
+		p, err := sshconn.ProbeHostKey(ctx, n)
 		if err != nil {
-			writeJSON(w, 200, map[string]any{"stage": "error", "error": "无法连接 " + n.sshAddr() + "：" + err.Error()})
+			writeJSON(w, 200, map[string]any{"stage": "error", "error": "无法连接 " + n.SSHAddr() + "：" + err.Error()})
 			return
 		}
 		if !p.Known {
@@ -244,13 +244,13 @@ func (s *Server) handleDeviceTest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Already in ~/.ssh/known_hosts: the user trusted it before.
-		if n, err = s.updateDevice(n.ID, func(d *NodeConfig) { d.HostKey = p.Key }); err != nil {
+		if n, err = s.updateDevice(n.ID, func(d *config.NodeConfig) { d.HostKey = p.Key }); err != nil {
 			writeErr(w, 500, err.Error())
 			return
 		}
 	}
-	s.ssh.retry(n) // an explicit test always tries again
-	out, err := s.ssh.run(ctx, n, `uname -s -m; B="$HOME/.rymesh/bin/rymesh"; [ -x "$B" ] && "$B" version`, nil)
+	s.ssh.Retry(n) // an explicit test always tries again
+	out, err := s.ssh.Run(ctx, n, `uname -s -m; B="$HOME/.rymesh/bin/rymesh"; [ -x "$B" ] && "$B" version`, nil)
 	if err != nil && out == "" {
 		if strings.Contains(err.Error(), "unable to authenticate") {
 			res := map[string]any{"stage": "auth", "error": "服务器还不认识这把密钥"}
@@ -291,7 +291,7 @@ func (s *Server) handleDeviceTrust(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "设备不存在")
 		return
 	}
-	p, err := probeHostKey(r.Context(), n)
+	p, err := sshconn.ProbeHostKey(r.Context(), n)
 	if err != nil {
 		writeErr(w, 502, "无法连接："+err.Error())
 		return
@@ -300,7 +300,7 @@ func (s *Server) handleDeviceTrust(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 409, "服务器的主机密钥已变化，请重新测试连接")
 		return
 	}
-	n, err = s.updateDevice(n.ID, func(d *NodeConfig) { d.HostKey = p.Key })
+	n, err = s.updateDevice(n.ID, func(d *config.NodeConfig) { d.HostKey = p.Key })
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -341,15 +341,15 @@ func (s *Server) handleDeviceDeploy(w http.ResponseWriter, r *http.Request) {
 // deployNode uploads the node binary for the device's platform and runs
 // `node setup` there. An existing install keeps its token, so every client
 // that manages the server (a Mac and a phone) can share it.
-func (s *Server) deployNode(ctx context.Context, n NodeConfig, emit func(string)) (NodeConfig, error) {
-	if n.Transport != transportSSH {
+func (s *Server) deployNode(ctx context.Context, n config.NodeConfig, emit func(string)) (config.NodeConfig, error) {
+	if n.Transport != config.TransportSSH {
 		return n, errors.New("只有 SSH 设备可以自动部署")
 	}
 	if n.HostKey == "" {
 		return n, errors.New("请先测试连接并确认主机指纹")
 	}
-	emit("连接 " + n.SSHUser + "@" + n.sshAddr())
-	out, err := s.ssh.run(ctx, n, "uname -s -m", nil)
+	emit("连接 " + n.SSHUser + "@" + n.SSHAddr())
+	out, err := s.ssh.Run(ctx, n, "uname -s -m", nil)
 	if err != nil {
 		return n, errors.New(sshErrorText(err))
 	}
@@ -367,7 +367,7 @@ func (s *Server) deployNode(ctx context.Context, n NodeConfig, emit func(string)
 	// server; only a server without gzip gets it unpacked here.
 	unpack := "cat"
 	if gz {
-		if out, _ := s.ssh.run(ctx, n, `command -v gzip >/dev/null && echo yes`, nil); strings.TrimSpace(out) == "yes" {
+		if out, _ := s.ssh.Run(ctx, n, `command -v gzip >/dev/null && echo yes`, nil); strings.TrimSpace(out) == "yes" {
 			unpack = "gzip -dc"
 		} else if bin, err = gunzip(bin); err != nil {
 			return n, fmt.Errorf("解压 %s 失败：%w", src, err)
@@ -376,14 +376,14 @@ func (s *Server) deployNode(ctx context.Context, n NodeConfig, emit func(string)
 	emit(fmt.Sprintf("上传程序：%s/%s，%.1f MB（%s）", goos, goarch, float64(len(bin))/(1<<20), src))
 	up := `set -e; D="$HOME/.rymesh/bin"; mkdir -p "$D"; ` + unpack + ` > "$D/rymesh.new"; ` +
 		`chmod 755 "$D/rymesh.new"; mv -f "$D/rymesh.new" "$D/rymesh"; "$D/rymesh" version`
-	if out, err := s.ssh.run(ctx, n, up, bin); err != nil {
+	if out, err := s.ssh.Run(ctx, n, up, bin); err != nil {
 		return n, fmt.Errorf("上传失败：%s", strings.TrimSpace(out+" "+err.Error()))
 	}
-	if out, _ := s.ssh.run(ctx, n, `[ -f /etc/rymesh/config.json ] && echo system`, nil); strings.TrimSpace(out) == "system" {
+	if out, _ := s.ssh.Run(ctx, n, `[ -f /etc/rymesh/config.json ] && echo system`, nil); strings.TrimSpace(out) == "system" {
 		return s.adoptSystemNode(ctx, n, emit)
 	}
 	token := ""
-	if out, err := s.ssh.run(ctx, n, `C="$HOME/.rymesh/config.json"; [ -f "$C" ] && "$HOME/.rymesh/bin/rymesh" node token --config "$C" 2>/dev/null`, nil); err == nil {
+	if out, err := s.ssh.Run(ctx, n, `C="$HOME/.rymesh/config.json"; [ -f "$C" ] && "$HOME/.rymesh/bin/rymesh" node token --config "$C" 2>/dev/null`, nil); err == nil {
 		token = strings.TrimSpace(out)
 	}
 	if token != "" {
@@ -393,12 +393,12 @@ func (s *Server) deployNode(ctx context.Context, n NodeConfig, emit func(string)
 	}
 	port := n.RemotePort
 	if port == 0 {
-		port = defaultPort
+		port = config.DefaultPort
 	}
 	emit("安装并启动节点服务")
 	cmd := fmt.Sprintf(`"$HOME/.rymesh/bin/rymesh" node setup --token %s --port %d --name %s`,
 		shellQuote(token), port, shellQuote(n.Name))
-	out, err = s.ssh.run(ctx, n, loginShell(cmd), nil)
+	out, err = s.ssh.Run(ctx, n, loginShell(cmd), nil)
 	if err != nil {
 		return n, fmt.Errorf("节点安装失败：%s", strings.TrimSpace(out))
 	}
@@ -415,7 +415,7 @@ func (s *Server) deployNode(ctx context.Context, n NodeConfig, emit func(string)
 	if res.Warning != "" {
 		emit("注意：" + res.Warning)
 	}
-	n, err = s.updateDevice(n.ID, func(d *NodeConfig) { d.Token, d.RemotePort = token, res.Port })
+	n, err = s.updateDevice(n.ID, func(d *config.NodeConfig) { d.Token, d.RemotePort = token, res.Port })
 	if err != nil {
 		return n, err
 	}
@@ -436,14 +436,14 @@ func (s *Server) deployNode(ctx context.Context, n NodeConfig, emit func(string)
 // installed: that console's own program hands out a node token, which the
 // running console picks up without a restart (nodes.go reloadNodeToken).
 // ok is false when the machine has no such console.
-func (s *Server) adoptClient(ctx context.Context, n NodeConfig, emit func(string)) (NodeConfig, bool, error) {
+func (s *Server) adoptClient(ctx context.Context, n config.NodeConfig, emit func(string)) (config.NodeConfig, bool, error) {
 	const find = `C="$HOME/.rymesh/config.json"
 B=$(cat "$HOME/.rymesh/` + clientBinFile + `" 2>/dev/null)
 [ -x "$B" ] || B=/Applications/Rymesh.app/Contents/Resources/rymesh
 [ -f "$C" ] && [ -x "$B" ] || exit 0
 "$B" node token --config "$C" 2>/dev/null || exit 1
 sed -n 's/.*"port": *\([0-9]*\).*/\1/p' "$C" | head -1`
-	out, err := s.ssh.run(ctx, n, find, nil)
+	out, err := s.ssh.Run(ctx, n, find, nil)
 	f := strings.Fields(out)
 	if err == nil && len(f) == 0 {
 		return n, false, nil
@@ -453,10 +453,10 @@ sed -n 's/.*"port": *\([0-9]*\).*/\1/p' "$C" | head -1`
 	}
 	port, _ := strconv.Atoi(f[1])
 	if port == 0 {
-		port = defaultPort
+		port = config.DefaultPort
 	}
 	emit("检测到 Mac 上的 Rymesh，直接接入它（不安装任何程序）")
-	n, err = s.updateDevice(n.ID, func(d *NodeConfig) { d.Token, d.RemotePort = f[0], port })
+	n, err = s.updateDevice(n.ID, func(d *config.NodeConfig) { d.Token, d.RemotePort = f[0], port })
 	if err != nil {
 		return n, true, err
 	}
@@ -476,18 +476,18 @@ sed -n 's/.*"port": *\([0-9]*\).*/\1/p' "$C" | head -1`
 // it, which would fight it for the port. It keeps that install's config and
 // port, adds a node token, and upgrades its binary in place (the previous one
 // is kept as <binary>.prev). Running agent tasks survive the restart.
-func (s *Server) adoptSystemNode(ctx context.Context, n NodeConfig, emit func(string)) (NodeConfig, error) {
+func (s *Server) adoptSystemNode(ctx context.Context, n config.NodeConfig, emit func(string)) (config.NodeConfig, error) {
 	const cfg = "/etc/rymesh/config.json"
 	emit("检测到服务器上的系统级安装（" + cfg + "），接管并升级它")
-	out, err := s.ssh.run(ctx, n, `"$HOME/.rymesh/bin/rymesh" node token --config `+cfg+` 2>/dev/null`, nil)
+	out, err := s.ssh.Run(ctx, n, `"$HOME/.rymesh/bin/rymesh" node token --config `+cfg+` 2>/dev/null`, nil)
 	token := strings.TrimSpace(out)
 	if err != nil || token == "" {
 		return n, fmt.Errorf("读取节点令牌失败（需要能写 %s）：%s", cfg, strings.TrimSpace(out))
 	}
-	out, _ = s.ssh.run(ctx, n, `sed -n 's/.*"port": *\([0-9]*\).*/\1/p' `+cfg+` | head -1`, nil)
+	out, _ = s.ssh.Run(ctx, n, `sed -n 's/.*"port": *\([0-9]*\).*/\1/p' `+cfg+` | head -1`, nil)
 	port, _ := strconv.Atoi(strings.TrimSpace(out))
 	if port == 0 {
-		port = defaultPort
+		port = config.DefaultPort
 	}
 	emit("升级系统服务的程序并重启（运行中的任务不受影响）")
 	const swap = `set -e
@@ -497,12 +497,12 @@ cp -p "$BIN" "$BIN.prev" 2>/dev/null || true
 install -m 0755 "$HOME/.rymesh/bin/rymesh" "$BIN"
 systemctl restart rymesh
 echo "$BIN"`
-	if out, err := s.ssh.run(ctx, n, swap, nil); err != nil {
+	if out, err := s.ssh.Run(ctx, n, swap, nil); err != nil {
 		return n, fmt.Errorf("升级系统服务失败（需要 root）：%s", strings.TrimSpace(out))
 	} else {
 		emit("已升级 " + strings.TrimSpace(out) + "（旧程序保存为 .prev）")
 	}
-	n, err = s.updateDevice(n.ID, func(d *NodeConfig) { d.Token, d.RemotePort = token, port })
+	n, err = s.updateDevice(n.ID, func(d *config.NodeConfig) { d.Token, d.RemotePort = token, port })
 	if err != nil {
 		return n, err
 	}
@@ -518,7 +518,7 @@ echo "$BIN"`
 }
 
 func newNodeToken() (string, error) {
-	b, err := randomBytes(32)
+	b, err := util.RandomBytes(32)
 	if err != nil {
 		return "", err
 	}
@@ -587,11 +587,11 @@ func loginShell(cmd string) string {
 }
 
 func sshErrorText(err error) string {
-	var mm *hostKeyMismatchError
+	var mm *sshconn.HostKeyMismatchError
 	switch {
 	case errors.As(err, &mm):
 		return mm.Error()
-	case errors.Is(err, errHostKeyUnknown):
+	case errors.Is(err, sshconn.ErrHostKeyUnknown):
 		return "尚未确认主机指纹"
 	case strings.Contains(err.Error(), "unable to authenticate"):
 		return "SSH 认证失败：服务器不接受这个密钥（请把公钥加入服务器的 ~/.ssh/authorized_keys）"
@@ -621,7 +621,7 @@ type sshHost struct {
 
 // handleSSHHosts lists concrete hosts from ~/.ssh/config for one-tap import.
 func (s *Server) handleSSHHosts(w http.ResponseWriter, r *http.Request) {
-	f, err := os.Open(expandHome("~/.ssh/config"))
+	f, err := os.Open(util.ExpandHome("~/.ssh/config"))
 	if err != nil {
 		writeJSON(w, 200, map[string]any{"hosts": []sshHost{}})
 		return

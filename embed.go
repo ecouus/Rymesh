@@ -1,11 +1,5 @@
 package console
 
-// Embedded mode: the console running inside another process, as the Android
-// app does (mobile/). It is a hub only — the phone runs no agents — listening
-// on a random loopback port, with its data in the app's private directory.
-// The app opens LoginURL in a WebView; the one-time ticket in it is the only
-// credential, and other apps on the device cannot read it.
-
 import (
 	"context"
 	"fmt"
@@ -16,18 +10,21 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"rymesh/internal/config"
+	"rymesh/internal/store"
 )
 
 type Embedded struct {
 	srv   *Server
-	store *Store
+	store *store.Store
 	http  *http.Server
 	port  int
 	logf  *os.File
 }
 
-func embeddedConfig(dataDir string) (*Config, error) {
-	c, err := newConfig()
+func embeddedConfig(dataDir string) (*config.Config, error) {
+	c, err := config.NewConfig()
 	if err != nil {
 		return nil, err
 	}
@@ -52,10 +49,10 @@ func StartEmbedded(dataDir string, vaultKey []byte) (*Embedded, error) {
 		return nil, err
 	}
 	cfgPath := filepath.Join(dataDir, "config.json")
-	cfg, err := loadConfig(cfgPath)
+	cfg, err := config.LoadConfig(cfgPath)
 	if os.IsNotExist(err) {
 		if cfg, err = embeddedConfig(dataDir); err == nil {
-			err = saveConfig(cfgPath, cfg)
+			err = config.SaveConfig(cfgPath, cfg)
 		}
 	}
 	if err != nil {
@@ -68,10 +65,10 @@ func StartEmbedded(dataDir string, vaultKey []byte) (*Embedded, error) {
 	cfg.DefaultCWD = dataDir
 	cfg.AllowedRoots = []string{dataDir}
 	cfg.HubOnly, cfg.ImportOnStart = true, false
-	if err := cfg.ensureDirs(); err != nil {
+	if err := cfg.EnsureDirs(); err != nil {
 		return nil, err
 	}
-	if err := saveConfig(cfgPath, cfg); err != nil {
+	if err := config.SaveConfig(cfgPath, cfg); err != nil {
 		return nil, err
 	}
 	logf, err := os.OpenFile(filepath.Join(cfg.LogDir, "rymesh.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
@@ -80,11 +77,11 @@ func StartEmbedded(dataDir string, vaultKey []byte) (*Embedded, error) {
 		w = logf
 	}
 	logger := log.New(w, "", log.LstdFlags|log.Lmicroseconds)
-	st, err := openStore(cfg.DataDir)
+	st, err := store.OpenStore(cfg.DataDir)
 	if err != nil {
 		return nil, err
 	}
-	st.setVaultKey(vaultKey)
+	st.SetVaultKey(vaultKey)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		st.Close()

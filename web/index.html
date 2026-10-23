@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#fcfcfb">
+<meta name="theme-color" content="#fcfcfc">
 <meta name="color-scheme" content="dark light">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -42,7 +42,7 @@
       <button id="approval-btn" class="icon-btn approval-btn" aria-label="待审批" hidden><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4 3 20h18L12 4zM12 10v4M12 17v.5"/></svg><span id="approval-count" class="approval-badge"></span></button>
       <button id="files-btn" class="icon-btn" aria-label="浏览文件" title="文件" hidden><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></svg></button>
       <button id="term-btn" class="icon-btn" aria-label="打开终端" title="终端" hidden><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="m7.5 9.5 3 2.5-3 2.5M12.5 15h4"/></svg></button>
-      <button id="settings-btn" class="icon-btn" aria-label="系统设置" title="设置"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg></button>
+      <button id="new-chat-btn" class="icon-btn" aria-label="用当前 Agent 新建对话" title="新对话" hidden><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M16.25 4.64A8.5 8.5 0 0 0 4.64 16.25L3.5 20.5l4.25-1.14A8.5 8.5 0 0 0 19.36 7.75"/></svg></button>
     </div>
   </header>
 
@@ -97,14 +97,18 @@
   <aside class="sidebar-panel" role="dialog" aria-modal="true" aria-label="对话列表">
     <div class="sidebar-head">
       <h2 id="sidebar-title">对话</h2>
-      <button id="sidebar-new" class="icon-btn" type="button" aria-label="新对话" title="新对话"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h8M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg></button>
-      <button class="icon-btn" data-sidebar-close="1" aria-label="关闭"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+      <button id="sidebar-new" class="icon-btn" type="button" aria-label="新对话" title="新对话"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M16.25 4.64A8.5 8.5 0 0 0 4.64 16.25L3.5 20.5l4.25-1.14A8.5 8.5 0 0 0 19.36 7.75"/></svg></button>
     </div>
     <div class="sidebar-search">
       <input id="session-search" type="search" placeholder="搜索标题、目录或会话 ID">
+      <button id="agent-filter-btn" class="icon-btn filter-btn" type="button" aria-haspopup="listbox" aria-expanded="false" aria-label="按 Agent 筛选" title="按 Agent 筛选" hidden><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4"/></svg></button>
+      <div id="agent-filter-menu" class="menu filter-menu" role="listbox" aria-label="按 Agent 筛选" hidden></div>
     </div>
-    <div id="agent-filter" class="chip-row side-filter" role="tablist" aria-label="按 Agent 筛选"></div>
+    <div id="agent-filter" class="side-filter" hidden></div>
     <div id="session-list" class="sidebar-list"></div>
+    <div class="sidebar-foot">
+      <button id="settings-btn" class="side-foot-btn" type="button" aria-label="系统设置"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg><span>设置</span></button>
+    </div>
   </aside>
 </div>
 

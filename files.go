@@ -1,12 +1,5 @@
 package console
 
-// Files: browse, download and upload files on this machine for the page's
-// file view. Like the terminal (terminal.go), a hub reaches a server's files
-// through the /n/{node} relay, so one implementation serves this machine and
-// every node, and the access is the console user's, as over SSH. The whole
-// filesystem is reachable: the terminal already is, and logs or configs
-// outside the conversation directories are what people come for.
-
 import (
 	"errors"
 	"fmt"
@@ -44,7 +37,7 @@ func (s *Server) filePath(w http.ResponseWriter, raw string) (string, bool) {
 		return "", false
 	}
 	if raw == "" {
-		raw = cfg.defaultCWD()
+		raw = cfg.DefaultDir()
 	}
 	// Only "~" and "~/…": "~bob" is another user's home, not ours plus "bob".
 	if raw == "~" || strings.HasPrefix(raw, "~/") {

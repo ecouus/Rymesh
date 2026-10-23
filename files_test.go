@@ -9,11 +9,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"rymesh/internal/config"
 )
 
 func TestFilesListDownloadUpload(t *testing.T) {
 	dir := t.TempDir()
-	s := &Server{cfg: &Config{DefaultCWD: dir}}
+	s := &Server{cfg: &config.Config{DefaultCWD: dir}}
 	must := func(err error) {
 		t.Helper()
 		if err != nil {
@@ -131,7 +133,7 @@ func TestFilesListDownloadUpload(t *testing.T) {
 	}
 
 	// A hub-only console has no files of its own.
-	hub := &Server{cfg: &Config{DefaultCWD: dir, HubOnly: true}}
+	hub := &Server{cfg: &config.Config{DefaultCWD: dir, HubOnly: true}}
 	rec = httptest.NewRecorder()
 	hub.handleFilesList(rec, httptest.NewRequest("GET", "/api/files", nil))
 	if rec.Code != 400 {
@@ -142,7 +144,7 @@ func TestFilesListDownloadUpload(t *testing.T) {
 func TestFilesRenameDelete(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", filepath.Join(dir, "home"))
-	s := &Server{cfg: &Config{DefaultCWD: dir}}
+	s := &Server{cfg: &config.Config{DefaultCWD: dir}}
 	must := func(err error) {
 		t.Helper()
 		if err != nil {

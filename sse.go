@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"rymesh/internal/store"
 )
 
 // handleStream is the live link between the browser and the persisted event log.
@@ -103,10 +105,10 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		if since := time.Since(taskTick); since > 1200*time.Millisecond || (woken && since > 150*time.Millisecond) {
 			taskTick = time.Now()
 			tasks, _ := s.store.TasksForSession(id, 50)
-			var active []*Task
+			var active []*store.Task
 			for _, t := range tasks {
 				switch t.Status {
-				case StatusRunning, StatusWaitingInput, StatusPending:
+				case store.StatusRunning, store.StatusWaitingInput, store.StatusPending:
 					// The page renders "前面还有 N 个" from these fields. Without
 					// them the live push would blank the values the poll just set.
 					if pos, ahead, err := s.store.QueueWait(t.ID); err == nil {
@@ -169,26 +171,26 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func activeStatus(tasks []*Task) string {
+func activeStatus(tasks []*store.Task) string {
 	waiting, running, pending := 0, 0, 0
 	for _, t := range tasks {
 		switch t.Status {
-		case StatusWaitingInput:
+		case store.StatusWaitingInput:
 			waiting++
-		case StatusRunning:
+		case store.StatusRunning:
 			running++
-		case StatusPending:
+		case store.StatusPending:
 			pending++
 		}
 	}
 	if waiting > 0 {
-		return StatusWaitingInput
+		return store.StatusWaitingInput
 	}
 	if running > 0 {
-		return StatusRunning
+		return store.StatusRunning
 	}
 	if pending > 0 {
-		return StatusPending
+		return store.StatusPending
 	}
 	return "idle"
 }
@@ -260,7 +262,7 @@ func clipPreview(raw json.RawMessage) string {
 }
 
 // clipEvents clips the payloads of events about to be listed, in place.
-func clipEvents(evs []*Event) []*Event {
+func clipEvents(evs []*store.Event) []*store.Event {
 	for _, e := range evs {
 		e.Payload = clipPayload(e.Kind, e.Seq, e.Payload)
 	}

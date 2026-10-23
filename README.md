@@ -1,220 +1,258 @@
 # Rymesh
 
-在手机或 Mac 上遥控服务器里的 **Codex CLI**、**Claude Code** 和 **Hermes Agent**：
-看它们在做什么、批准它们要做的事、接着和它们聊。
+**English** · [简体中文](README.zh-CN.md)
 
-Agent 在服务器上独立运行：关掉 App、锁屏、断网，任务都会继续，回来时补上错过的输出。
+A remote control for **Codex CLI**, **Claude Code** and **Hermes Agent** on your servers, from your phone or Mac:
+see what they are doing, approve what they want to do, and keep talking to them.
+
+Agents run on the server on their own: close the app, lock the phone or lose the network and the task
+carries on; when you come back you see what you missed.
 
 <p>
-  <a href="https://github.com/ecouus/Rymesh/releases/latest"><b>⬇ 下载最新版本</b></a>
-  &nbsp;·&nbsp; macOS（Apple 芯片 / Intel） &nbsp;·&nbsp; Android
+  <a href="https://github.com/ecouus/Rymesh/releases/latest"><b>⬇ Download the latest release</b></a>
+  &nbsp;·&nbsp; macOS (Apple silicon / Intel) &nbsp;·&nbsp; Android
 </p>
 
-> **Rymesh 只是遥控器。** 所有模型请求都由服务器上的官方 CLI，用那台服务器自己的登录发出。
-> Rymesh 不调用任何模型 API、不转发模型流量、不读取或上传 CLI 的登录凭据。
-> 请只用它控制你自己的机器，不要拿来让别人使用你的账号（那属于账号共享，违反各家的服务条款）。
+> **Rymesh is only a remote control.** Every model request is sent by the official CLI on the server,
+> with that server's own login. Rymesh calls no model API, relays no model traffic, and never reads or
+> uploads the CLIs' credentials. Use it to control your own machines only, not to let other people use
+> your account (that is account sharing, which the providers' terms forbid).
+
+> The app's interface is currently in **Chinese**. Menu names below are given in English with the
+> Chinese label in brackets.
 
 ---
 
-## 功能
+## Features
 
-- **多台服务器、一个界面**：Mac 和手机通过 SSH 直连各台服务器，服务器上只需要开放 SSH，
-  不用组网、不用公网端口。侧边栏顶部切换设备。Mac 本身也可以作为一台“服务器”供手机使用。
-- **三种 Agent**：Codex CLI、Claude Code、Hermes Agent，按服务器上实际安装的显示。
-- **后台托管**：每个任务是服务器上的独立进程，和 App、网页、网络连接都无关；整机重启后
-  任务会标记为“已中断”，不会被自动重放。
-- **和 CLI 一致的审批**：命令、文件修改、权限申请会弹出卡片，可以允许一次、本次对话都允许、
-  拒绝并说明理由；Agent 提问（单选 / 多选 / 自填）和计划审批也在页面上完成。
-  等待中的审批跨断线、跨重启保留，其它设备上的待审批会汇总到通知里。
-- **权限模式与模型**：直接对应各 CLI 自己的模式（只读、自动接受编辑、计划模式……）
-  和模型列表，按 Agent 分别记住。
-- **原生历史**：自动导入你在终端或桌面版里和这些 Agent 聊过的对话，之后的新内容也会同步过来；
-  导入只读，不改原始记录。打开任何一段都可以直接接着聊（个别来源只能查看，见下文）。
-- **斜杠命令**：输入 `/` 列出该 Agent 支持的命令，原样交给 CLI 执行。
-- **终端与文件**：每台服务器都可以打开终端、浏览和上传下载文件。
-- **Mac App**：独立窗口、菜单栏图标和 Dock 角标显示待处理数量，审批和提问有系统通知，点击直达。
-- **Android App**：内置完整控制台，不依赖电脑；界面跟随系统深浅色。
+- **Many servers, one app**: the Mac and the phone reach each server directly over SSH. The server only
+  needs SSH open: no VPN, no public port. Switch servers at the top of the sidebar. A Mac can itself
+  serve as a "server" for the phone.
+- **Three agents**: Codex CLI, Claude Code and Hermes Agent, as installed on each server.
+- **Runs in the background**: every task is its own process on the server, independent of the app, the
+  page and the connection. After a reboot, tasks are marked interrupted and never replayed on their own.
+- **Approvals as in the CLI**: commands, file edits and permission requests show up as cards: allow once,
+  allow for this conversation, or deny with a reason. Agent questions (single choice, multiple choice,
+  free text) and plan approval are answered on the page too. Pending approvals survive disconnects and
+  restarts, and those waiting on other servers are collected in the notifications.
+- **Permission modes and models**: the CLIs' own modes (read-only, accept edits, plan mode…) and model
+  lists, remembered per agent.
+- **Native history**: conversations you had with these agents in a terminal or their desktop apps are
+  imported, and later turns keep syncing in. Importing only reads; the originals are never changed.
+  Any conversation can be continued (a few sources are read-only, see below).
+- **Slash commands**: type `/` for the agent's commands; they are passed to the CLI as they are.
+- **Terminal and files**: open a terminal on any server, browse files, upload and download.
+- **Mac app**: its own window, a menu bar icon and a Dock badge with the number of pending items, and
+  system notifications for approvals and questions that open the card.
+- **Android app**: the whole console runs inside the app, no computer needed; follows the system's
+  light or dark mode.
 
-## 下载与安装
+## Download and install
 
-到 [Releases](https://github.com/ecouus/Rymesh/releases/latest) 下载对应平台的文件：
+Get the files for your platform from [Releases](https://github.com/ecouus/Rymesh/releases/latest):
 
-| 平台 | 文件 | 要求 |
+| Platform | File | Requirements |
 |---|---|---|
-| macOS | `Rymesh-macOS.zip` | macOS 13 及以上，Apple 芯片和 Intel 通用 |
-| Android | `Rymesh-Android.apk` | Android 8.0 及以上，64 位 ARM |
-| Linux 节点程序 | `rymesh_linux_amd64`、`rymesh_linux_arm64` | 一般不用单独下载：App 部署服务器时会自动上传 |
+| macOS | `Rymesh-macOS.zip` | macOS 13 or later, Apple silicon and Intel |
+| Android | `Rymesh-Android.apk` | Android 8.0 or later, 64-bit ARM |
+| Linux node | `rymesh_linux_amd64`, `rymesh_linux_arm64` | Usually not needed: the app uploads it when it sets up a server |
 
-**macOS**：解压后把 `Rymesh.app` 拖进“应用程序”。App 没有经过 Apple 公证，首次打开会被拦下：
-到 系统设置 → 隐私与安全性，点“仍要打开”；或在终端执行
-`xattr -dr com.apple.quarantine /Applications/Rymesh.app`。
+**macOS**: unzip and drag `Rymesh.app` into Applications. The app is not notarized by Apple, so the first
+launch is blocked: open System Settings → Privacy & Security and click "Open Anyway", or run
+`xattr -dr com.apple.quarantine /Applications/Rymesh.app` in a terminal.
 
-**Android**：下载 APK 后直接安装，按系统提示允许“安装未知来源应用”。
+**Android**: install the APK and allow "install unknown apps" when asked.
 
-## 快速开始
+`SHA256SUMS` in each release lists the files' checksums.
 
-1. **在服务器上装好 Agent 并登录**，和平时在终端里用一样：
-   `codex`（登录 ChatGPT 账号或配置好 API）、`claude`（登录 Claude 账号）、
-   `hermes setup`（Hermes Agent）。装哪个都行，Rymesh 只用已经能正常工作的。
-2. **打开 App → 侧边栏底部“设置” → 设备 → 添加服务器**。
-   可以从 `~/.ssh/config` 一键填入；登录方式选“密钥”或“密码”：
-   - 密钥可以用已有的、ssh-agent 里的，或在 App 里当场生成。服务器还不认这把密钥时，
-     可以输入一次服务器密码自动把公钥加进去（这种情况下密码只用一次，不保存）。
-   - 服务器只允许密码登录时选“密码”：密码加密保存在 App 里，每次连接时使用。
+## Getting started
 
-   首次连接会让你核对并固定主机指纹，之后指纹变化一律拒绝连接。
-3. **点“部署”**。App 把节点程序上传到服务器并安装到 `~/.rymesh`
-   （root 用 systemd，普通用户用 `systemctl --user`，macOS 用 launchd）。
-   已经部署过的服务器会原地升级，并保留原来的配对，所以 Mac 和手机可以共用同一台服务器。
-4. **开始用**：选 Agent、选工作目录，输入消息。
+1. **Install the agents on the server and log in**, as you would for terminal use:
+   `codex` (sign in with ChatGPT or set up an API key), `claude` (sign in to Claude),
+   `hermes setup` (Hermes Agent). Any of them will do; Rymesh uses whichever already work.
+2. **In the app: sidebar → Settings (设置) at the bottom → Add server (添加服务器)**.
+   Fill it in from `~/.ssh/config` with one tap if you like, and pick how to log in (登录方式):
+   - **Key (密钥)**: an existing key, one in ssh-agent, or one generated in the app. If the server does
+     not know the key yet, enter the server password once and the app installs the public key
+     (the password is used for that one connection and not kept).
+   - **Password (密码)**: for servers that only accept passwords. The password is kept encrypted in the
+     app and used for every connection.
 
-想把电脑上的服务器配置搬到手机上：手机上 设置 → 导入设备 → 扫描二维码，手机会显示一个 16 位配对码；
-电脑上 设置 → 导出设备 → 显示二维码，输入这个配对码，再用手机扫描电脑上出现的二维码即可。
-二维码用手机生成的配对码加密，电脑屏幕上从不显示任何密码，拍到或录下电脑屏幕都打不开；
-二维码 2 分钟后自动隐藏。也可以导出成 `.rymesh` 文件，在另一台设备上选择文件并输入解密码导入，
-解密码请和文件分开传递。
+   On first contact you confirm the server's host key fingerprint; from then on a changed fingerprint is
+   refused.
+3. **Tap Deploy node (部署节点)**. The app uploads the node program and installs it in `~/.rymesh` (systemd for
+   root, `systemctl --user` for other users, launchd on macOS). A server that already has it is upgraded
+   in place and keeps its pairing, so a Mac and a phone can share a server.
+4. **Start**: pick an agent and a working directory, and send a message.
 
-### 把 Mac 作为手机的服务器
+**Moving your servers from the computer to the phone**: on the phone, Settings → Import devices
+(导入设备) → Scan QR code (扫描二维码); the phone shows a 16-character pairing code. On the computer,
+Settings → Export devices (导出设备) → Show QR code (显示二维码), type in that pairing code, then scan the
+QR code that appears with the phone. The QR code is sealed with the phone's pairing code and the
+computer's screen never shows any secret, so a photo or recording of that screen opens nothing; the code
+hides itself after two minutes. You can also export a `.rymesh` file and import it on the other device
+with its decryption code; send the code separately from the file.
 
-Mac 没有公网 IP 也可以：只要手机能连到 Mac 的 SSH（同一 Wi-Fi、Tailscale、EasyTier，
-或把 22 端口转发出去）。
+### Using a Mac as the phone's server
 
-1. Mac 上：系统设置 → 通用 → 共享 → 打开“远程登录”，并保持 Rymesh App 运行。
-2. 手机上：添加服务器，填 Mac 的地址和用户名，核对指纹后部署。部署发现对方是运行中的 Rymesh 时
-   不会安装任何东西，只向它取一个配对令牌。Mac 睡眠时手机连不上它。
+The Mac needs no public IP, only an SSH connection the phone can reach (same Wi-Fi, Tailscale, EasyTier,
+or port 22 forwarded).
 
-## 支持的 Agent
+1. On the Mac: System Settings → General → Sharing → turn on Remote Login, and keep the Rymesh app
+   running.
+2. On the phone: add the Mac as a server with its address and user name, confirm the fingerprint and
+   deploy. When deploy finds Rymesh running there it installs nothing and only asks it for a pairing
+   token. The phone cannot reach the Mac while it sleeps.
+
+## Supported agents
 
 | | Codex CLI | Claude Code | Hermes Agent |
 |---|---|---|---|
-| 接入方式 | `codex app-server`（JSON-RPC） | `claude -p --input-format stream-json` | `hermes acp`（Agent Client Protocol） |
-| 审批与提问 | ✅ | ✅ | ✅ 文件编辑等审批 |
-| 原生历史导入 | ✅ 会话文件，以及新版 Codex 存在数据库里的对话（经 app-server 读取） | ✅ 会话文件 | ✅ 经 `hermes sessions export --redact` 读取，含各档案 |
-| 接着聊历史对话 | ✅ | ✅ | 仅限通过 ACP 创建的对话 |
+| Driven through | `codex app-server` (JSON-RPC) | `claude -p --input-format stream-json` | `hermes acp` (Agent Client Protocol) |
+| Approvals and questions | ✅ | ✅ | ✅ file edits and similar |
+| Native history import | ✅ session files, and threads newer Codex versions keep in their database (read through the app-server) | ✅ session files | ✅ through `hermes sessions export --redact`, all profiles |
+| Continue past conversations | ✅ | ✅ | Only those created over ACP |
 
-Hermes 只能接续通过 ACP 创建的对话，这是 Hermes 本身的限制。来自微信、Telegram、桌面版群聊、
-终端的 Hermes 对话会以只读方式显示，并注明来源。
+Hermes can only continue conversations created over ACP; that is a limit of Hermes itself. Hermes
+conversations from WeChat, Telegram, desktop group chats or the terminal are shown read-only, with their
+source.
 
-每个对话固定在某台服务器、某个 Agent 上。同一对话同一时间只跑一个任务，
-运行中再发的消息会排队；不同对话可以并发（默认最多 4 个）。
+Each conversation belongs to one server and one agent. A conversation runs one task at a time; messages
+sent meanwhile are queued. Different conversations run in parallel (up to 4 by default).
 
-## 工作原理
+## How it works
 
 ```text
-Mac App / Android App（内置主控，只监听本机）
-      │  SSH（固定主机指纹）
+Mac app / Android app (built-in hub, listens on this device only)
+      │  SSH (pinned host key)
       ▼
-服务器：rymesh 节点（只监听 127.0.0.1）
-      │  SQLite：对话、任务、事件、审批
+Server: rymesh node (listens on 127.0.0.1 only)
+      │  SQLite: conversations, tasks, events, approvals
       ▼
-rymesh run-task（每个任务一个独立进程，和网页服务分离）
+rymesh run-task (one process per task, separate from the web service)
       ├── codex app-server
       ├── claude -p --input-format stream-json --permission-prompt-tool stdio
       └── hermes acp
 ```
 
-- **网页服务只负责控制和展示。** 每个任务由单独启动的进程执行，网页服务重启、升级都不影响它。
-- **事件先落盘再入库。** 任务进程把 Agent 的输出逐行写进日志，再增量写入数据库；
-  页面断线后按序号续传，不会丢。
-- **接续用 CLI 自己的会话。** 控制台里的历史只是展示，真正的上下文由 CLI 的原生会话延续。
-- **导入的历史是一份副本**，存在控制台自己的数据库里，原始记录始终由各个 CLI 自己保管。
-  在控制台删除对话时，副本会删掉；Codex、Claude 的原始文件会挪进回收目录
-  （`<数据目录>/trash/`），30 天后自动清理；存在 Agent 自己数据库里的记录不会被动。
+- **The web service only controls and shows.** Each task runs in a process of its own; restarting or
+  upgrading the web service does not touch it.
+- **Events reach disk before the database.** The task process writes the agent's output line by line
+  to a log, which is then read into the database; a page that reconnects resumes from the last event it
+  saw.
+- **Continuing uses the CLI's own session.** The console's history is for display; the real context is
+  carried by the CLI's native session.
+- **Imported history is a copy** in the console's own database; the originals stay with each CLI.
+  Deleting a conversation in the console deletes the copy; Codex and Claude session files are moved to
+  a trash folder (`<data dir>/trash/`) and removed after 30 days; records in an agent's own database are
+  left alone.
 
-## 安全
+## Security
 
-- 服务器上的节点只监听 `127.0.0.1`，除 SSH 外不开放任何端口。App 到服务器的流量走 SSH，
-  主机指纹固定。
-- 控制台本身没有密码登录：App 用一次性票据登录本机控制台，主控访问节点用每个节点独立的令牌。
-  在浏览器里直接打开节点地址只会看到“请在应用中打开”。
-- SSH 私钥、服务器登录密码和设备列表保存在客户端自己的数据库里，私钥和密码经过加密
-  （macOS 用钥匙串、Android 用 Keystore 保管加密密钥），页面和接口都不会返回它们。
-- 不读取、不保存任何 Codex / Claude / Hermes 的账号凭据；导入 Hermes 历史时会让 Hermes 先把聊天里的密钥打码。
-- 默认权限模式下，危险操作必须在页面上批准。“危险”类模式需要逐次显式选择，任务记录会保留当时的模式。
+- The node on a server listens on `127.0.0.1` only and opens no port besides SSH. Traffic from the app
+  to a server goes over SSH with a pinned host key.
+- The console has no password login: the apps sign in to their local console with a one-time ticket,
+  and the hub reaches each node with that node's own token. Opening a node's address in a browser only
+  says to open it from the app.
+- SSH private keys, server passwords and the device list are kept in the client's own database; keys
+  and passwords are encrypted (the encryption key is held by the macOS keychain or the Android
+  Keystore), and no page or API returns them.
+- No Codex / Claude / Hermes account credentials are ever read or stored; when importing Hermes history,
+  Hermes is asked to redact secrets in the chats first.
+- In the default permission modes, risky actions must be approved on the page. "Dangerous" modes must be
+  chosen explicitly each time, and every task records the mode it ran in.
 
-## 从源码构建
+## Building from source
 
-需要 Go 1.26+。
+Requires Go 1.26 or later.
 
 ```bash
-make build      # 命令行程序 ./rymesh
+make build      # the command-line program, ./rymesh
 make test       # go vet + go test -race
-make dist       # 各平台程序（含 App 内置的 Linux 节点程序）→ dist/
-make macos      # Mac App → macos/dist.noindex/Rymesh.app（需要 Xcode 命令行工具）
-make android    # Android APK → dist/Rymesh-Android.apk
-make release    # 发布用的全部文件和校验值 → dist/release/
+make dist       # programs for every platform (including the Linux nodes the apps carry) → dist/
+make macos      # the Mac app → macos/dist.noindex/Rymesh.app (needs the Xcode command line tools)
+make android    # the Android APK → dist/Rymesh-Android.apk
+make release    # every release file and its checksum → dist/release/
 ```
 
-Android 需要 Android SDK / NDK 和 gomobile：
+Android also needs the Android SDK and NDK, and gomobile:
 
 ```bash
-export ANDROID_HOME=~/Library/Android/sdk ANDROID_NDK_HOME=$ANDROID_HOME/ndk/<版本> \
+export ANDROID_HOME=~/Library/Android/sdk ANDROID_NDK_HOME=$ANDROID_HOME/ndk/<version> \
        JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
 go install golang.org/x/mobile/cmd/gomobile@latest golang.org/x/mobile/cmd/gobind@latest
 ```
 
-不想用 App 时，电脑上也可以只用命令行：`rymesh client` 启动本机控制台并在浏览器中打开。
+Without a release key configured, the APK is signed with your local debug key.
 
-### 目录结构
+Without the apps, a computer can use the command line alone: `rymesh client` starts the local console
+and opens it in the browser.
+
+### Layout
 
 ```text
-cmd/rymesh/      程序入口
-*.go             HTTP 接口、调度、多设备中转与部署、终端与文件
+cmd/rymesh/      entry point
+*.go             HTTP API, scheduling, multi-device relay and deployment, terminal and files
 internal/
-  agent/         调用官方 CLI：探测、命令构造、stdio 协议、审批、任务进程
-  importer/      导入并同步 CLI 的原生历史
-  ingest/        任务事件入库与归一化
-  store/         SQLite：对话、任务、事件、审批、加密的密钥库
+  agent/         driving the official CLIs: detection, commands, stdio protocols, approvals, task processes
+  importer/      importing and syncing the CLIs' native history
+  ingest/        storing and normalizing task events
+  store/         SQLite: conversations, tasks, events, approvals, the encrypted vault
   config/ sshconn/ sys/ util/
-web/             前端（无构建步骤）
-macos/           Mac App（Swift）
-android/         Android App
-mobile/          Android 用的 gomobile 绑定
+web/             the front end (no build step)
+macos/           the Mac app (Swift)
+android/         the Android app
+mobile/          gomobile bindings for Android
 ```
 
-## 命令行与配置
+## Command line and configuration
 
-部署后的节点一般不需要手动维护。需要时可以在服务器上使用：
+A deployed node normally needs no attention. When it does, on the server:
 
 ```bash
-rymesh status           # 运行状态
-rymesh doctor           # 自检：Agent、目录、监听
-rymesh tasks            # 列出任务
-rymesh cancel <任务ID>  # 取消任务
-rymesh logs <任务ID>    # 任务日志
-rymesh import           # 立即导入原生历史（默认每 30 秒自动同步）
+rymesh status           # is it running
+rymesh doctor           # self-check: agents, directories, listening addresses
+rymesh tasks            # list tasks
+rymesh cancel <task-id> # cancel a task
+rymesh logs <task-id>   # a task's log
+rymesh import           # import native history now (it syncs every 30 seconds anyway)
 ```
 
-配置文件在 `~/.rymesh/config.json`（以 root 用 `rymesh install` 安装时为 `/etc/rymesh/config.json`），常用字段：
+The configuration is `~/.rymesh/config.json` (`/etc/rymesh/config.json` for a root install made with
+`rymesh install`). Common fields:
 
-| 字段 | 默认 | 说明 |
+| Field | Default | Meaning |
 |---|---|---|
-| `default_cwd` | 家目录 | 新对话的默认工作目录 |
-| `allowed_roots` | 家目录 | 允许作为工作目录的根目录（目录之外的对话不能运行） |
-| `max_concurrent` | 4 | 同时运行的任务上限（1–32） |
-| `permission_ttl_minutes` | 60 | 审批请求的有效期，过期按拒绝处理 |
-| `import_on_start` | true | 启动时导入原生历史，并每 30 秒同步 |
-| `import_history_limit` | 0 | 每段对话在控制台里保留的事件上限；0 为全部 |
-| `import_exclude_roots` | `[]` | 不导入的目录，支持 `*` 通配符 |
+| `default_cwd` | home directory | Working directory of new conversations |
+| `allowed_roots` | home directory | Directories conversations may run in |
+| `max_concurrent` | 4 | Tasks running at once (1–32) |
+| `permission_ttl_minutes` | 60 | How long an approval request stays open; unanswered ones are denied |
+| `import_on_start` | true | Import native history at start and sync every 30 seconds |
+| `import_history_limit` | 0 | Events kept per conversation in the console; 0 keeps all |
+| `import_exclude_roots` | `[]` | Directories not to import, `*` wildcards allowed |
 
-`default_cwd` 和 `max_concurrent` 也可以在设置页修改。
+`default_cwd` and `max_concurrent` can also be changed in Settings.
 
-## 已知限制
+## Known limitations
 
-- Hermes 只能接续通过 ACP 创建的对话，其它来源的 Hermes 对话只读。
-- Codex 的 MCP 表单请求（elicitation）暂不支持，会自动拒绝。
-- Codex 恢复一段很久没动的对话时，会把它的“更新时间”改成当前时间，这是 Codex 自己的行为。
-- 整机重启会终止正在运行的任务；重启后它们显示为“已中断”，可以手动重跑或接着发消息。
+- The interface is in Chinese only for now.
+- Hermes can only continue conversations created over ACP; its other conversations are read-only.
+- Codex MCP form requests (elicitation) are not supported yet and are declined.
+- When Codex resumes a long-idle thread it sets the thread's "updated" time to now; that is Codex's own
+  behaviour.
+- Rebooting a server ends its running tasks; afterwards they show as interrupted and can be rerun or
+  continued with a new message.
 
-## 参与开发
+## Contributing
 
-开发约束（尤其是“只做遥控器”的原则）见 [CLAUDE.md](CLAUDE.md)。
-`principle_test.go` 会在源码里出现模型服务商 API 地址或凭据变量时让构建失败。
+The project's rules, above all "only a remote control", are in [CLAUDE.md](CLAUDE.md).
+`principle_test.go` fails the build if a model provider's API host or a credential variable appears in
+the source.
 
-## 许可证
+## License
 
 Copyright © 2026 ecouus
 
-Rymesh 以 [GNU Affero 通用公共许可证 第 3 版（AGPL-3.0）](LICENSE) 发布：
-可以自由使用、修改和分发，但分发修改后的版本，或把修改后的版本作为网络服务提供给他人使用时，
-必须以同样的许可证公开完整源码。
+Rymesh is released under the [GNU Affero General Public License v3.0 (AGPL-3.0)](LICENSE): you may use,
+modify and share it freely, but if you distribute a modified version, or offer one to others as a
+network service, you must publish its complete source under the same license.
